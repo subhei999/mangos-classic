@@ -1,6 +1,4 @@
 use super::*;
-use wow_proto::world::WorldOpcode;
-use wow_proto::ServerWorldPacket;
 
 pub(in crate::world) async fn dispatch_item_query_packet(
     ctx: &mut WorldPacketDispatchContext<'_>,
@@ -151,6 +149,17 @@ pub(in crate::world) async fn dispatch_misc_packet(
             )
             .await
         }
+        packets::ParsedWorldClientPacket::ZoneUpdate(_) => {
+            handle_zone_update(
+                &mut *ctx.stream,
+                &ctx.runtime_state.world_data_files,
+                &ctx.runtime_state.maps,
+                packet.zone_update()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
         packets::ParsedWorldClientPacket::LogoutRequest(_) => {
             handle_logout_request(
                 &mut *ctx.stream,
@@ -193,44 +202,44 @@ pub(in crate::world) async fn handle_area_trigger(
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(character) = session.character.active_character.as_ref() else {
+    if session.character.active_character.is_none() {
         return Ok(());
-    };
+    }
     if !wow_db::is_tavern_area_trigger(world_db_pool, request.trigger_id).await? {
         return Ok(());
     }
-    if session.character.player_flags & PLAYER_FLAGS_RESTING != 0 {
+    if session.rest.rest_type == RestType::InCity {
         return Ok(());
     }
+    set_rest_type(
+        stream,
+        shared_world.maps,
+        session,
+        header_crypto,
+        RestType::InTavern,
+        Some(request.trigger_id),
+    )
+    .await
+}
 
-    let character_guid = character.guid;
-    let character_race = character.race;
-    let map_id = character.position.map_id;
-    session.character.player_flags |= PLAYER_FLAGS_RESTING;
-    send_packet(
-        stream,
-        WorldOpcode::SmsgSetRestStart as u16,
-        &wow_proto::SmsgSetRestStartResponse {
-            rest_start: current_unix_time_secs().min(u64::from(u32::MAX)) as u32,
-        }
-        .body(),
-        Some(&mut *header_crypto),
-    )
-    .await?;
-    send_packet(
-        stream,
-        WorldOpcode::SmsgUpdateObject as u16,
-        &build_player_gm_mode_update_body(
-            ObjectGuid::new(HighGuid::Player, 0, character_guid),
-            character_race,
-            session.character.player_flags,
-        )?,
-        Some(header_crypto),
-    )
-    .await?;
-    shared_world
-        .maps
-        .sync_player_gameplay_state(map_id, character_guid, session)
-        .await;
+pub(in crate::world) async fn handle_zone_update(
+    stream: &mut WorldPacketSink,
+    world_data_files: &Arc<WorldDataFiles>,
+    maps: &Arc<MapRuntimeManager>,
+    request: wow_proto::ZoneUpdateRequest,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(area) = world_data_files.area_tables.entry(request.zone_id) else {
+        return Ok(());
+    };
+    if area.flags & AREA_FLAG_CAPITAL != 0 {
+        return set_rest_type(stream, maps, session, header_crypto, RestType::InCity, None).await;
+    }
+    if session.character.player_flags & PLAYER_FLAGS_RESTING != 0
+        && session.rest.rest_type != RestType::InTavern
+    {
+        return set_rest_type(stream, maps, session, header_crypto, RestType::No, None).await;
+    }
     Ok(())
 }

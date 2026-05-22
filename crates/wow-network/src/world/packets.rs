@@ -23,7 +23,7 @@ use wow_proto::{
     SetTargetObsoleteRequest, SpiritHealerActivateRequest, SplitItemRequest,
     StandStateChangeRequest, TextEmoteRequest, TrainerBuySpellRequest, TrainerListRequest,
     TutorialClearRequest, TutorialFlagRequest, TutorialResetRequest, UpdateAccountDataRequest,
-    UseItemRequest, WorldAuthSessionRequest,
+    UseItemRequest, WorldAuthSessionRequest, ZoneUpdateRequest,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,6 +101,7 @@ pub(super) enum ParsedWorldClientPacket {
     AttackSwing(AttackSwingRequest),
     AttackStop(AttackStopRequest),
     AreaTrigger(AreaTriggerRequest),
+    ZoneUpdate(ZoneUpdateRequest),
     Repop(RepopRequest),
     ReclaimCorpse(ReclaimCorpseRequest),
     SpiritHealerActivate(SpiritHealerActivateRequest),
@@ -236,6 +237,7 @@ impl ParsedWorldClientPacket {
             Self::AttackSwing(_) => WorldOpcode::CmsgAttackSwing.into(),
             Self::AttackStop(_) => WorldOpcode::CmsgAttackStop.into(),
             Self::AreaTrigger(_) => WorldOpcode::CmsgAreaTrigger.into(),
+            Self::ZoneUpdate(_) => WorldOpcode::CmsgZoneUpdate.into(),
             Self::Repop(_) => WorldOpcode::CmsgRepopRequest.into(),
             Self::ReclaimCorpse(_) => WorldOpcode::CmsgReclaimCorpse.into(),
             Self::SpiritHealerActivate(_) => WorldOpcode::CmsgSpiritHealerActivate.into(),
@@ -570,6 +572,12 @@ impl ParsedWorldClientPacket {
         AreaTrigger,
         AreaTriggerRequest,
         "CMSG_AREATRIGGER"
+    );
+    packet_accessor!(
+        zone_update,
+        ZoneUpdate,
+        ZoneUpdateRequest,
+        "CMSG_ZONEUPDATE"
     );
     packet_accessor!(
         reclaim_corpse,
@@ -1127,6 +1135,12 @@ pub(super) fn parse_world_client_packet(
                 AreaTriggerRequest::read(&mut body)?,
             ))
         }
+        Ok(WorldOpcode::CmsgZoneUpdate) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::ZoneUpdate(
+                ZoneUpdateRequest::read(&mut body)?,
+            ))
+        }
         Ok(WorldOpcode::CmsgRepopRequest) => {
             let mut body = body;
             Ok(ParsedWorldClientPacket::Repop(RepopRequest::read(
@@ -1370,6 +1384,9 @@ mod packet_dispatch_tests {
 
         let parsed = parse_world_client_packet(0x00B4, &71u32.to_le_bytes()).unwrap();
         assert_eq!(parsed.area_trigger().unwrap().trigger_id, 71);
+
+        let parsed = parse_world_client_packet(0x01F4, &1519u32.to_le_bytes()).unwrap();
+        assert_eq!(parsed.zone_update().unwrap().zone_id, 1519);
 
         let parsed =
             parse_world_client_packet(0x026A, &0x8877_6655_4433_2211u64.to_le_bytes()).unwrap();

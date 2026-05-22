@@ -8,9 +8,15 @@ use wow_proto::{
 
 pub(in crate::world) fn build_log_xp_gain_body(
     source: Option<ObjectGuid>,
-    given_xp: u32,
+    base_xp: u32,
+    rested_bonus_xp: u32,
 ) -> Vec<u8> {
-    SmsgLogXpGainResponse { source, given_xp }.body()
+    SmsgLogXpGainResponse {
+        source,
+        given_xp: base_xp.saturating_add(rested_bonus_xp),
+        base_xp,
+    }
+    .body()
 }
 
 pub(in crate::world) fn build_exploration_experience_body(area: u32, experience: u32) -> Vec<u8> {
@@ -155,6 +161,28 @@ pub(in crate::world) fn build_player_progression_update_body(
 
     set_update_value(&mut values, PLAYER_NEXT_LEVEL_XP, world_stats.next_level_xp)?;
 
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
+}
+
+pub(in crate::world) fn build_player_rest_update_body(
+    character_guid: u32,
+    player_bytes2: u32,
+    rest_bonus: f32,
+) -> anyhow::Result<Vec<u8>> {
+    let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_update_value(&mut values, PLAYER_BYTES_2, player_bytes2)?;
+    set_update_value(
+        &mut values,
+        PLAYER_REST_STATE_EXPERIENCE,
+        rest_bonus.max(0.0).min(u32::MAX as f32) as u32,
+    )?;
     write_update_values(&mut block, &values)?;
 
     Ok(build_update_object_body(&[block]))

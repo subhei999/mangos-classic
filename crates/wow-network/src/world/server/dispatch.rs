@@ -126,6 +126,7 @@ pub(in crate::world) async fn dispatch_world_packet(
         | packets::ParsedWorldClientPacket::GmTicketGetTicket(_)
         | packets::ParsedWorldClientPacket::QueryNextMailTime(_)
         | packets::ParsedWorldClientPacket::AreaTrigger(_)
+        | packets::ParsedWorldClientPacket::ZoneUpdate(_)
         | packets::ParsedWorldClientPacket::LogoutRequest(_)
         | packets::ParsedWorldClientPacket::LogoutCancel(_)
         | packets::ParsedWorldClientPacket::PlayerLogout(_) => {

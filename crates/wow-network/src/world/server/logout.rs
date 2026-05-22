@@ -324,6 +324,7 @@ pub(in crate::world) async fn persist_session_character_state(
         Instant::now(),
     )
     .await?;
+    persist_character_rest_state(character_db_pool, session).await?;
     persist_character_auras(character_db_pool, maps, session).await?;
     Ok(())
 }

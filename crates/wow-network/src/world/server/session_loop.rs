@@ -364,6 +364,13 @@ pub(in crate::world) async fn handle_client(
                         crate::observability::WorldSessionLoopPhase::FinalizePlayerDeath,
                         finalize_death_started_at.elapsed(),
                     );
+                    update_online_rest_bonus_if_due(
+                        &mut stream,
+                        &character_db_pool,
+                        &mut session,
+                        &mut header_crypto,
+                    )
+                    .await?;
                     if complete_pending_player_auto_repop_if_due(
                         &mut stream,
                         PlayerDeathDeps {
@@ -727,6 +734,7 @@ async fn process_authenticated_world_packet(
         );
     }
     if Instant::now() >= *next_world_tick_at {
+        update_online_rest_bonus_if_due(stream, character_db_pool, session, header_crypto).await?;
         let combat_tick_started_at = Instant::now();
         handle_combat_tick(
             stream,
@@ -1047,6 +1055,10 @@ pub(in crate::world) async fn refresh_active_player_session_cache(
     session.quests.quest_statuses = snapshot.quest_statuses;
     session.auras.active_auras = snapshot.active_auras;
     session.character.player_flags = snapshot.flags;
+    session.rest.rest_bonus = snapshot.rest_bonus;
+    if let Some(visual) = session.character.player_visual.as_mut() {
+        visual.player_bytes2 = snapshot.player_bytes2;
+    }
     mark_player_auto_repop_if_corpse(session, Instant::now());
     if let Some(character) = session.character.active_character.as_mut() {
         character.position = snapshot.position;
@@ -1089,6 +1101,7 @@ pub(in crate::world) async fn refresh_active_player_session_tick_cache(
     session.character.player_energy = snapshot.power4;
     session.combat.player_in_combat = snapshot.in_combat;
     session.character.player_flags = snapshot.flags;
+    session.rest.rest_bonus = snapshot.rest_bonus;
     mark_player_auto_repop_if_corpse(session, Instant::now());
     if let Some(character) = session.character.active_character.as_mut() {
         character.position = snapshot.position;

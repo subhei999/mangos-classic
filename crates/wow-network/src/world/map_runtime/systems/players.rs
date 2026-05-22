@@ -1692,6 +1692,10 @@ impl MapRuntime {
         if let Some(character) = session.character.active_character.as_ref() {
             player.level = character.level;
             player.xp = character.xp;
+            player.rest_bonus = session.rest.rest_bonus;
+            if let Some(visual) = session.character.player_visual.as_ref() {
+                player.player_bytes2 = visual.player_bytes2;
+            }
             if !map_death_is_newer {
                 player.flags = session.character.player_flags;
                 player.position = character.position;
@@ -1734,6 +1738,7 @@ impl MapRuntime {
             race: player.race,
             class: player.class,
             xp: player.xp,
+            rest_bonus: player.rest_bonus,
             health: player.health,
             max_health: player.max_health,
             power1: player.power1,
@@ -1753,6 +1758,7 @@ impl MapRuntime {
             spell_cooldown_categories: player.spell_cooldown_categories.clone(),
             spell_cooldown_item_ids: player.spell_cooldown_item_ids.clone(),
             queued_next_melee_spell: player.queued_next_melee_spell,
+            player_bytes2: player.player_bytes2,
             base_combat_stats: player.base_combat_stats,
             combat_stats: player.combat_stats,
             in_combat: player.in_combat,
@@ -1778,6 +1784,7 @@ impl MapRuntime {
             stand_state: player.stand_state,
             level: player.level,
             xp: player.xp,
+            rest_bonus: player.rest_bonus,
             health: player.health,
             max_health: player.max_health,
             power1: player.power1,
@@ -1814,6 +1821,8 @@ impl MapRuntime {
         };
         player.level = reward.level;
         player.xp = reward.xp;
+        player.rest_bonus = reward.rest_bonus;
+        player.player_bytes2 = reward.player_bytes2;
         if let Some(world_stats) = reward.world_stats {
             player.base_world_stats = world_stats;
             player.effective_world_stats =

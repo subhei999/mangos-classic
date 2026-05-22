@@ -265,6 +265,29 @@ pub(in crate::world) async fn handle_player_login(
         character.level,
     )
     .await?;
+    let rest_bonus = offline_rest_bonus(
+        character.rest_bonus,
+        character.logout_time,
+        character.is_logout_resting != 0,
+        current_unix_time_secs(),
+        character.level,
+        world_stats.next_level_xp,
+    );
+    session.rest.rest_bonus = rest_bonus;
+    session.rest.next_level_xp = world_stats.next_level_xp;
+    session.rest.rest_type = if session.character.player_flags & PLAYER_FLAGS_RESTING != 0 {
+        RestType::InTavern
+    } else {
+        RestType::No
+    };
+    session.rest.time_inn_enter = if session.rest.rest_type == RestType::No {
+        None
+    } else {
+        Some(current_unix_time_secs())
+    };
+    if let Some(visual) = session.character.player_visual.as_mut() {
+        visual.player_bytes2 = player_bytes2_with_rest_bonus(visual.player_bytes2, rest_bonus);
+    }
     let spells = wow_db::get_character_spells(deps.character_db_pool, character.guid).await?;
     session.character.active_spells = spells
         .iter()
@@ -333,7 +356,9 @@ pub(in crate::world) async fn handle_player_login(
     bootstrap_character.power1 = session.character.player_mana;
     bootstrap_character.power2 = session.character.player_rage;
     bootstrap_character.power4 = session.character.player_energy;
-    bootstrap_character.player_bytes2 = player_bytes2_with_rest_state(character.player_bytes2);
+    bootstrap_character.rest_bonus = rest_bonus;
+    bootstrap_character.player_bytes2 =
+        player_bytes2_with_rest_bonus(character.player_bytes2, rest_bonus);
     let tutorial_flags = wow_db::get_tutorial_flags(deps.character_db_pool, account_id).await?;
     let cinematic_sequence = if character.cinematic == 0 {
         cinematic_sequence_for_race(character.race)
@@ -464,7 +489,7 @@ pub(in crate::world) async fn handle_player_login(
             character.equipment_cache.as_deref(),
             &session.inventory.items,
         ),
-        flags: character.player_flags,
+        flags: session.character.player_flags,
         death_state: session.death.player_death_state,
         level: character.level,
         race: character.race,
@@ -476,6 +501,7 @@ pub(in crate::world) async fn handle_player_login(
         health: session.character.player_health,
         max_health: effective_world_stats.max_health().max(1),
         xp: character.xp,
+        rest_bonus,
         power1: session.character.player_mana,
         max_power1: effective_world_stats.max_mana(),
         last_mana_use_at: None,
@@ -483,7 +509,7 @@ pub(in crate::world) async fn handle_player_login(
         power4: session.character.player_energy,
         max_power4: create_power_for_class_power(character.class, POWER_ENERGY),
         player_bytes: character.player_bytes,
-        player_bytes2: player_bytes2_with_rest_state(character.player_bytes2),
+        player_bytes2: player_bytes2_with_rest_bonus(character.player_bytes2, rest_bonus),
         combo_target: None,
         combo_points: 0,
         stand_state: session.character.player_stand_state,

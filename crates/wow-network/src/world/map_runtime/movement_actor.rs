@@ -284,6 +284,7 @@ mod tests {
             health: 20,
             max_health: 20,
             xp: 0,
+            rest_bonus: 0.0,
             power1: 0,
             max_power1: 0,
             last_mana_use_at: None,

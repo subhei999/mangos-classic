@@ -2337,14 +2337,17 @@ fn quest_update_add_kill_encodes_gameobject_objective_with_high_bit() {
 #[test]
 fn xp_gain_packets_match_vanilla_shapes() {
     let source = ObjectGuid::new(HighGuid::Unit, 6, 44);
-    let kill = build_log_xp_gain_body(Some(source), 52);
+    let kill = build_log_xp_gain_body(Some(source), 52, 0);
     assert_eq!(&kill[0..8], &source.raw().to_le_bytes());
     assert_eq!(&kill[8..12], &52u32.to_le_bytes());
     assert_eq!(kill[12], 0);
     assert_eq!(&kill[13..17], &52u32.to_le_bytes());
     assert_eq!(&kill[17..21], &1.0f32.to_le_bytes());
+    let rested_kill = build_log_xp_gain_body(Some(source), 52, 30);
+    assert_eq!(&rested_kill[8..12], &82u32.to_le_bytes());
+    assert_eq!(&rested_kill[13..17], &52u32.to_le_bytes());
 
-    let quest = build_log_xp_gain_body(None, 350);
+    let quest = build_log_xp_gain_body(None, 350, 0);
     assert_eq!(&quest[0..8], &0u64.to_le_bytes());
     assert_eq!(&quest[8..12], &350u32.to_le_bytes());
     assert_eq!(quest[12], 1);

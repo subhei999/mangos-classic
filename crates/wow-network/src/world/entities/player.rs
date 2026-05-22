@@ -348,13 +348,18 @@ pub(in crate::world) fn write_minimal_player_update_values(
     set_update_value(
         &mut values,
         PLAYER_BYTES_2,
-        player_bytes2_with_rest_state(character.player_bytes2),
+        player_bytes2_with_rest_bonus(character.player_bytes2, character.rest_bonus),
     )?;
     set_update_value(&mut values, PLAYER_BYTES_3, 0)?;
     set_visible_item_update_values(&mut values, character, inventory)?;
     set_inventory_slot_update_values(&mut values, inventory)?;
     set_update_value(&mut values, PLAYER_XP, character.xp)?;
     set_update_value(&mut values, PLAYER_NEXT_LEVEL_XP, world_stats.next_level_xp)?;
+    set_update_value(
+        &mut values,
+        PLAYER_REST_STATE_EXPERIENCE,
+        character.rest_bonus.max(0.0).min(u32::MAX as f32) as u32,
+    )?;
     set_player_quest_log_update_values(&mut values, quest_statuses)?;
     set_player_skill_update_values(&mut values, skills, active_auras)?;
     set_player_secondary_stat_update_values(&mut values, &combat_stats)?;

@@ -174,6 +174,7 @@ pub(in crate::world) fn build_playerbot_runtime(
         health: max_health,
         max_health,
         xp: 0,
+        rest_bonus: 0.0,
         power1: max_mana,
         max_power1: max_mana,
         last_mana_use_at: None,

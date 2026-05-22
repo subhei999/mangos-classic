@@ -2138,6 +2138,8 @@ pub(in crate::world) async fn reward_party_for_db_creature_kill(
                 PlayerRewardRuntimeUpdate {
                     level: xp_award.level,
                     xp: xp_award.xp,
+                    rest_bonus: xp_award.rest_bonus,
+                    player_bytes2: xp_award.player_bytes2,
                     health: xp_award.health,
                     max_health: xp_award.max_health,
                     power1: xp_award.power1,
@@ -2311,9 +2313,21 @@ pub(in crate::world) async fn award_character_xp_to_member(
         snapshot.level,
     )
     .await?;
-    let mut new_level = snapshot.level;
-    let mut new_xp = snapshot.xp.saturating_add(xp);
     let mut next_level_xp = previous_stats.next_level_xp;
+    let rested_bonus_xp = if source.is_some() {
+        (snapshot.rest_bonus as u32).min(xp)
+    } else {
+        0
+    };
+    let rest_bonus = clamp_rest_bonus(
+        snapshot.rest_bonus - rested_bonus_xp as f32,
+        snapshot.level,
+        next_level_xp,
+    );
+    let player_bytes2 = player_bytes2_with_rest_bonus(snapshot.player_bytes2, rest_bonus);
+    let total_xp = xp.saturating_add(rested_bonus_xp);
+    let mut new_level = snapshot.level;
+    let mut new_xp = snapshot.xp.saturating_add(total_xp);
     while next_level_xp > 0 && new_xp >= next_level_xp && new_level < DEFAULT_MAX_PLAYER_LEVEL {
         new_xp -= next_level_xp;
         new_level += 1;
@@ -2371,11 +2385,25 @@ pub(in crate::world) async fn award_character_xp_to_member(
         },
     )
     .await?;
+    wow_db::update_character_rest_state(
+        character_db_pool,
+        character_guid,
+        rest_bonus,
+        snapshot.flags & PLAYER_FLAGS_RESTING != 0,
+        current_unix_time_secs(),
+    )
+    .await?;
 
     let mut packets = vec![OutboundWorldPacket {
         opcode: WorldOpcode::SmsgLogXpGain as u16,
-        body: build_log_xp_gain_body(source, xp),
+        body: build_log_xp_gain_body(source, xp, rested_bonus_xp),
     }];
+    if rested_bonus_xp > 0 {
+        packets.push(OutboundWorldPacket {
+            opcode: WorldOpcode::SmsgUpdateObject as u16,
+            body: build_player_rest_update_body(character_guid, player_bytes2, rest_bonus)?,
+        });
+    }
     if leveled {
         packets.push(OutboundWorldPacket {
             opcode: WorldOpcode::SmsgLevelupInfo as u16,
@@ -2400,6 +2428,8 @@ pub(in crate::world) async fn award_character_xp_to_member(
     Ok(MemberXpAward {
         level: new_level,
         xp: new_xp,
+        rest_bonus,
+        player_bytes2,
         health,
         max_health,
         power1,
@@ -2415,6 +2445,8 @@ pub(in crate::world) async fn award_character_xp_to_member(
 pub(in crate::world) struct MemberXpAward {
     pub(in crate::world) level: u8,
     pub(in crate::world) xp: u32,
+    pub(in crate::world) rest_bonus: f32,
+    pub(in crate::world) player_bytes2: u32,
     pub(in crate::world) health: u32,
     pub(in crate::world) max_health: u32,
     pub(in crate::world) power1: u32,
@@ -2430,6 +2462,8 @@ impl MemberXpAward {
         Self {
             level: snapshot.level,
             xp: snapshot.xp,
+            rest_bonus: snapshot.rest_bonus,
+            player_bytes2: snapshot.player_bytes2,
             health: snapshot.health,
             max_health: snapshot.max_health,
             power1: snapshot.power1,
@@ -2471,9 +2505,15 @@ pub(in crate::world) async fn award_character_xp(
     let old_xp = character.xp;
     let previous_stats =
         wow_db::get_player_world_stats(world_db_pool, race, class, old_level).await?;
-    let mut new_level = old_level;
-    let mut new_xp = old_xp.saturating_add(xp);
     let mut next_level_xp = previous_stats.next_level_xp;
+    let rested_bonus_xp = if source.is_some() {
+        consume_rested_xp(session, xp, next_level_xp)
+    } else {
+        0
+    };
+    let total_xp = xp.saturating_add(rested_bonus_xp);
+    let mut new_level = old_level;
+    let mut new_xp = old_xp.saturating_add(total_xp);
     while next_level_xp > 0 && new_xp >= next_level_xp && new_level < DEFAULT_MAX_PLAYER_LEVEL {
         new_xp -= next_level_xp;
         new_level += 1;
@@ -2519,6 +2559,7 @@ pub(in crate::world) async fn award_character_xp(
         character.level = new_level;
         character.xp = new_xp;
     }
+    session.rest.next_level_xp = new_stats.next_level_xp;
     session.character.player_health = health;
     session.character.player_mana = power1;
     session.character.player_rage = power2;
@@ -2544,6 +2585,7 @@ pub(in crate::world) async fn award_character_xp(
         )
         .await?;
     }
+    persist_character_rest_state(character_db_pool, session).await?;
 
     let equipped_templates =
         load_equipped_item_templates(world_db_pool, &session.inventory.items).await?;
@@ -2568,10 +2610,13 @@ pub(in crate::world) async fn award_character_xp(
     send_packet(
         stream,
         WorldOpcode::SmsgLogXpGain as u16,
-        &build_log_xp_gain_body(source, xp),
+        &build_log_xp_gain_body(source, xp, rested_bonus_xp),
         Some(&mut *header_crypto),
     )
     .await?;
+    if rested_bonus_xp > 0 {
+        send_rest_update(stream, session, &mut *header_crypto).await?;
+    }
     if leveled {
         send_packet(
             stream,

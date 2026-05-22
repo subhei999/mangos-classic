@@ -325,6 +325,7 @@ pub(in crate::world) struct WorldSessionState {
     pub(in crate::world) quests: QuestSessionState,
     pub(in crate::world) gossip: GossipSessionState,
     pub(in crate::world) death: DeathSessionState,
+    pub(in crate::world) rest: RestSessionState,
     #[allow(dead_code)]
     pub(in crate::world) social: SocialSessionState,
     #[allow(dead_code)]
@@ -398,6 +399,23 @@ pub(in crate::world) struct CombatSessionState {
 #[derive(Debug, Default)]
 pub(in crate::world) struct LogoutSessionState {
     pub(in crate::world) requested_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(in crate::world) enum RestType {
+    #[default]
+    No,
+    InTavern,
+    InCity,
+}
+
+#[derive(Debug, Default)]
+pub(in crate::world) struct RestSessionState {
+    pub(in crate::world) rest_type: RestType,
+    pub(in crate::world) rest_bonus: f32,
+    pub(in crate::world) next_level_xp: u32,
+    pub(in crate::world) time_inn_enter: Option<u64>,
+    pub(in crate::world) inn_trigger_id: Option<u32>,
 }
 
 #[derive(Debug, Default)]

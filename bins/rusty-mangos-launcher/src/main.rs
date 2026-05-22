@@ -135,6 +135,15 @@ impl LauncherSettings {
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default()
     }
+
+    fn save(&self, path: &Path) {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(text) = serde_json::to_string_pretty(self) {
+            let _ = fs::write(path, text);
+        }
+    }
 }
 
 fn default_database_mode() -> String {
@@ -247,7 +256,11 @@ impl OperationProgress {
         if self.total == 0 {
             return 0.0;
         }
-        (self.index as f32 / self.total as f32).clamp(0.04, 0.98)
+        if self.index >= self.total {
+            1.0
+        } else {
+            (self.index as f32 / self.total as f32).clamp(0.04, 0.98)
+        }
     }
 }
 
@@ -571,21 +584,16 @@ impl LauncherApp {
                     .unwrap_or_default();
                 self.append_log(&format!("> exited with code {code}\n"));
                 self.state = OperationState::Idle;
-                if let Some(progress) = &mut self.progress {
-                    progress.index = progress.total;
-                    progress.detail = if code == 0 {
-                        "Completed".to_string()
-                    } else {
-                        format!("Failed with exit code {code}")
-                    };
-                }
                 self.status_message = if code == 0 {
                     "Ready".to_string()
                 } else {
                     format!("Last command failed ({code})")
                 };
-                if let Ok(paths) = &self.paths {
-                    self.settings = LauncherSettings::load(&paths.settings);
+                self.progress = None;
+                if action_updates_settings(&completed_action) {
+                    if let Ok(paths) = &self.paths {
+                        self.settings = LauncherSettings::load(&paths.settings);
+                    }
                 }
                 self.refresh_status();
                 self.refresh_health();
@@ -733,6 +741,7 @@ impl LauncherApp {
             .pick_folder()
         {
             self.settings.client_dir = path.display().to_string();
+            self.save_settings();
             self.status_message = "WoW client folder selected".to_string();
             self.append_log(&format!(
                 "Using WoW client folder: {}\n",
@@ -794,6 +803,12 @@ impl LauncherApp {
         open_url("http://127.0.0.1:9091/dashboard");
     }
 
+    fn save_settings(&self) {
+        if let Ok(paths) = &self.paths {
+            self.settings.save(&paths.settings);
+        }
+    }
+
     fn can_self_update(&self) -> bool {
         self.paths.as_ref().is_ok_and(|paths| {
             paths.build_info.is_file() && paths.root.join("RustyMangosLauncher.exe").is_file()
@@ -807,7 +822,7 @@ impl LauncherApp {
     }
 
     fn server_primary_action(&self) -> (&'static str, &'static str) {
-        if self.ports.db || self.ports.auth || self.ports.world {
+        if self.ports.auth || self.ports.world {
             ("Stop", "STOP SERVER")
         } else if self.has_saved_setup() {
             ("Start", "START SERVER")
@@ -1076,9 +1091,10 @@ impl LauncherApp {
                 });
             });
             ui.add_space(8.0);
+            let progress_width = ui.available_width();
             ui.add(
                 ProgressBar::new(progress.fraction())
-                    .desired_width(f32::INFINITY)
+                    .desired_width(progress_width)
                     .show_percentage(),
             );
             ui.add_space(8.0);
@@ -1207,9 +1223,10 @@ impl LauncherApp {
             ui.checkbox(&mut self.no_realmlist_update, "Do not update realmlist");
             ui.add_space(12.0);
             ui.label(RichText::new("ClassicDB path").color(muted()));
+            let classic_db_width = ui.available_width();
             ui.add(
                 TextEdit::singleline(&mut self.settings.classic_db_path)
-                    .desired_width(f32::INFINITY),
+                    .desired_width(classic_db_width),
             );
         });
     }
@@ -1410,6 +1427,10 @@ fn progress_total_for_action(action: &str) -> usize {
     }
 }
 
+fn action_updates_settings(action: &str) -> bool {
+    matches!(action, "InstallStart" | "Install" | "Configure" | "Start")
+}
+
 fn progress_index_for_phase(action: &str, phase: &str) -> usize {
     let normalized = phase.to_ascii_lowercase();
     let index = if normalized.contains("configuring") {
@@ -1603,6 +1624,7 @@ fn is_wow_client_dir(path: &Path) -> bool {
 
 fn discover_wow_client_dir() -> Option<PathBuf> {
     let mut candidates = Vec::new();
+    let excluded_roots = autodetect_excluded_roots();
 
     for key in [
         "RUSTY_MANGOS_WOW_DIR",
@@ -1638,7 +1660,9 @@ fn discover_wow_client_dir() -> Option<PathBuf> {
     ]);
 
     for candidate in &candidates {
-        if is_wow_client_dir(candidate) {
+        if is_wow_client_dir(candidate)
+            && !is_excluded_autodetect_candidate(candidate, &excluded_roots)
+        {
             return Some(candidate.clone());
         }
     }
@@ -1653,10 +1677,24 @@ fn discover_wow_client_dir() -> Option<PathBuf> {
 }
 
 fn find_wow_client_under(path: &Path, depth: usize, visited: &mut usize) -> Option<PathBuf> {
+    let excluded_roots = autodetect_excluded_roots();
+    find_wow_client_under_with_exclusions(path, depth, visited, &excluded_roots)
+}
+
+fn find_wow_client_under_with_exclusions(
+    path: &Path,
+    depth: usize,
+    visited: &mut usize,
+    excluded_roots: &[PathBuf],
+) -> Option<PathBuf> {
     if *visited > 4_000 || depth == 0 || !path.is_dir() {
         return None;
     }
     *visited += 1;
+
+    if is_excluded_autodetect_candidate(path, excluded_roots) {
+        return None;
+    }
 
     if is_wow_client_dir(path) {
         return Some(path.to_path_buf());
@@ -1666,12 +1704,63 @@ fn find_wow_client_under(path: &Path, depth: usize, visited: &mut usize) -> Opti
     for entry in entries.flatten() {
         let child = entry.path();
         if child.is_dir() {
-            if let Some(found) = find_wow_client_under(&child, depth - 1, visited) {
+            if let Some(found) =
+                find_wow_client_under_with_exclusions(&child, depth - 1, visited, excluded_roots)
+            {
                 return Some(found);
             }
         }
     }
     None
+}
+
+fn autodetect_excluded_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    if let Some(root) = launcher_root_candidate() {
+        roots.push(root.join("target"));
+        roots.push(root);
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        roots.push(current_dir.join("target"));
+        roots.push(current_dir);
+    }
+
+    roots
+}
+
+fn launcher_root_candidate() -> Option<PathBuf> {
+    let mut current = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .or_else(|| std::env::current_dir().ok())?;
+
+    loop {
+        if current
+            .join("scripts")
+            .join("rusty-mangos-launcher.ps1")
+            .is_file()
+        {
+            return Some(current);
+        }
+
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+fn is_excluded_autodetect_candidate(path: &Path, excluded_roots: &[PathBuf]) -> bool {
+    if path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("launcher-smoke-wow"))
+    {
+        return true;
+    }
+
+    excluded_roots.iter().any(|root| path.starts_with(root))
 }
 
 fn read_log_group(title: &str, paths: &[PathBuf]) -> String {

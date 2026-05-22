@@ -1186,6 +1186,50 @@ function Get-LauncherRelease {
     return Invoke-GitHubLauncherApi "https://api.github.com/repos/$repo/releases/tags/$tag"
 }
 
+function Get-LauncherUpdateAvailability {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$LocalCommit,
+        [Parameter(Mandatory = $true)][string]$ReleaseCommit
+    )
+
+    if ($LocalCommit -eq "local" -or [string]::IsNullOrWhiteSpace($ReleaseCommit)) {
+        return "unknown"
+    }
+
+    if ($ReleaseCommit.StartsWith($LocalCommit) -or $LocalCommit.StartsWith($ReleaseCommit)) {
+        return "false"
+    }
+
+    try {
+        $repo = Get-LauncherRepositoryName $RepoRoot
+        $compare = Invoke-GitHubLauncherApi "https://api.github.com/repos/$repo/compare/$ReleaseCommit...$LocalCommit"
+        switch ([string]$compare.status) {
+            "ahead" { return "false" }
+            "behind" { return "true" }
+            "identical" { return "false" }
+            default { }
+        }
+    }
+    catch {
+    }
+
+    try {
+        & git -C $RepoRoot merge-base --is-ancestor $LocalCommit $ReleaseCommit 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            return "true"
+        }
+        & git -C $RepoRoot merge-base --is-ancestor $ReleaseCommit $LocalCommit 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            return "false"
+        }
+    }
+    catch {
+    }
+
+    return "unknown"
+}
+
 function Get-ReleaseAsset {
     param(
         [Parameter(Mandatory = $true)]$Release,
@@ -1226,15 +1270,7 @@ function Show-LauncherUpdateStatus {
     $appZip = Get-ReleaseAsset $release "RustyMangosApp.zip"
     $releaseCommit = [string]$release.target_commitish
 
-    $available = "unknown"
-    if ($localCommit -ne "local" -and -not [string]::IsNullOrWhiteSpace($releaseCommit)) {
-        if ($releaseCommit.StartsWith($localCommit) -or $localCommit.StartsWith($releaseCommit)) {
-            $available = "false"
-        }
-        else {
-            $available = "true"
-        }
-    }
+    $available = Get-LauncherUpdateAvailability $RepoRoot $localCommit $releaseCommit
 
     Write-Host "UPDATE_LOCAL_BUILD=$localBuild"
     Write-Host "UPDATE_RELEASE_TAG=$($release.tag_name)"

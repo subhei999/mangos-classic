@@ -848,7 +848,7 @@ pub(in crate::world) fn player_combat_stats_for_values_with_ammo(
         .unwrap_or(BASE_ATTACK_TIME_MS);
 
     let (main_min_damage, main_max_damage) =
-        weapon_damage_with_attack_power(main_weapon, melee_attack_power, main_attack_time_ms);
+        main_hand_damage_with_attack_power(main_weapon, melee_attack_power, main_attack_time_ms);
     let (off_min_damage, off_max_damage) =
         weapon_damage_with_attack_power(off_weapon, melee_attack_power, off_attack_time_ms);
     let (ranged_min_damage, ranged_max_damage) = ranged_weapon_damage_with_attack_power_and_ammo(
@@ -1079,16 +1079,44 @@ pub(in crate::world) fn equipped_weapon_template(
         .map(|item| &item.template)
 }
 
+pub(in crate::world) fn main_hand_damage_with_attack_power(
+    weapon: Option<&ItemTemplateQuery>,
+    attack_power: u32,
+    attack_time_ms: u32,
+) -> (f32, f32) {
+    melee_damage_with_attack_power(
+        weapon,
+        attack_power,
+        attack_time_ms,
+        Some((BASE_UNARMED_MIN_DAMAGE, BASE_UNARMED_MAX_DAMAGE)),
+    )
+}
+
 pub(in crate::world) fn weapon_damage_with_attack_power(
     weapon: Option<&ItemTemplateQuery>,
     attack_power: u32,
     attack_time_ms: u32,
 ) -> (f32, f32) {
-    let Some(weapon) = weapon else {
-        return (0.0, 0.0);
+    melee_damage_with_attack_power(weapon, attack_power, attack_time_ms, None)
+}
+
+fn melee_damage_with_attack_power(
+    weapon: Option<&ItemTemplateQuery>,
+    attack_power: u32,
+    attack_time_ms: u32,
+    fallback_damage: Option<(f32, f32)>,
+) -> (f32, f32) {
+    let (base_min_damage, base_max_damage) = match weapon {
+        Some(weapon) => (weapon.dmg_min1, weapon.dmg_max1),
+        None => {
+            let Some(fallback_damage) = fallback_damage else {
+                return (0.0, 0.0);
+            };
+            fallback_damage
+        }
     };
     let ap_damage = attack_power as f32 / 14.0 * attack_time_ms as f32 / 1000.0;
-    (weapon.dmg_min1 + ap_damage, weapon.dmg_max1 + ap_damage)
+    (base_min_damage + ap_damage, base_max_damage + ap_damage)
 }
 
 pub(in crate::world) fn ranged_weapon_damage_with_attack_power_and_ammo(

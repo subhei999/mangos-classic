@@ -443,6 +443,7 @@ fn db_vendor_inventory_uses_cmangos_list_shape() {
         wow_db::VendorItemQuery {
             item: RUST_VENDOR_BAG_ITEM,
             max_count: 0,
+            incr_time: 0,
             slot: 7,
             display_id: RUST_VENDOR_BAG_DISPLAY,
             buy_price: 3,
@@ -453,6 +454,7 @@ fn db_vendor_inventory_uses_cmangos_list_shape() {
         wow_db::VendorItemQuery {
             item: RUST_VENDOR_BAG_ITEM,
             max_count: 5,
+            incr_time: 60,
             slot: 9,
             display_id: RUST_VENDOR_BAG_DISPLAY,
             buy_price: 10,
@@ -476,6 +478,182 @@ fn db_vendor_inventory_uses_cmangos_list_shape() {
     assert_eq!(&body[49..53], &5u32.to_le_bytes());
     assert_eq!(&body[53..57], &10u32.to_le_bytes());
     assert_eq!(&body[57..61], &20u32.to_le_bytes());
+}
+
+#[test]
+fn vendor_limited_stock_helpers_decrement_and_restock_like_cmangos() {
+    let vendor_item = wow_db::VendorItemQuery {
+        item: RUST_VENDOR_BAG_ITEM,
+        max_count: 5,
+        incr_time: 60,
+        slot: 1,
+        display_id: RUST_VENDOR_BAG_DISPLAY,
+        buy_price: 10,
+        max_durability: 0,
+        buy_count: 2,
+        container_slots: 0,
+    };
+
+    let consumed = vendor_item_consume_count(&vendor_item, None, 2, 1_000).unwrap();
+    assert_eq!(consumed.count, 3);
+    assert_eq!(
+        consumed.updated_entry,
+        Some(VendorStockEntry {
+            count: 3,
+            last_increment_time: 1_000,
+        })
+    );
+
+    let restocked = vendor_item_current_count(&vendor_item, consumed.updated_entry, 1_060);
+    assert_eq!(restocked.count, 5);
+    assert_eq!(restocked.updated_entry, None);
+}
+
+#[test]
+fn vendor_limited_stock_helper_rejects_sold_out_purchase() {
+    let vendor_item = wow_db::VendorItemQuery {
+        item: RUST_VENDOR_BAG_ITEM,
+        max_count: 1,
+        incr_time: 300,
+        slot: 1,
+        display_id: RUST_VENDOR_BAG_DISPLAY,
+        buy_price: 10,
+        max_durability: 0,
+        buy_count: 1,
+        container_slots: 0,
+    };
+
+    assert!(vendor_item_consume_count(&vendor_item, None, 1, 1_000).is_some());
+    let sold_out = vendor_item_consume_count(
+        &vendor_item,
+        Some(VendorStockEntry {
+            count: 0,
+            last_increment_time: 1_000,
+        }),
+        1,
+        1_001,
+    );
+    assert!(sold_out.is_none());
+}
+
+#[test]
+fn vendor_buy_item_in_slot_plan_accepts_last_secondary_bag_slot() {
+    let bread = test_item_template(4542, 0, 0, 0.0, 0.0, 0);
+    let mut inventory: Vec<_> = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .map(|slot| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 3_000 + slot as u32,
+            item_template: 6948,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        })
+        .collect();
+    inventory.push(CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_BAG_START,
+        item: 77,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    });
+    inventory.extend((0..5).map(|slot| CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_START as u32,
+        slot,
+        item: 3_100 + slot as u32,
+        item_template: 6948,
+        count: 1,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    }));
+    let equipped_bags = [EquippedBagInfo {
+        slot: INVENTORY_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    }];
+    let bag_model = InventoryBagModel::inventory_only(&equipped_bags);
+
+    let plan = plan_store_vendor_item_in_slot(
+        &inventory,
+        &bread,
+        1,
+        &bag_model,
+        INVENTORY_SLOT_BAG_START,
+        5,
+    )
+    .unwrap();
+
+    assert_eq!(
+        plan,
+        vec![StoreSlot {
+            bag: INVENTORY_SLOT_BAG_START,
+            slot: 5,
+            count: 1,
+            existing_item: None,
+        }]
+    );
+}
+
+#[test]
+fn vendor_sell_bag_in_secondary_bag_slot_matching_bag_id_is_not_treated_as_non_empty() {
+    let mut bag_template = test_item_template(RUST_VENDOR_BAG_ITEM, 0, 0, 0.0, 0.0, 0);
+    bag_template.container_slots = 6;
+
+    let inventory = [
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot: INVENTORY_SLOT_BAG_START,
+            item: 77,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_START as u32,
+            slot: INVENTORY_SLOT_BAG_START,
+            item: 88,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_START as u32,
+            slot: 0,
+            item: 99,
+            item_template: 6948,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+    ];
+
+    assert!(sell_item_is_non_empty_container(
+        &inventory,
+        &inventory[0],
+        &bag_template
+    ));
+    assert!(!sell_item_is_non_empty_container(
+        &inventory,
+        &inventory[1],
+        &bag_template
+    ));
 }
 
 #[test]
@@ -652,4 +830,23 @@ fn parses_buy_item_packet() {
     assert_eq!(buy.vendor_guid, vendor_guid);
     assert_eq!(buy.item, RUST_VENDOR_BAG_ITEM);
     assert_eq!(buy.count, 1);
+}
+
+#[test]
+fn parses_buy_item_in_slot_packet() {
+    let vendor_guid = ObjectGuid::new(HighGuid::Unit, 42, 96_001);
+    let bag_guid = ObjectGuid::new(HighGuid::Item, 0, 77);
+    let mut body = Vec::new();
+    body.extend_from_slice(&vendor_guid.raw().to_le_bytes());
+    body.extend_from_slice(&RUST_VENDOR_BAG_ITEM.to_le_bytes());
+    body.extend_from_slice(&bag_guid.raw().to_le_bytes());
+    body.push(5);
+    body.push(2);
+
+    let request = wow_proto::BuyItemInSlotRequest::read(&mut body.as_slice()).unwrap();
+    assert_eq!(request.vendor_raw_guid, vendor_guid.raw());
+    assert_eq!(request.item, RUST_VENDOR_BAG_ITEM);
+    assert_eq!(request.bag_raw_guid, bag_guid.raw());
+    assert_eq!(request.bag_slot, 5);
+    assert_eq!(request.count, 2);
 }

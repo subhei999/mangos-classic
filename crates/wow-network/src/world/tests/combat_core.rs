@@ -543,6 +543,52 @@ fn player_main_hand_damage_uses_equipped_weapon_and_attack_power() {
 }
 
 #[test]
+fn player_main_hand_unarmed_damage_uses_cmangos_base_fist_range_and_attack_power() {
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(1, 1, &world_stats, &[]);
+    let expected_ap = class_melee_attack_power(1, 1, 23, 20);
+    let expected_bonus = expected_ap as f32 / 14.0 * 2.0;
+
+    assert_eq!(stats.main_attack_time_ms, BASE_ATTACK_TIME_MS);
+    assert!((stats.main_min_damage - (BASE_UNARMED_MIN_DAMAGE + expected_bonus)).abs() < 0.001);
+    assert!((stats.main_max_damage - (BASE_UNARMED_MAX_DAMAGE + expected_bonus)).abs() < 0.001);
+    assert_eq!(
+        calculate_player_main_hand_melee_damage(&stats, 1, 0, 1),
+        stats.main_min_damage.round() as u32
+    );
+    assert_eq!(
+        calculate_player_main_hand_melee_damage(&stats, 1, 0, 10_000),
+        stats.main_max_damage.round() as u32
+    );
+}
+
+#[test]
+fn attack_power_delta_increases_unarmed_damage_fields() {
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(1, 1, &world_stats, &[]);
+    let buffed = apply_attack_power_delta(stats, 26, 0);
+    let expected_delta = 26.0 / 14.0 * 2.0;
+
+    assert_eq!(buffed.melee_attack_power_mod_positive, 26);
+    assert!((buffed.main_min_damage - stats.main_min_damage - expected_delta).abs() < 0.001);
+    assert!((buffed.main_max_damage - stats.main_max_damage - expected_delta).abs() < 0.001);
+    assert!(
+        calculate_player_main_hand_melee_damage(&buffed, 1, 0, 1)
+            > calculate_player_main_hand_melee_damage(&stats, 1, 0, 1)
+    );
+}
+
+#[test]
 fn player_swing_timer_uses_equipped_main_hand_delay() {
     let mut weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
     weapon.delay = 2800;

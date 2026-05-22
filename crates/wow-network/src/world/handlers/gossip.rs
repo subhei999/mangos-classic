@@ -5,6 +5,7 @@ use wow_proto::world::WorldOpcode;
 pub(in crate::world) struct GossipSelectDeps<'a> {
     pub(in crate::world) character_db_pool: &'a MySqlPool,
     pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) vendor_stock: &'a VendorStockState,
     pub(in crate::world) object_mgr: &'a ObjectMgr,
     pub(in crate::world) maps: &'a Arc<MapRuntimeManager>,
     pub(in crate::world) sessions: &'a Arc<SessionRegistry>,
@@ -184,7 +185,10 @@ async fn dispatch_db_gossip_selection(
         }
         GOSSIP_OPTION_VENDOR | GOSSIP_OPTION_ARMORER => {
             let vendor_items = wow_db::get_vendor_items(deps.world_db_pool, guid.entry()).await?;
-            let list_items: Vec<VendorListItem> = vendor_items.iter().map(Into::into).collect();
+            let list_items = deps
+                .vendor_stock
+                .list_items(guid, &vendor_items, current_unix_time_secs())
+                .await;
             let response = build_vendor_inventory_body(guid, &list_items);
             send_packet(
                 stream,

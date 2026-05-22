@@ -245,6 +245,7 @@ pub struct NpcTextQuery {
 pub struct VendorItemQuery {
     pub item: u32,
     pub max_count: u32,
+    pub incr_time: u32,
     pub slot: u8,
     pub display_id: u32,
     pub buy_price: u32,
@@ -1876,19 +1877,19 @@ pub async fn get_vendor_items(
 ) -> Result<Vec<VendorItemQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("vendor_items_load");
     let rows = sqlx::query_as::<_, VendorItemRow>(
-        "SELECT vendor_items.item, vendor_items.max_count, vendor_items.slot, \
+        "SELECT vendor_items.item, vendor_items.max_count, vendor_items.incr_time, vendor_items.slot, \
                 item_template.displayid AS display_id, item_template.BuyPrice AS buy_price, \
                 item_template.MaxDurability AS max_durability, \
                 item_template.BuyCount AS buy_count, \
                 item_template.ContainerSlots AS container_slots \
          FROM ( \
-             SELECT npc_vendor.item, npc_vendor.maxcount AS max_count, npc_vendor.slot \
+             SELECT npc_vendor.item, npc_vendor.maxcount AS max_count, npc_vendor.incrtime AS incr_time, npc_vendor.slot \
              FROM npc_vendor \
              WHERE npc_vendor.entry = ? \
                AND npc_vendor.condition_id = 0 \
              UNION ALL \
              SELECT npc_vendor_template.item, npc_vendor_template.maxcount AS max_count, \
-                    npc_vendor_template.slot \
+                    npc_vendor_template.incrtime AS incr_time, npc_vendor_template.slot \
              FROM creature_template \
              JOIN npc_vendor_template \
                ON npc_vendor_template.entry = creature_template.VendorTemplateId \
@@ -3280,6 +3281,7 @@ mod world_data_tests {
 struct VendorItemRow {
     item: u32,
     max_count: u8,
+    incr_time: u32,
     slot: u8,
     display_id: u32,
     buy_price: u32,
@@ -3597,6 +3599,7 @@ impl VendorItemRow {
         VendorItemQuery {
             item: self.item,
             max_count: self.max_count as u32,
+            incr_time: self.incr_time,
             slot: self.slot,
             display_id: self.display_id,
             buy_price: self.buy_price,

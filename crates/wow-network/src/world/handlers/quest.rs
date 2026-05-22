@@ -397,31 +397,21 @@ pub(in crate::world) async fn handle_questgiver_accept_quest(
     )
     .await?;
     if !source_item.is_empty() {
-        let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
         let mut update_blocks = Vec::new();
-        let mut created_slots = Vec::new();
         for grant in &source_item {
             if grant.created {
-                update_blocks.push(build_item_create_update_block(
-                    owner_guid,
-                    owner_guid,
+                update_blocks.extend(build_stored_item_create_update_blocks(
+                    character_guid,
+                    &session.inventory.items,
                     &grant.item,
                     grant.container_slots,
                 )?);
-                created_slots.push(grant.item.slot);
             } else {
                 update_blocks.push(build_item_stack_count_update_block(
                     grant.item.item,
                     grant.item.count,
                 )?);
             }
-        }
-        if !created_slots.is_empty() {
-            update_blocks.push(build_inventory_slots_update_block(
-                character_guid,
-                &session.inventory.items,
-                &created_slots,
-            )?);
         }
         let create_body = build_update_object_body(&update_blocks);
         send_packet(
@@ -743,11 +733,12 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
     }
 
     let required_item_slots = quest_required_item_inventory_slots(&quest, &session.inventory.items);
-    let equipped_bags = load_equipped_bag_infos(world_db_pool, &session.inventory.items).await?;
+    let bag_model =
+        InventoryBagModel::load_inventory(world_db_pool, &session.inventory.items).await?;
     let Some(reward_storage_plans) = plan_quest_reward_storage(
         &session.inventory.items,
         &reward_grants,
-        &equipped_bags,
+        &bag_model,
         &required_item_slots,
     ) else {
         send_inventory_change_failure(
@@ -1761,7 +1752,7 @@ pub(in crate::world) async fn load_quest_reward_grants(
 pub(in crate::world) fn plan_quest_reward_storage(
     inventory: &[CharacterInventoryItem],
     rewards: &[QuestRewardGrant],
-    equipped_bags: &[EquippedBagInfo],
+    bag_model: &InventoryBagModel,
     required_consumes: &[QuestRequiredItemConsume],
 ) -> Option<Vec<Vec<StoreSlot>>> {
     let mut planned_inventory = inventory.to_vec();
@@ -1769,11 +1760,11 @@ pub(in crate::world) fn plan_quest_reward_storage(
 
     let mut reward_plans = Vec::with_capacity(rewards.len());
     for reward in rewards {
-        let store_plan = plan_store_item(
+        let store_plan = bag_model.plan_store_item(
+            InventoryStorageScope::Inventory,
             &planned_inventory,
             &reward.template,
             reward.count,
-            equipped_bags,
             None,
             None,
         )?;
@@ -1881,7 +1872,6 @@ pub(in crate::world) async fn grant_quest_reward_items(
         }
         session.inventory.items =
             wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
-        let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
         for slot in store_plan {
             if let Some(item_guid) = slot.existing_item {
                 if let Some(item) = session
@@ -1900,19 +1890,11 @@ pub(in crate::world) async fn grant_quest_reward_items(
                 .iter()
                 .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
             {
-                let contained_guid =
-                    item_contained_guid(owner_guid, &session.inventory.items, new_item);
-                update_blocks.push(build_item_create_update_block(
-                    owner_guid,
-                    contained_guid,
-                    new_item,
-                    reward.container_slots,
-                )?);
-                update_blocks.extend(build_inventory_position_update_blocks(
+                update_blocks.extend(build_stored_item_create_update_blocks(
                     character_guid,
                     &session.inventory.items,
-                    slot.bag,
-                    slot.slot,
+                    new_item,
+                    reward.container_slots,
                 )?);
             }
         }
@@ -2028,17 +2010,15 @@ pub(in crate::world) async fn consume_quest_required_items(
     session.inventory.items =
         wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
     let mut update_blocks = stack_update_blocks;
-    for (bag, slot) in removed_positions {
-        let Ok(bag) = u8::try_from(bag) else {
-            continue;
-        };
-        update_blocks.extend(build_inventory_position_update_blocks(
-            character_guid,
-            &session.inventory.items,
-            bag,
-            slot,
-        )?);
-    }
+    update_blocks.extend(build_inventory_positions_update_blocks(
+        character_guid,
+        &session.inventory.items,
+        removed_positions.into_iter().filter_map(|(bag, slot)| {
+            u8::try_from(bag)
+                .ok()
+                .map(|bag| InventoryPosition::new(bag, slot))
+        }),
+    )?);
     if !update_blocks.is_empty() {
         let body = build_update_object_body(&update_blocks);
         send_packet(

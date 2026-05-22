@@ -1,14 +1,14 @@
 use wow_proto::world::WorldOpcode;
 use wow_proto::{
     AttackStopRequest, AttackSwingRequest, AutostoreLootItemRequest, BankItemRequest,
-    BankerActivateRequest, BuyBankSlotRequest, BuyItemRequest, BuybackItemRequest,
-    CancelAutoRepeatSpellRequest, CancelCastRequest, CastSpellRequest, CharCreateRequest,
-    CharDeleteRequest, CharEnumRequest, CorpseQueryRequest, CreatureQueryRequest,
-    DestroyItemRequest, GameObjectQueryRequest, GameObjectUseRequest, GetMailListRequest,
-    GmTicketGetTicketRequest, GossipHelloRequest, GossipSelectOptionRequest, GroupAcceptRequest,
-    GroupAssistantLeaderRequest, GroupCancelRequest, GroupChangeSubGroupRequest,
-    GroupDeclineRequest, GroupDisbandRequest, GroupInviteRequest, GroupRaidConvertRequest,
-    GroupSetLeaderRequest, GroupUninviteGuidRequest, GroupUninviteRequest,
+    BankerActivateRequest, BuyBankSlotRequest, BuyItemInSlotRequest, BuyItemRequest,
+    BuybackItemRequest, CancelAutoRepeatSpellRequest, CancelCastRequest, CastSpellRequest,
+    CharCreateRequest, CharDeleteRequest, CharEnumRequest, CorpseQueryRequest,
+    CreatureQueryRequest, DestroyItemRequest, GameObjectQueryRequest, GameObjectUseRequest,
+    GetMailListRequest, GmTicketGetTicketRequest, GossipHelloRequest, GossipSelectOptionRequest,
+    GroupAcceptRequest, GroupAssistantLeaderRequest, GroupCancelRequest,
+    GroupChangeSubGroupRequest, GroupDeclineRequest, GroupDisbandRequest, GroupInviteRequest,
+    GroupRaidConvertRequest, GroupSetLeaderRequest, GroupUninviteGuidRequest, GroupUninviteRequest,
     InventoryMoveClientRequest, ItemNameQueryRequest, ItemQuerySingleRequest, ItemTextQueryRequest,
     JoinChannelRequest, ListInventoryRequest, LogoutCancelRequest, LogoutRequest,
     LootMasterGiveRequest, LootMethodRequest, LootMoneyRequest, LootReleaseRequest, LootRequest,
@@ -91,6 +91,7 @@ pub(super) enum ParsedWorldClientPacket {
     SellItem(SellItemRequest),
     BuybackItem(BuybackItemRequest),
     BuyItem(BuyItemRequest),
+    BuyItemInSlot(BuyItemInSlotRequest),
     TrainerList(TrainerListRequest),
     TrainerBuySpell(TrainerBuySpellRequest),
     BankerActivate(BankerActivateRequest),
@@ -224,6 +225,7 @@ impl ParsedWorldClientPacket {
             Self::SellItem(_) => WorldOpcode::CmsgSellItem.into(),
             Self::BuybackItem(_) => WorldOpcode::CmsgBuybackItem.into(),
             Self::BuyItem(_) => WorldOpcode::CmsgBuyItem.into(),
+            Self::BuyItemInSlot(_) => WorldOpcode::CmsgBuyItemInSlot.into(),
             Self::TrainerList(_) => WorldOpcode::CmsgTrainerList.into(),
             Self::TrainerBuySpell(_) => WorldOpcode::CmsgTrainerBuySpell.into(),
             Self::BankerActivate(_) => WorldOpcode::CmsgBankerActivate.into(),
@@ -506,6 +508,12 @@ impl ParsedWorldClientPacket {
         "CMSG_BUYBACK_ITEM"
     );
     packet_accessor!(buy_item, BuyItem, BuyItemRequest, "CMSG_BUY_ITEM");
+    packet_accessor!(
+        buy_item_in_slot,
+        BuyItemInSlot,
+        BuyItemInSlotRequest,
+        "CMSG_BUY_ITEM_IN_SLOT"
+    );
     packet_accessor!(
         trainer_list,
         TrainerList,
@@ -1050,6 +1058,12 @@ pub(super) fn parse_world_client_packet(
             Ok(ParsedWorldClientPacket::BuyItem(BuyItemRequest::read(
                 &mut body,
             )?))
+        }
+        Ok(WorldOpcode::CmsgBuyItemInSlot) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::BuyItemInSlot(
+                BuyItemInSlotRequest::read(&mut body)?,
+            ))
         }
         Ok(WorldOpcode::CmsgTrainerList) => {
             let mut body = body;

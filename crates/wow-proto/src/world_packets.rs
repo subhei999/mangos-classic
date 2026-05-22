@@ -185,6 +185,7 @@ pub enum WorldOpcode {
     CmsgSellItem = 0x01A0,
     SmsgSellItem = 0x01A1,
     CmsgBuyItem = 0x01A2,
+    CmsgBuyItemInSlot = 0x01A3,
     SmsgBuyItem = 0x01A4,
     SmsgBuyFailed = 0x01A5,
     CmsgTrainerList = 0x01B0,
@@ -459,6 +460,7 @@ impl TryFrom<u32> for WorldOpcode {
             0x01A0 => Ok(Self::CmsgSellItem),
             0x01A1 => Ok(Self::SmsgSellItem),
             0x01A2 => Ok(Self::CmsgBuyItem),
+            0x01A3 => Ok(Self::CmsgBuyItemInSlot),
             0x01A4 => Ok(Self::SmsgBuyItem),
             0x01A5 => Ok(Self::SmsgBuyFailed),
             0x01B0 => Ok(Self::CmsgTrainerList),
@@ -1663,6 +1665,36 @@ impl BuyItemRequest {
         buf.put_u32_le(self.item);
         buf.put_u8(self.count);
         buf.put_u8(0);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuyItemInSlotRequest {
+    pub vendor_raw_guid: u64,
+    pub item: u32,
+    pub bag_raw_guid: u64,
+    pub bag_slot: u8,
+    pub count: u8,
+}
+
+impl BuyItemInSlotRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_remaining(buf, 22, "CMSG_BUY_ITEM_IN_SLOT")?;
+        Ok(Self {
+            vendor_raw_guid: buf.get_u64_le(),
+            item: buf.get_u32_le(),
+            bag_raw_guid: buf.get_u64_le(),
+            bag_slot: buf.get_u8(),
+            count: buf.get_u8(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.vendor_raw_guid);
+        buf.put_u32_le(self.item);
+        buf.put_u64_le(self.bag_raw_guid);
+        buf.put_u8(self.bag_slot);
+        buf.put_u8(self.count);
     }
 }
 
@@ -4203,6 +4235,7 @@ impl ServerWorldPacket for SmsgListInventoryResponse {
 pub struct SmsgBuyItemResponse {
     pub vendor_guid: ObjectGuid,
     pub vendor_slot: u32,
+    pub remaining_count: u32,
     pub count: u8,
 }
 
@@ -4212,7 +4245,7 @@ impl ServerWorldPacket for SmsgBuyItemResponse {
     fn write_body(&self, buf: &mut impl BufMut) {
         buf.put_u64_le(self.vendor_guid.raw());
         buf.put_u32_le(self.vendor_slot);
-        buf.put_u32_le(u32::MAX);
+        buf.put_u32_le(self.remaining_count);
         buf.put_u32_le(self.count as u32);
     }
 }

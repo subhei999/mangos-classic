@@ -55,8 +55,8 @@ pub(in crate::world) async fn player_create_item_cast_inventory_failure(
     if effects.is_empty() {
         return Ok(None);
     }
-    let equipped_bags =
-        load_equipped_bag_infos(deps.world_db_pool, &session.inventory.items).await?;
+    let bag_model =
+        InventoryBagModel::load_inventory(deps.world_db_pool, &session.inventory.items).await?;
     for effect in effects {
         let Some(template) =
             wow_db::get_item_template_query(deps.world_db_pool, effect.item_template).await?
@@ -69,15 +69,16 @@ pub(in crate::world) async fn player_create_item_cast_inventory_failure(
             return Ok(Some(EQUIP_ERR_ITEM_NOT_FOUND));
         };
         let count = create_item_count_for_template(effect, &template);
-        if plan_store_item(
-            &session.inventory.items,
-            &template,
-            count,
-            &equipped_bags,
-            None,
-            None,
-        )
-        .is_none()
+        if bag_model
+            .plan_store_item(
+                InventoryStorageScope::Inventory,
+                &session.inventory.items,
+                &template,
+                count,
+                None,
+                None,
+            )
+            .is_none()
         {
             return Ok(Some(EQUIP_ERR_INVENTORY_FULL));
         }
@@ -98,9 +99,8 @@ pub(in crate::world) async fn apply_player_create_item_effects(
     if effects.is_empty() {
         return Ok(());
     }
-    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
-    let equipped_bags =
-        load_equipped_bag_infos(deps.world_db_pool, &session.inventory.items).await?;
+    let bag_model =
+        InventoryBagModel::load_inventory(deps.world_db_pool, &session.inventory.items).await?;
     let mut update_blocks = Vec::new();
     let mut push_results = Vec::new();
 
@@ -124,11 +124,11 @@ pub(in crate::world) async fn apply_player_create_item_effects(
             return Ok(());
         };
         let count = create_item_count_for_template(effect, &template);
-        let Some(store_plan) = plan_store_item(
+        let Some(store_plan) = bag_model.plan_store_item(
+            InventoryStorageScope::Inventory,
             &session.inventory.items,
             &template,
             count,
-            &equipped_bags,
             None,
             None,
         ) else {
@@ -210,19 +210,11 @@ pub(in crate::world) async fn apply_player_create_item_effects(
                 .iter()
                 .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
             {
-                let contained_guid =
-                    item_contained_guid(owner_guid, &session.inventory.items, new_item);
-                update_blocks.push(build_item_create_update_block(
-                    owner_guid,
-                    contained_guid,
-                    new_item,
-                    (template.container_slots > 0).then_some(template.container_slots),
-                )?);
-                update_blocks.extend(build_inventory_position_update_blocks(
+                update_blocks.extend(build_stored_item_create_update_blocks(
                     character_guid,
                     &session.inventory.items,
-                    slot.bag,
-                    slot.slot,
+                    new_item,
+                    (template.container_slots > 0).then_some(template.container_slots),
                 )?);
                 push_results.push(build_item_push_result_body(
                     character_guid,

@@ -41,6 +41,7 @@ pub(in crate::world) async fn dispatch_npc_packet(
                 GossipSelectDeps {
                     character_db_pool: ctx.character_db_pool,
                     world_db_pool: ctx.world_db_pool,
+                    vendor_stock: &ctx.runtime_state.vendor_stock,
                     object_mgr: ctx.runtime_state.object_mgr.as_ref(),
                     maps: &ctx.runtime_state.maps,
                     sessions: &ctx.runtime_state.sessions,
@@ -81,6 +82,7 @@ pub(in crate::world) async fn dispatch_npc_packet(
             handle_list_inventory(
                 &mut *ctx.stream,
                 ctx.world_db_pool,
+                &ctx.runtime_state.vendor_stock,
                 packet.list_inventory()?,
                 &mut *ctx.header_crypto,
             )
@@ -129,7 +131,20 @@ pub(in crate::world) async fn dispatch_npc_packet(
                 &mut *ctx.stream,
                 ctx.character_db_pool,
                 ctx.world_db_pool,
+                &ctx.runtime_state.vendor_stock,
                 packet.buy_item()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::BuyItemInSlot(_) => {
+            handle_buy_item_in_slot(
+                &mut *ctx.stream,
+                ctx.character_db_pool,
+                ctx.world_db_pool,
+                &ctx.runtime_state.vendor_stock,
+                packet.buy_item_in_slot()?,
                 &mut *ctx.session,
                 &mut *ctx.header_crypto,
             )

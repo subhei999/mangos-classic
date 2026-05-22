@@ -90,6 +90,7 @@ pub(in crate::world) async fn dispatch_world_packet(
         | packets::ParsedWorldClientPacket::SellItem(_)
         | packets::ParsedWorldClientPacket::BuybackItem(_)
         | packets::ParsedWorldClientPacket::BuyItem(_)
+        | packets::ParsedWorldClientPacket::BuyItemInSlot(_)
         | packets::ParsedWorldClientPacket::TrainerList(_)
         | packets::ParsedWorldClientPacket::TrainerBuySpell(_) => {
             handlers::npc::dispatch_npc_packet(ctx, packet).await

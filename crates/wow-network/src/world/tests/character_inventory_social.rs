@@ -1135,6 +1135,8 @@ fn inventory_swap_validation_checks_displaced_item_against_source_equipment_slot
         level: 1,
         race: 1,
         class: 1,
+        equipped_bags: &[],
+        ignore_bag_slot: None,
         skills: &skills,
         active_spells: &active_spells,
         reputations: &[],
@@ -1155,6 +1157,52 @@ fn inventory_swap_validation_checks_displaced_item_against_source_equipment_slot
             EQUIPMENT_SLOT_MAINHAND,
             &sword,
             context,
+        ),
+        None
+    );
+}
+
+#[test]
+fn inventory_bag_slot_validation_applies_use_requirements_and_quiver_uniqueness() {
+    let mut high_level_bag = test_item_template(1007, ITEM_CLASS_CONTAINER, INVTYPE_BAG, 0.0, 0.0, 0);
+    high_level_bag.container_slots = 6;
+    high_level_bag.required_level = 10;
+    let mut quiver = test_item_template(1008, ITEM_CLASS_QUIVER, INVTYPE_BAG, 0.0, 0.0, 0);
+    quiver.container_slots = 10;
+    quiver.subclass = ITEM_SUBCLASS_QUIVER;
+    let equipped_bags = [EquippedBagInfo {
+        slot: INVENTORY_SLOT_BAG_START,
+        container_slots: 8,
+        class: ITEM_CLASS_QUIVER,
+        subclass: ITEM_SUBCLASS_AMMO_POUCH,
+    }];
+    let active_spells = HashSet::new();
+    let context = CharacterEquipValidationContext {
+        level: 5,
+        race: 1,
+        class: 1,
+        equipped_bags: &equipped_bags,
+        ignore_bag_slot: None,
+        skills: &[],
+        active_spells: &active_spells,
+        reputations: &[],
+        in_combat: false,
+    };
+
+    assert_eq!(
+        item_can_enter_bag0_equipment_or_bag_slot(INVENTORY_SLOT_BAG_START + 1, &high_level_bag, context),
+        Some((EQUIP_ERR_CANT_EQUIP_LEVEL_I, Some(10)))
+    );
+    assert_eq!(
+        item_can_enter_bag0_equipment_or_bag_slot(INVENTORY_SLOT_BAG_START + 1, &quiver, context),
+        Some((EQUIP_ERR_CAN_EQUIP_ONLY1_AMMOPOUCH, None))
+    );
+    assert_eq!(
+        bag_slot_unique_equip_error(
+            INVENTORY_SLOT_BAG_START + 1,
+            &quiver,
+            &equipped_bags,
+            Some(INVENTORY_SLOT_BAG_START),
         ),
         None
     );
@@ -1419,6 +1467,70 @@ fn inventory_change_level_failure_includes_required_level_before_item_guids() {
     assert_eq!(
         u64::from_le_bytes(body[5..13].try_into().unwrap()),
         item.raw()
+    );
+}
+
+#[test]
+fn inventory_special_bag_storage_validation_rejects_nonmatching_items() {
+    let mut arrows = test_item_template(1009, ITEM_CLASS_PROJECTILE, 0, 0.0, 0.0, 0);
+    arrows.bag_family = BAG_FAMILY_ARROWS;
+    let bread = test_item_template(1010, 0, 0, 0.0, 0.0, 0);
+    let equipped_bags = [EquippedBagInfo {
+        slot: INVENTORY_SLOT_BAG_START,
+        container_slots: 12,
+        class: ITEM_CLASS_QUIVER,
+        subclass: ITEM_SUBCLASS_QUIVER,
+    }];
+
+    let bag_model = InventoryBagModel::inventory_only(&equipped_bags);
+    assert!(bag_model.bag_accepts_item(
+        InventoryStorageScope::Inventory,
+        INVENTORY_SLOT_BAG_START,
+        &arrows,
+    ));
+    assert!(!bag_model.bag_accepts_item(
+        InventoryStorageScope::Inventory,
+        INVENTORY_SLOT_BAG_START,
+        &bread,
+    ));
+}
+
+#[test]
+fn inventory_bag_model_owns_scope_ranges_and_bank_purchase_state() {
+    let model = InventoryBagModel::inventory_only(&[]);
+    assert!(model.storage_position_exists(
+        InventoryStorageScope::Inventory,
+        InventoryPosition::new(INVENTORY_SLOT_BAG_0, INVENTORY_SLOT_ITEM_START)
+    ));
+    assert!(!model.storage_position_exists(
+        InventoryStorageScope::Inventory,
+        InventoryPosition::new(INVENTORY_SLOT_BAG_0, BANK_SLOT_ITEM_START)
+    ));
+
+    let bank_bag = EquippedBagInfo {
+        slot: BANK_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    };
+    let unpurchased_model = InventoryBagModel::bank_only(std::slice::from_ref(&bank_bag), 0);
+    assert!(!unpurchased_model.storage_position_exists(
+        InventoryStorageScope::Bank,
+        InventoryPosition::new(BANK_SLOT_BAG_START, 0)
+    ));
+    assert_eq!(
+        unpurchased_model.slot_range(InventoryStorageScope::Bank, BANK_SLOT_BAG_START),
+        None
+    );
+
+    let purchased_model = InventoryBagModel::bank_only(std::slice::from_ref(&bank_bag), 1);
+    assert!(purchased_model.storage_position_exists(
+        InventoryStorageScope::Bank,
+        InventoryPosition::new(BANK_SLOT_BAG_START, 5)
+    ));
+    assert_eq!(
+        purchased_model.slot_range(InventoryStorageScope::Bank, BANK_SLOT_BAG_START),
+        Some((0, 6))
     );
 }
 
@@ -1697,7 +1809,17 @@ fn inventory_store_plan_merges_stack_before_empty_slots() {
         durability: 0,
     }];
 
-    let plan = plan_store_item(&inventory, &bread, 5, &[], None, None).unwrap();
+    let bag_model = InventoryBagModel::inventory_only(&[]);
+    let plan = bag_model
+        .plan_store_item(
+            InventoryStorageScope::Inventory,
+            &inventory,
+            &bread,
+            5,
+            None,
+            None,
+        )
+        .unwrap();
 
     assert_eq!(
         plan,
@@ -1728,7 +1850,17 @@ fn inventory_store_plan_returns_none_when_backpack_is_full_and_no_stack_can_merg
         })
         .collect::<Vec<_>>();
 
-    assert!(plan_store_item(&inventory, &bread, 1, &[], None, None).is_none());
+    let bag_model = InventoryBagModel::inventory_only(&[]);
+    assert!(bag_model
+        .plan_store_item(
+            InventoryStorageScope::Inventory,
+            &inventory,
+            &bread,
+            1,
+            None,
+            None,
+        )
+        .is_none());
 }
 
 #[test]
@@ -1766,7 +1898,17 @@ fn inventory_store_plan_uses_equipped_bag_capacity_after_backpack() {
         subclass: ITEM_SUBCLASS_CONTAINER,
     }];
 
-    let plan = plan_store_item(&inventory, &bread, 5, &bags, None, None).unwrap();
+    let bag_model = InventoryBagModel::inventory_only(&bags);
+    let plan = bag_model
+        .plan_store_item(
+            InventoryStorageScope::Inventory,
+            &inventory,
+            &bread,
+            5,
+            None,
+            None,
+        )
+        .unwrap();
 
     assert_eq!(
         plan,
@@ -1774,6 +1916,74 @@ fn inventory_store_plan_uses_equipped_bag_capacity_after_backpack() {
             bag: INVENTORY_SLOT_BAG_START,
             slot: 0,
             count: 5,
+            existing_item: None,
+        }]
+    );
+}
+
+#[test]
+fn inventory_store_plan_uses_last_secondary_bag_slot() {
+    let bread = test_item_template(4541, 0, 0, 0.0, 0.0, 0);
+    let mut inventory: Vec<_> = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .map(|slot| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 1_500 + slot as u32,
+            item_template: 6948,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        })
+        .collect();
+    inventory.push(CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_BAG_START,
+        item: 77,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    });
+    inventory.extend((0..5).map(|slot| CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_START as u32,
+        slot,
+        item: 2_000 + slot as u32,
+        item_template: 6948,
+        count: 1,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    }));
+    let bags = [EquippedBagInfo {
+        slot: INVENTORY_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    }];
+
+    let bag_model = InventoryBagModel::inventory_only(&bags);
+    let plan = bag_model
+        .plan_store_item(
+            InventoryStorageScope::Inventory,
+            &inventory,
+            &bread,
+            1,
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        plan,
+        vec![StoreSlot {
+            bag: INVENTORY_SLOT_BAG_START,
+            slot: 5,
+            count: 1,
             existing_item: None,
         }]
     );
@@ -1818,7 +2028,17 @@ fn bank_store_plan_merges_bank_main_before_empty_slots() {
         durability: 0,
     }];
 
-    let plan = plan_bank_item(&inventory, &bread, 5, &[], 0, None, None).unwrap();
+    let bag_model = InventoryBagModel::bank_only(&[], 0);
+    let plan = bag_model
+        .plan_store_item(
+            InventoryStorageScope::Bank,
+            &inventory,
+            &bread,
+            5,
+            None,
+            None,
+        )
+        .unwrap();
 
     assert_eq!(
         plan,
@@ -1866,9 +2086,29 @@ fn bank_store_plan_uses_purchased_bank_bag_capacity() {
         subclass: ITEM_SUBCLASS_CONTAINER,
     }];
 
-    assert!(plan_bank_item(&inventory, &bread, 5, &bank_bags, 0, None, None).is_none());
+    let unpurchased_model = InventoryBagModel::bank_only(&bank_bags, 0);
+    assert!(unpurchased_model
+        .plan_store_item(
+            InventoryStorageScope::Bank,
+            &inventory,
+            &bread,
+            5,
+            None,
+            None,
+        )
+        .is_none());
 
-    let plan = plan_bank_item(&inventory, &bread, 5, &bank_bags, 1, None, None).unwrap();
+    let purchased_model = InventoryBagModel::bank_only(&bank_bags, 1);
+    let plan = purchased_model
+        .plan_store_item(
+            InventoryStorageScope::Bank,
+            &inventory,
+            &bread,
+            5,
+            None,
+            None,
+        )
+        .unwrap();
 
     assert_eq!(
         plan,
@@ -1939,7 +2179,8 @@ fn quest_reward_storage_plans_equipped_bag_after_required_item_consumed_from_bag
         removes_stack: true,
     }];
 
-    let plans = plan_quest_reward_storage(&inventory, &[reward], &bags, &required).unwrap();
+    let bag_model = InventoryBagModel::inventory_only(&bags);
+    let plans = plan_quest_reward_storage(&inventory, &[reward], &bag_model, &required).unwrap();
 
     assert_eq!(
         plans,
@@ -2013,7 +2254,8 @@ fn quest_reward_storage_uses_freed_backpack_and_equipped_bag_for_multiple_reward
         removes_stack: true,
     }];
 
-    let plans = plan_quest_reward_storage(&inventory, &rewards, &bags, &required).unwrap();
+    let bag_model = InventoryBagModel::inventory_only(&bags);
+    let plans = plan_quest_reward_storage(&inventory, &rewards, &bag_model, &required).unwrap();
 
     assert_eq!(
         plans,
@@ -2072,7 +2314,8 @@ fn quest_reward_storage_fails_without_consuming_partial_required_stack_space() {
         removes_stack: false,
     }];
 
-    assert!(plan_quest_reward_storage(&inventory, &[reward], &[], &required).is_none());
+    let bag_model = InventoryBagModel::inventory_only(&[]);
+    assert!(plan_quest_reward_storage(&inventory, &[reward], &bag_model, &required).is_none());
 }
 
 #[test]
@@ -2240,15 +2483,14 @@ fn swap_to_bank_bag_icon_resolves_non_bag_item_to_bag_storage() {
         dst_bag: INVENTORY_SLOT_BAG_0,
         dst_slot: BANK_SLOT_BAG_START,
     };
+    let bag_model = InventoryBagModel::bank_only(&bank_bags, 1);
 
     assert_eq!(
         resolve_bag_icon_move_destination(
             &inventory,
             &inventory[2],
             &chest,
-            &[],
-            &bank_bags,
-            1,
+            &bag_model,
             &request
         ),
         Some(InventoryMoveRequest {
@@ -2436,6 +2678,93 @@ fn backpack_to_equipped_bag_move_updates_player_and_container_slots() {
 }
 
 #[test]
+fn equipped_bag_internal_swap_coalesces_container_slot_updates() {
+    let character_guid = 11;
+    let bag_guid = ObjectGuid::new(HighGuid::Item, 0, 77);
+    let src_guid = ObjectGuid::new(HighGuid::Item, 0, 99);
+    let dst_guid = ObjectGuid::new(HighGuid::Item, 0, 100);
+    let inventory = [
+        CharacterInventoryItem {
+            bag: 0,
+            slot: 19,
+            item: 77,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: 19,
+            slot: 2,
+            item: 100,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+        CharacterInventoryItem {
+            bag: 19,
+            slot: 3,
+            item: 99,
+            item_template: RUST_VENDOR_BAG_ITEM,
+            count: 1,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        },
+    ];
+    let request = InventoryMoveRequest {
+        src_bag: 19,
+        src_slot: 2,
+        dst_bag: 19,
+        dst_slot: 3,
+    };
+
+    let body = build_update_object_body(
+        &build_inventory_move_update_blocks(character_guid, &inventory, &request).unwrap(),
+    );
+    assert_eq!(&body[0..4], &3u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+
+    let mut block = &body[5..];
+    let (container_values, rest) = decode_values_update_block(block, bag_guid);
+    block = rest;
+    let source_slot_field = CONTAINER_FIELD_SLOT_1 + 2 * 2;
+    let destination_slot_field = CONTAINER_FIELD_SLOT_1 + 3 * 2;
+    assert_eq!(
+        container_values[source_slot_field],
+        Some(dst_guid.raw() as u32)
+    );
+    assert_eq!(
+        container_values[source_slot_field + 1],
+        Some((dst_guid.raw() >> 32) as u32)
+    );
+    assert_eq!(
+        container_values[destination_slot_field],
+        Some(src_guid.raw() as u32)
+    );
+    assert_eq!(
+        container_values[destination_slot_field + 1],
+        Some((src_guid.raw() >> 32) as u32)
+    );
+
+    let (dst_values, rest) = decode_values_update_block(block, dst_guid);
+    block = rest;
+    assert_eq!(dst_values[0x008], Some(bag_guid.raw() as u32));
+    assert_eq!(dst_values[0x009], Some((bag_guid.raw() >> 32) as u32));
+
+    let (src_values, rest) = decode_values_update_block(block, src_guid);
+    assert!(rest.is_empty());
+    assert_eq!(src_values[0x008], Some(bag_guid.raw() as u32));
+    assert_eq!(src_values[0x009], Some((bag_guid.raw() >> 32) as u32));
+}
+
+#[test]
 fn equipped_bag_to_backpack_move_updates_player_slot_and_clears_container_slot() {
     let character_guid = 11;
     let bag_guid = ObjectGuid::new(HighGuid::Item, 0, 77);
@@ -2525,6 +2854,46 @@ fn equipped_bag_destroy_update_clears_container_slot() {
     let container_slot_field = CONTAINER_FIELD_SLOT_1 + 3 * 2;
     assert_eq!(container_values[container_slot_field], Some(0));
     assert_eq!(container_values[container_slot_field + 1], Some(0));
+}
+
+#[test]
+fn equipped_bag_multi_destroy_update_coalesces_container_slots() {
+    let character_guid = 11;
+    let bag_guid = ObjectGuid::new(HighGuid::Item, 0, 77);
+    let inventory = [CharacterInventoryItem {
+        bag: 0,
+        slot: 19,
+        item: 77,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    }];
+
+    let body = build_update_object_body(
+        &build_inventory_positions_update_blocks(
+            character_guid,
+            &inventory,
+            [
+                InventoryPosition::new(19, 2),
+                InventoryPosition::new(19, 4),
+            ],
+        )
+        .unwrap(),
+    );
+
+    assert_eq!(&body[0..4], &1u32.to_le_bytes());
+    assert_eq!(body[4], 0);
+    let (container_values, rest) = decode_values_update_block(&body[5..], bag_guid);
+    assert!(rest.is_empty());
+    let first_slot_field = CONTAINER_FIELD_SLOT_1 + 2 * 2;
+    let second_slot_field = CONTAINER_FIELD_SLOT_1 + 4 * 2;
+    assert_eq!(container_values[first_slot_field], Some(0));
+    assert_eq!(container_values[first_slot_field + 1], Some(0));
+    assert_eq!(container_values[second_slot_field], Some(0));
+    assert_eq!(container_values[second_slot_field + 1], Some(0));
 }
 
 #[test]

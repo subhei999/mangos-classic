@@ -1437,12 +1437,12 @@ pub(in crate::world) async fn grant_loot_item_to_character(
     let Some(template) = wow_db::get_item_template_query(world_db_pool, loot.item).await? else {
         return Ok(false);
     };
-    let equipped_bags = load_equipped_bag_infos(world_db_pool, &inventory).await?;
-    let Some(store_plan) = plan_store_item(
+    let bag_model = InventoryBagModel::load_inventory(world_db_pool, &inventory).await?;
+    let Some(store_plan) = bag_model.plan_store_item(
+        InventoryStorageScope::Inventory,
         &inventory,
         &template,
         loot.count,
-        &equipped_bags,
         None,
         None,
     ) else {
@@ -1458,8 +1458,6 @@ pub(in crate::world) async fn grant_loot_item_to_character(
         }
         return Ok(false);
     };
-    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, target_guid);
-
     let mut update_blocks = Vec::new();
     let mut pushed_item = None;
 
@@ -1515,18 +1513,11 @@ pub(in crate::world) async fn grant_loot_item_to_character(
             .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
         {
             pushed_item = Some(item.clone());
-            let contained_guid = item_contained_guid(owner_guid, &new_inventory, item);
-            update_blocks.push(build_item_create_update_block(
-                owner_guid,
-                contained_guid,
-                item,
-                (template.container_slots > 0).then_some(template.container_slots),
-            )?);
-            update_blocks.extend(build_inventory_position_update_blocks(
+            update_blocks.extend(build_stored_item_create_update_blocks(
                 target_guid,
                 &new_inventory,
-                slot.bag,
-                slot.slot,
+                item,
+                (template.container_slots > 0).then_some(template.container_slots),
             )?);
         }
     }

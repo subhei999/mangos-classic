@@ -662,6 +662,14 @@ pub(in crate::world) fn build_container_slot_update_block(
     bag_slot: u8,
     container_slot: u8,
 ) -> anyhow::Result<Option<Vec<u8>>> {
+    build_container_slots_update_block(inventory, bag_slot, &[container_slot])
+}
+
+pub(in crate::world) fn build_container_slots_update_block(
+    inventory: &[CharacterInventoryItem],
+    bag_slot: u8,
+    container_slots: &[u8],
+) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(container_item) = inventory
         .iter()
         .find(|item| item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == bag_slot)
@@ -669,19 +677,21 @@ pub(in crate::world) fn build_container_slot_update_block(
         return Ok(None);
     };
     let container_guid = ObjectGuid::new(HighGuid::Item, 0, container_item.item);
-    let contained_guid = inventory
-        .iter()
-        .find(|item| item.bag == bag_slot as u32 && item.slot == container_slot)
-        .map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item).raw())
-        .unwrap_or(0);
 
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, container_guid)?;
     let mut values = vec![None; CONTAINER_END_FIELDS];
-    let field = CONTAINER_FIELD_SLOT_1 + container_slot as usize * 2;
-    set_update_value(&mut values, field, contained_guid as u32)?;
-    set_update_value(&mut values, field + 1, (contained_guid >> 32) as u32)?;
+    for container_slot in container_slots {
+        let contained_guid = inventory
+            .iter()
+            .find(|item| item.bag == bag_slot as u32 && item.slot == *container_slot)
+            .map(|item| ObjectGuid::new(HighGuid::Item, 0, item.item).raw())
+            .unwrap_or(0);
+        let field = CONTAINER_FIELD_SLOT_1 + *container_slot as usize * 2;
+        set_update_value(&mut values, field, contained_guid as u32)?;
+        set_update_value(&mut values, field + 1, (contained_guid >> 32) as u32)?;
+    }
     write_update_values(&mut block, &values)?;
     Ok(Some(block))
 }

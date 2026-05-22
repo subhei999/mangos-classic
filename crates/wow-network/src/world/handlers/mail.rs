@@ -536,13 +536,13 @@ pub(in crate::world) async fn handle_mail_take_item(
     else {
         return Ok(());
     };
-    let equipped_bags =
-        load_equipped_bag_infos(deps.world_db_pool, &session.inventory.items).await?;
-    let Some(store_plan) = plan_store_item(
+    let bag_model =
+        InventoryBagModel::load_inventory(deps.world_db_pool, &session.inventory.items).await?;
+    let Some(store_plan) = bag_model.plan_store_item(
+        InventoryStorageScope::Inventory,
         &session.inventory.items,
         &template,
         item.count,
-        &equipped_bags,
         None,
         None,
     ) else {
@@ -790,13 +790,13 @@ pub(in crate::world) async fn handle_mail_create_text_item(
     else {
         return Ok(());
     };
-    let equipped_bags =
-        load_equipped_bag_infos(deps.world_db_pool, &session.inventory.items).await?;
-    let Some(store_plan) = plan_store_item(
+    let bag_model =
+        InventoryBagModel::load_inventory(deps.world_db_pool, &session.inventory.items).await?;
+    let Some(store_plan) = bag_model.plan_store_item(
+        InventoryStorageScope::Inventory,
         &session.inventory.items,
         &template,
         1,
-        &equipped_bags,
         None,
         None,
     ) else {
@@ -995,23 +995,15 @@ pub(in crate::world) async fn refresh_inventory_after_mail_change(
     for item in &session.inventory.items {
         let old = old_inventory.iter().find(|old| old.item == item.item);
         if old.is_none() {
-            let owner = ObjectGuid::new(HighGuid::Player, 0, character.guid);
-            let contained = item_contained_guid(owner, &session.inventory.items, item);
             let template =
                 wow_db::get_item_template_query(deps.world_db_pool, item.item_template).await?;
-            blocks.push(build_item_create_update_block(
-                owner,
-                contained,
+            blocks.extend(build_stored_item_create_update_blocks(
+                character.guid,
+                &session.inventory.items,
                 item,
                 template.as_ref().and_then(|template| {
                     (template.container_slots > 0).then_some(template.container_slots)
                 }),
-            )?);
-            blocks.extend(build_inventory_position_update_blocks(
-                character.guid,
-                &session.inventory.items,
-                item.bag as u8,
-                item.slot,
             )?);
         } else if old.is_some_and(|old| old.count != item.count) {
             blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
@@ -1019,11 +1011,12 @@ pub(in crate::world) async fn refresh_inventory_after_mail_change(
     }
     if let Some(removed_item) = removed_item {
         if let Some(old) = old_inventory.iter().find(|old| old.item == removed_item) {
-            blocks.extend(build_inventory_position_update_blocks(
+            blocks.extend(build_inventory_positions_update_blocks(
                 character.guid,
                 &session.inventory.items,
-                old.bag as u8,
-                old.slot,
+                u8::try_from(old.bag)
+                    .ok()
+                    .map(|bag| InventoryPosition::new(bag, old.slot)),
             )?);
             if old.bag != INVENTORY_SLOT_BAG_0 as u32 {
                 send_packet(

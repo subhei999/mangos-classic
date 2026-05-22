@@ -14,6 +14,7 @@ pub(in crate::world) struct WorldRuntimeState {
     pub(in crate::world) parties: Arc<PartyManager>,
     pub(in crate::world) object_mgr: Arc<ObjectMgr>,
     pub(in crate::world) playerbots: Arc<PlayerbotRoster>,
+    pub(in crate::world) vendor_stock: VendorStockState,
 }
 
 #[derive(Clone, Copy)]

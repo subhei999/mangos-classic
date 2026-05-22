@@ -242,6 +242,7 @@ impl WorldServer {
                 parties: Arc::new(PartyManager::default()),
                 object_mgr,
                 playerbots,
+                vendor_stock: VendorStockState::default(),
             },
         })
     }

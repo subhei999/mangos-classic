@@ -1076,13 +1076,13 @@ pub(in crate::world) async fn add_gm_item(
         .await?;
         return Ok(());
     };
-    let equipped_bags =
-        load_equipped_bag_infos(deps.world_db_pool, &session.inventory.items).await?;
-    let Some(store_plan) = plan_store_item(
+    let bag_model =
+        InventoryBagModel::load_inventory(deps.world_db_pool, &session.inventory.items).await?;
+    let Some(store_plan) = bag_model.plan_store_item(
+        InventoryStorageScope::Inventory,
         &session.inventory.items,
         &template,
         count,
-        &equipped_bags,
         None,
         None,
     ) else {
@@ -1136,7 +1136,6 @@ pub(in crate::world) async fn add_gm_item(
         wow_db::get_character_inventory_items(deps.character_db_pool, character_guid).await?;
     session.inventory.items = new_inventory;
 
-    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let mut update_blocks = Vec::new();
     let mut push_results = Vec::new();
     for slot in &store_plan {
@@ -1165,18 +1164,11 @@ pub(in crate::world) async fn add_gm_item(
             .iter()
             .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
         {
-            let contained_guid = item_contained_guid(owner_guid, &session.inventory.items, item);
-            update_blocks.push(build_item_create_update_block(
-                owner_guid,
-                contained_guid,
-                item,
-                (template.container_slots > 0).then_some(template.container_slots),
-            )?);
-            update_blocks.extend(build_inventory_position_update_blocks(
+            update_blocks.extend(build_stored_item_create_update_blocks(
                 character_guid,
                 &session.inventory.items,
-                slot.bag,
-                slot.slot,
+                item,
+                (template.container_slots > 0).then_some(template.container_slots),
             )?);
             push_results.push(build_item_push_result_body(
                 character_guid,

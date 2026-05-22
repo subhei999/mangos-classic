@@ -19,13 +19,14 @@ struct QueuedMovementPacket {
 }
 
 pub(in crate::world) async fn handle_client(
+    peer: SocketAddr,
     mut stream: TcpStream,
     login_db_pool: MySqlPool,
     character_db_pool: MySqlPool,
     world_db_pool: MySqlPool,
     runtime_state: WorldRuntimeState,
 ) -> anyhow::Result<()> {
-    timeout(
+    match timeout(
         WORLD_SESSION_WRITE_TIMEOUT,
         send_packet_direct(
             &mut stream,
@@ -34,11 +35,31 @@ pub(in crate::world) async fn handle_client(
             None,
         ),
     )
-    .await??;
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) if is_expected_pre_auth_disconnect(&error) => {
+            debug!(
+                %peer,
+                "World TCP connection closed before auth challenge completed"
+            );
+            return Ok(());
+        }
+        Ok(Err(error)) => return Err(error),
+        Err(_) => anyhow::bail!("world auth challenge write timed out"),
+    }
 
     let (opcode, payload) =
         match timeout(WORLD_LOGIN_TIMEOUT, read_client_packet(&mut stream, None)).await {
-            Ok(result) => result?,
+            Ok(Ok(packet)) => packet,
+            Ok(Err(error)) if is_expected_pre_auth_disconnect(&error) => {
+                debug!(
+                    %peer,
+                    "World TCP connection closed before CMSG_AUTH_SESSION"
+                );
+                return Ok(());
+            }
+            Ok(Err(error)) => return Err(error),
             Err(_) => {
                 crate::observability::record_world_session_disconnect(
                     WorldSessionDisconnectReason::LoginTimeout.metric_label(),
@@ -52,6 +73,7 @@ pub(in crate::world) async fn handle_client(
 
     let auth = packets::parse_world_auth_session_packet(&payload)?;
     info!(
+        %peer,
         account = %auth.account,
         build = auth.client_build,
         client_seed = format_args!("0x{:08X}", auth.client_seed),
@@ -80,6 +102,7 @@ pub(in crate::world) async fn handle_client(
     }
 
     info!(
+        %peer,
         account = %auth.account,
         account_id = account.id,
         "World auth session verified"
@@ -726,6 +749,40 @@ async fn process_authenticated_world_packet(
         packet_branch_started_at.elapsed(),
     );
     Ok(())
+}
+
+fn is_expected_pre_auth_disconnect(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io_error| {
+                matches!(
+                    io_error.kind(),
+                    std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::UnexpectedEof
+                )
+            })
+    })
+}
+
+#[cfg(test)]
+mod session_loop_tests {
+    use super::*;
+
+    #[test]
+    fn pre_auth_disconnect_filter_accepts_expected_socket_closures() {
+        let error =
+            anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::ConnectionAborted));
+        assert!(is_expected_pre_auth_disconnect(&error));
+    }
+
+    #[test]
+    fn pre_auth_disconnect_filter_keeps_non_disconnect_failures() {
+        let error = anyhow::anyhow!("unexpected auth parsing failure");
+        assert!(!is_expected_pre_auth_disconnect(&error));
+    }
 }
 
 fn packet_requires_immediate_gameplay_sync(opcode: u32) -> bool {

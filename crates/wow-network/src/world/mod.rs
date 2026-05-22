@@ -261,13 +261,14 @@ impl WorldServer {
         loop {
             match listener.accept().await {
                 Ok((socket, peer)) => {
-                    info!(%peer, "Accepted world connection");
+                    debug!(%peer, "Accepted world TCP connection");
                     let login_pool = self.login_db_pool.clone();
                     let character_pool = self.character_db_pool.clone();
                     let world_pool = self.world_db_pool.clone();
                     let runtime_state = self.runtime_state.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handle_client(
+                            peer,
                             socket,
                             login_pool,
                             character_pool,

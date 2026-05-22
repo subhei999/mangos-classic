@@ -25,6 +25,18 @@ merge it once the integrated result is good.
   `codex/rusty-mangos`, including the recent `SpellPlan` sweep, cone targeting,
   absorb combat-log fixes, Evocation-style mana regen modifiers, and
   Counterspell school lockout work.
+- Fixed the first live auction-create session crash after landing AH support:
+  `create_auction_from_inventory` now casts the `MAX(id) + 1` auction id query
+  to `UNSIGNED`, avoiding MySQL `DECIMAL` decode mismatch when the first create
+  request allocates a new auction row.
+- Fixed the next live cancel-auction session crash after create:
+  auction existence probes in the DB layer now decode `SELECT 1 ... LIMIT 1`
+  as integer presence checks instead of `u8`, avoiding MySQL `INT` vs
+  `TINYINT UNSIGNED` decode mismatches in cancel, bid, and expiry paths.
+- Fixed the next live mail-access session crash after auction cancel:
+  mail-item reads now cast signed `mail_items` ids/templates and `MAX(id)`
+  allocators to unsigned values where Rust expects unsigned ids, avoiding
+  `item_guid` decode mismatches when opening auction-generated mail.
 - Added Classic auction protocol coverage in `wow-proto` and `wow-network` for:
   - `MSG_AUCTION_HELLO`
   - `CMSG_AUCTION_LIST_ITEMS`
@@ -89,6 +101,19 @@ merge it once the integrated result is good.
   - rerun focused auction/config coverage,
   - rerun `.\scripts\test-rust.cmd`,
   - perform live 1.12 client smoke for auction flows.
+- Post-landing auction-create hotfix validation:
+  - `cargo check -p wow-db -p wow-network -p worldserver`
+  - `cargo test -p wow-network auction -- --nocapture`
+  - `.\scripts\restart-game-stack.cmd --release`
+- Post-landing auction-cancel hotfix validation:
+  - `cargo check -p wow-db -p wow-network -p worldserver`
+  - `cargo test -p wow-network auction -- --nocapture`
+  - `.\scripts\restart-game-stack.cmd --release`
+- Post-landing auction-mail hotfix validation:
+  - `cargo check -p wow-db -p wow-network -p worldserver`
+  - `cargo test -p wow-network mail -- --nocapture`
+  - `cargo test -p wow-network auction -- --nocapture`
+  - `.\scripts\restart-game-stack.cmd --release`
 
 ## Known Blockers / Unproven Areas
 
@@ -98,6 +123,12 @@ merge it once the integrated result is good.
   browse, sell, cancel, bid, buyout, outbid mail, grouped markets, neutral
   separation, optional global market, and expiry settlement all still need
   smoke confirmation.
+- The previous first-create crash should now be fixed; re-test live auction
+  creation before chasing any later AH issues.
+- The previous cancel-auction crash should now be fixed; re-test live cancel
+  before chasing any later AH issues.
+- The previous mail-access crash after auction cancel should now be fixed;
+  re-test opening the generated mail before chasing any later AH issues.
 - Search `usable` filtering still does not include the extra CMaNGOS
   recipe-known suppression path.
 - The unrelated local MySQL auth issue can still block the two known EventAI

@@ -247,10 +247,11 @@ pub fn house_matches_bucket(house_id: u32, bucket: AuctionHouseBucket) -> bool {
 }
 
 pub async fn auction_has_item_guid(pool: &MySqlPool, item_guid: u32) -> Result<bool, DbError> {
-    let exists: Option<u8> = sqlx::query_scalar("SELECT 1 FROM auction WHERE itemguid = ? LIMIT 1")
-        .bind(item_guid)
-        .fetch_optional(pool)
-        .await?;
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM auction WHERE itemguid = ? LIMIT 1")
+            .bind(item_guid)
+            .fetch_optional(pool)
+            .await?;
     Ok(exists.is_some())
 }
 
@@ -290,10 +291,11 @@ pub async fn create_auction_from_inventory(
         .execute(&mut *tx)
         .await?;
 
-    let auction_id: u32 =
-        sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) + 1 FROM auction FOR UPDATE")
-            .fetch_one(&mut *tx)
-            .await?;
+    let auction_id: u32 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(MAX(id), 0) + 1 AS UNSIGNED) FROM auction FOR UPDATE",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     sqlx::query(
         "INSERT INTO auction \
          (id, houseid, itemguid, item_template, item_count, item_randompropertyid, itemowner, \
@@ -352,7 +354,7 @@ pub async fn remove_auction(
         return Ok(Err(RemoveAuctionError::NotFoundOrNotOwner));
     }
 
-    let item_exists: Option<u8> =
+    let item_exists: Option<i64> =
         sqlx::query_scalar("SELECT 1 FROM item_instance WHERE guid = ? LIMIT 1")
             .bind(item_guid)
             .fetch_optional(&mut *tx)
@@ -470,7 +472,7 @@ pub async fn place_auction_bid(
         return Ok(Err(PlaceAuctionBidError::BidOwn));
     }
 
-    let item_exists: Option<u8> =
+    let item_exists: Option<i64> =
         sqlx::query_scalar("SELECT 1 FROM item_instance WHERE guid = ? LIMIT 1")
             .bind(auction.itemguid)
             .fetch_optional(&mut *tx)
@@ -658,7 +660,7 @@ pub async fn expire_auction(
         return Ok(None);
     };
 
-    let item_exists: Option<u8> =
+    let item_exists: Option<i64> =
         sqlx::query_scalar("SELECT 1 FROM item_instance WHERE guid = ? LIMIT 1")
             .bind(auction.itemguid)
             .fetch_optional(&mut *tx)
@@ -901,10 +903,11 @@ async fn character_exists_in_tx(
     tx: &mut Transaction<'_, MySql>,
     guid: u32,
 ) -> Result<bool, DbError> {
-    let exists: Option<u8> = sqlx::query_scalar("SELECT 1 FROM characters WHERE guid = ? LIMIT 1")
-        .bind(guid)
-        .fetch_optional(&mut **tx)
-        .await?;
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM characters WHERE guid = ? LIMIT 1")
+            .bind(guid)
+            .fetch_optional(&mut **tx)
+            .await?;
     Ok(exists.is_some())
 }
 

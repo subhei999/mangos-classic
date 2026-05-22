@@ -327,7 +327,8 @@ pub async fn delete_mail(pool: &MySqlPool, receiver: u32, mail_id: u32) -> Resul
         tx.commit().await?;
         return Ok(false);
     }
-    let item_guids: Vec<u32> = sqlx::query_scalar("SELECT item_guid FROM mail_items WHERE mail_id = ?")
+    let item_guids: Vec<u32> =
+        sqlx::query_scalar("SELECT CAST(item_guid AS UNSIGNED) FROM mail_items WHERE mail_id = ?")
         .bind(mail_id)
         .fetch_all(&mut *tx)
         .await?;
@@ -419,8 +420,10 @@ pub async fn take_mail_item(
             return Err(TakeMailItemError::NotEnoughMoney);
         }
     }
-    let item_row: Option<(u32, u32)> =
-        sqlx::query_as("SELECT item_guid, item_template FROM mail_items WHERE mail_id = ? AND item_guid = ? AND receiver = ?")
+    let item_row: Option<(u32, u32)> = sqlx::query_as(
+        "SELECT CAST(item_guid AS UNSIGNED), CAST(item_template AS UNSIGNED) \
+         FROM mail_items WHERE mail_id = ? AND item_guid = ? AND receiver = ?",
+    )
             .bind(request.mail_id)
             .bind(request.item_guid)
             .bind(request.receiver)
@@ -592,7 +595,9 @@ async fn load_mail_items(
     receiver: u32,
 ) -> Result<Vec<CharacterMailItem>, DbError> {
     let rows = sqlx::query(
-        "SELECT mi.item_guid, mi.item_template, ii.count, ii.charges, ii.enchantments, \
+        "SELECT CAST(mi.item_guid AS UNSIGNED) AS item_guid, \
+                CAST(mi.item_template AS UNSIGNED) AS item_template, \
+                ii.count, ii.charges, ii.enchantments, \
                 ii.randomPropertyId, ii.durability \
          FROM mail_items mi \
          JOIN item_instance ii ON ii.guid = mi.item_guid \
@@ -672,16 +677,18 @@ async fn insert_mail_in_tx(
 }
 
 async fn next_mail_id_in_tx(tx: &mut Transaction<'_, MySql>) -> Result<u32, DbError> {
-    let max_id: Option<u32> = sqlx::query_scalar("SELECT MAX(id) FROM mail")
-        .fetch_one(&mut **tx)
-        .await?;
+    let max_id: Option<u32> =
+        sqlx::query_scalar("SELECT CAST(MAX(id) AS UNSIGNED) FROM mail")
+            .fetch_one(&mut **tx)
+            .await?;
     Ok(max_id.unwrap_or(0).saturating_add(1))
 }
 
 async fn next_item_text_id(pool: &MySqlPool) -> Result<u32, DbError> {
-    let max_id: Option<u32> = sqlx::query_scalar("SELECT MAX(id) FROM item_text")
-        .fetch_one(pool)
-        .await?;
+    let max_id: Option<u32> =
+        sqlx::query_scalar("SELECT CAST(MAX(id) AS UNSIGNED) FROM item_text")
+            .fetch_one(pool)
+            .await?;
     Ok(max_id.unwrap_or(0).saturating_add(1))
 }
 

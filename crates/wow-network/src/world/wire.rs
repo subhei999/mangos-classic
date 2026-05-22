@@ -628,7 +628,6 @@ pub(in crate::world) fn is_expected_noop_opcode(opcode: u32) -> bool {
         WorldOpcode::try_from(opcode).ok(),
         Some(
             WorldOpcode::CmsgCancelTrade
-                | WorldOpcode::CmsgZoneUpdate
                 | WorldOpcode::CmsgMeetingStoneInfo
                 | WorldOpcode::CmsgRequestRaidInfo
                 | WorldOpcode::CmsgMoveTimeSkipped

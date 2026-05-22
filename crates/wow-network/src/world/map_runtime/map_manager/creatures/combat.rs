@@ -169,6 +169,38 @@ impl MapRuntimeManager {
         let _ = current_session_id;
     }
 
+    fn push_db_creature_player_melee_event(
+        tick: &mut DbCreatureVictimCombatAdvanceTick,
+        attacker: ObjectGuid,
+        player_level: u8,
+        event: DbCreaturePlayerDamageEvent,
+    ) -> bool {
+        tick.local_effects
+            .push(DbCreatureVictimCombatLocalEffect::Melee {
+                attacker,
+                damage_taken: event.damage,
+                victim_health: event.victim_health,
+                rage_gain: rage_gain_from_damage_taken(event.damage, player_level),
+                player_died: event.victim_health == 0,
+            });
+        for packet in event.direct_packets {
+            tick.direct_packets.push(packet);
+        }
+        if let Some(packet) = event.aura_packet {
+            tick.direct_packets.push(packet);
+        }
+        tick.direct_packets.push(OutboundWorldPacket {
+            opcode: WorldOpcode::SmsgAttackerStateUpdate as u16,
+            body: event.attacker_state_body,
+        });
+        tick.direct_packets.push(OutboundWorldPacket {
+            opcode: WorldOpcode::SmsgUpdateObject as u16,
+            body: event.health_update_body,
+        });
+        tick.observer_packets.extend(event.observer_packets);
+        event.victim_health == 0
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn advance_db_creature_attack_for_victim(
         &self,
@@ -469,9 +501,7 @@ impl MapRuntimeManager {
                         .spell_template(world_db_pool, ready.spell.spell_id)
                         .await?
                     {
-                        if (template.attributes_ex & SPELL_ATTR_EX_NO_AUTOCAST_AI) == 0
-                            && (template.attributes & SPELL_ATTR_PASSIVE) == 0
-                        {
+                        if SpellInfo::from_template(&template).can_db_creature_autocast() {
                             let spell_range = self.spell_range(template.range_index);
                             let spell_info = SpellInfo::from_template(&template);
                             let mut map_guard = map.lock().await;
@@ -485,64 +515,57 @@ impl MapRuntimeManager {
                                 )
                                 .check
                                 == DbCreatureSpellTargetCheck::Clear
+                                && db_creature_spell_school_lockout_ready(
+                                    &active.creature.spell_school_lockouts_until,
+                                    spell_school_mask_from_school(template.school),
+                                    now,
+                                )
                             {
                                 let target = ready.target;
-                                let aura = (target.is_player()
-                                    && spell_info.has_effect(SpellEffectDispatch::ApplyAura))
-                                .then(|| {
-                                    build_active_aura(
-                                        &template,
-                                        attacker,
-                                        active
-                                            .creature
-                                            .spawn
-                                            .template
-                                            .max_level
-                                            .max(active.creature.spawn.template.min_level),
-                                        SpellEffectValueContext::with_spell_rank_level(
+                                let caster_level = active
+                                    .creature
+                                    .spawn
+                                    .template
+                                    .max_level
+                                    .max(active.creature.spawn.template.min_level);
+                                let value_context = SpellEffectValueContext::with_spell_rank_level(
+                                    &template,
+                                    (caster_level / 5) as i32,
+                                    0,
+                                );
+                                if let Some(plan) =
+                                    spell_info.db_creature_spell_plan(target, value_context)
+                                {
+                                    let aura = (plan.aura && target.is_player()).then(|| {
+                                        build_active_aura(
                                             &template,
-                                            (active
-                                                .creature
-                                                .spawn
-                                                .template
-                                                .max_level
-                                                .max(active.creature.spawn.template.min_level)
-                                                / 5)
-                                                as i32,
-                                            0,
-                                        ),
-                                        now,
-                                        self.spell_duration(template.duration_index),
-                                    )
-                                });
-                                let effect = if spell_info.has_direct_damage_effect() {
-                                    let damage = spell_info.direct_damage();
-                                    if target.is_player() && damage > 0 {
-                                        Some(ActiveDbCreatureSpellEffect::Damage {
-                                            amount: damage,
-                                            school: template.school as u8,
-                                            dmg_class: template.dmg_class,
-                                            attributes_ex2: template.attributes_ex2,
-                                            attributes_ex3: template.attributes_ex3,
-                                        })
-                                    } else {
-                                        None
-                                    }
-                                } else if spell_info.has_direct_heal_effect() {
-                                    let heal = spell_info.direct_heal();
-                                    if !target.is_player() && heal > 0 {
-                                        Some(ActiveDbCreatureSpellEffect::Heal { amount: heal })
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                };
-                                if let Some(effect) = effect {
-                                    let mana_cost = if template.power_type == POWER_TYPE_MANA {
-                                        template.mana_cost
-                                    } else {
-                                        0
+                                            attacker,
+                                            caster_level,
+                                            value_context,
+                                            now,
+                                            self.spell_duration(template.duration_index),
+                                        )
+                                    });
+                                    let effect = match plan.effect {
+                                        DbCreatureSpellPlanEffect::Damage {
+                                            amount,
+                                            school,
+                                            dmg_class,
+                                            attributes_ex2,
+                                            attributes_ex3,
+                                        } => ActiveDbCreatureSpellEffect::Damage {
+                                            amount,
+                                            school,
+                                            dmg_class,
+                                            attributes_ex2,
+                                            attributes_ex3,
+                                        },
+                                        DbCreatureSpellPlanEffect::Heal { amount } => {
+                                            ActiveDbCreatureSpellEffect::Heal { amount }
+                                        }
+                                        DbCreatureSpellPlanEffect::AuraOnly => {
+                                            ActiveDbCreatureSpellEffect::None
+                                        }
                                     };
                                     let cast_time_millis = spell_cast_time_millis(
                                         self.spell_cast_time(template.casting_time_index),
@@ -550,12 +573,13 @@ impl MapRuntimeManager {
                                     let cast = ActiveDbCreatureSpellCast {
                                         caster: attacker,
                                         target,
-                                        spell_id: template.id,
-                                        requires_behind: spell_info.requires_behind_target(),
+                                        spell_id: plan.spell_id,
+                                        school_mask: spell_school_mask_from_school(template.school),
+                                        requires_behind: plan.requires_behind,
                                         effect,
                                         aura,
                                         range: spell_range,
-                                        mana_cost,
+                                        mana_cost: plan.mana_cost,
                                         cast_time_millis,
                                         due_at: now
                                             + Duration::from_millis(cast_time_millis as u64),
@@ -715,30 +739,7 @@ impl MapRuntimeManager {
             map_guard.clear_db_creature_combat(attacker);
             return Ok(false);
         };
-        tick.local_effects
-            .push(DbCreatureVictimCombatLocalEffect::Melee {
-                attacker,
-                damage_taken: event.damage,
-                victim_health: event.victim_health,
-                rage_gain: rage_gain_from_damage_taken(event.damage, player_level),
-                player_died: event.victim_health == 0,
-            });
-        for packet in event.direct_packets {
-            tick.direct_packets.push(packet);
-        }
-        if let Some(packet) = event.aura_packet {
-            tick.direct_packets.push(packet);
-        }
-        tick.direct_packets.push(OutboundWorldPacket {
-            opcode: WorldOpcode::SmsgAttackerStateUpdate as u16,
-            body: build_attacker_state_update_body_for_outcome(attacker, victim, outcome, 0)?,
-        });
-        tick.direct_packets.push(OutboundWorldPacket {
-            opcode: WorldOpcode::SmsgUpdateObject as u16,
-            body: event.health_update_body,
-        });
-        tick.observer_packets.extend(event.observer_packets);
-        if event.victim_health == 0 {
+        if Self::push_db_creature_player_melee_event(tick, attacker, player_level, event) {
             map_guard.clear_db_creature_combats_for_victim(victim);
             return Ok(true);
         }
@@ -788,5 +789,50 @@ impl MapRuntimeManager {
             next_swing_at,
         );
         event
+    }
+
+    #[cfg(test)]
+    pub(in crate::world) async fn apply_db_creature_player_melee_outcome_as_victim_tick(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        outcome: MeleeDamageOutcome,
+        now: Instant,
+        next_swing_at: Instant,
+    ) -> anyhow::Result<DbCreatureVictimCombatAdvanceTick> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let mut tick = DbCreatureVictimCombatAdvanceTick::default();
+        let (event, player_level) = {
+            let mut map_guard = map.lock().await;
+            let player_level = map_guard
+                .players
+                .get(&victim.counter())
+                .map(|player| player.level)
+                .unwrap_or(1);
+            let Some(event) = map_guard.apply_db_creature_player_melee_outcome(
+                attacker,
+                victim,
+                outcome,
+                now,
+                next_swing_at,
+            )?
+            else {
+                return Ok(tick);
+            };
+            (event, player_level)
+        };
+        let player_died =
+            Self::push_db_creature_player_melee_event(&mut tick, attacker, player_level, event);
+        let mut map_guard = map.lock().await;
+        if player_died {
+            map_guard.clear_db_creature_combats_for_victim(victim);
+        }
+        tick.active_combats = map_guard.active_db_creature_combats_for_victim(victim);
+        tick.player_in_combat = map_guard
+            .players
+            .get(&victim.counter())
+            .is_some_and(|player| player.in_combat);
+        Ok(tick)
     }
 }

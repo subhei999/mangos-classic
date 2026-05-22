@@ -238,6 +238,7 @@ pub(in crate::world) async fn handle_movement(
             "Received movement packet before character login"
         );
     }
+    clear_tavern_rest_if_outside_inn_trigger(stream, deps.maps, session, header_crypto).await?;
     if corpse_movement {
         crate::observability::record_world_position_status("skipped_corpse_movement");
     } else if player_position_status_update_due(session, Instant::now()) {

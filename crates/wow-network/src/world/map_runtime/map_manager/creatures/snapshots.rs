@@ -92,6 +92,7 @@ impl MapRuntimeManager {
             };
         };
         let validation = map.lock().await.validate_player_spell_against_db_creature(
+            &self.faction_templates,
             character_guid,
             target,
             navigation,

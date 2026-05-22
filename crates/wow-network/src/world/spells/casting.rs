@@ -444,9 +444,10 @@ pub(in crate::world) async fn handle_use_item(
             .spell_cast_time(spell_template.casting_time_index),
     );
 
-    let now = Instant::now();
-    let targets = normalize_item_use_targets(request.targets, &item_spell_profile, caster);
     let spell_info = SpellInfo::from_template(&spell_template);
+    let now = Instant::now();
+    let targets =
+        normalize_item_use_targets(request.targets, &item_spell_profile, &spell_info, caster);
     let item_value_context = player_spell_effect_value_context(
         deps.shared_world.maps,
         &spell_template,
@@ -1281,17 +1282,17 @@ pub(in crate::world) fn spell_resets_auto_attack_timers_on_cast(
     spell_template: &wow_db::SpellTemplateQuery,
     spell_profile: &SpellCastProfile,
 ) -> bool {
-    spell_template.interrupt_flags & SPELL_INTERRUPT_FLAG_COMBAT != 0
-        && !matches!(
-            spell_profile.kind,
-            SpellCastKind::AutoRepeatRanged | SpellCastKind::NextMeleeSwing
-        )
+    SpellInfo::from_template(spell_template)
+        .plan_behavior(spell_profile.kind)
+        .resets_auto_attack_timers
 }
 
 pub(in crate::world) fn auto_repeat_spell_cancels_when_casting(
     spell_template: &wow_db::SpellTemplateQuery,
 ) -> bool {
-    spell_template.attributes_ex3 & SPELL_ATTR_EX3_CASTING_CANCELS_AUTOREPEAT != 0
+    SpellInfo::from_template(spell_template)
+        .plan_behavior(SpellCastKind::AutoRepeatRanged)
+        .cancels_auto_repeat_when_casting
 }
 
 async fn retime_player_auto_attack_after_spell_cast(

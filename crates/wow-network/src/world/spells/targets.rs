@@ -15,13 +15,18 @@ pub(in crate::world) fn normalize_spell_cast_targets(
     spell_info: &SpellInfo<'_>,
     caster: ObjectGuid,
 ) -> SpellCastTargets {
-    let target_kind = spell_info.unit_target_kind(spell_profile.kind);
+    let plan_target = spell_info
+        .player_spell_plan()
+        .filter(|plan| plan.profile.kind == spell_profile.kind)
+        .map(|plan| plan.target)
+        .unwrap_or(SpellPlanTarget::Caster);
+    let target_kind = plan_target.target_kind();
     if matches!(
         target_kind,
         SpellTargetKind::Caster | SpellTargetKind::Destination
     ) && matches!(
-        spell_profile.aura_target,
-        SpellAuraTarget::CasterAreaEnemy | SpellAuraTarget::DestinationAreaEnemy
+        plan_target,
+        SpellPlanTarget::CasterAreaEnemy { .. } | SpellPlanTarget::DestinationAreaEnemy
     ) {
         targets.target_mask &= !(SPELL_CAST_TARGET_UNIT | SPELL_CAST_TARGET_UNIT_ENEMY);
         targets.unit_target = None;
@@ -43,7 +48,6 @@ pub(in crate::world) fn normalize_spell_cast_targets(
             spell_profile.kind,
             SpellCastKind::AuraApplication | SpellCastKind::CreateItem | SpellCastKind::DirectHeal
         )
-        && spell_profile.aura_target == SpellAuraTarget::Caster
         && target_kind == SpellTargetKind::Caster
     {
         targets.unit_target = Some(caster);
@@ -55,15 +59,21 @@ pub(in crate::world) fn normalize_spell_cast_targets(
 pub(in crate::world) fn normalize_item_use_targets(
     mut targets: SpellCastTargets,
     item_spell: &SpellCastProfile,
+    spell_info: &SpellInfo<'_>,
     caster: ObjectGuid,
 ) -> SpellCastTargets {
+    let plan_target = spell_info
+        .item_spell_plan(ObjectGuid::EMPTY)
+        .filter(|plan| plan.profile.kind == item_spell.kind)
+        .map(|plan| plan.target)
+        .unwrap_or(SpellPlanTarget::Caster);
     if targets.target_mask == 0 {
         targets.target_mask = SPELL_CAST_TARGET_UNIT;
         targets.unit_target = Some(caster);
         return targets;
     }
     if item_spell.kind == SpellCastKind::AuraApplication
-        && item_spell.aura_target == SpellAuraTarget::Caster
+        && plan_target.target_kind() == SpellTargetKind::Caster
     {
         targets.target_mask =
             (targets.target_mask | SPELL_CAST_TARGET_UNIT) & !SPELL_CAST_TARGET_UNIT_ENEMY;

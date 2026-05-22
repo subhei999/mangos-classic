@@ -58,6 +58,7 @@ impl DbCreatureRuntime {
             active_auras: Vec::new(),
             next_spell_list_update_at: None,
             spell_cooldowns_until: HashMap::new(),
+            spell_school_lockouts_until: HashMap::new(),
             spell_list_availability_id: None,
             unavailable_spell_list_positions: HashSet::new(),
             triggered_event_ai_scripts: HashSet::new(),
@@ -127,6 +128,7 @@ impl DbCreatureRuntime {
                 creature.loot_method = None;
                 creature.next_spell_list_update_at = None;
                 creature.spell_cooldowns_until.clear();
+                creature.spell_school_lockouts_until.clear();
                 creature.spell_list_availability_id = None;
                 creature.unavailable_spell_list_positions.clear();
                 creature.triggered_event_ai_scripts.clear();
@@ -398,6 +400,7 @@ impl DbCreatureRuntime {
         self.active_auras.clear();
         self.next_spell_list_update_at = None;
         self.spell_cooldowns_until.clear();
+        self.spell_school_lockouts_until.clear();
         self.spell_list_availability_id = None;
         self.unavailable_spell_list_positions.clear();
         self.triggered_event_ai_scripts.clear();
@@ -474,6 +477,7 @@ impl DbCreatureRuntime {
         self.active_auras.clear();
         self.next_spell_list_update_at = None;
         self.spell_cooldowns_until.clear();
+        self.spell_school_lockouts_until.clear();
         self.spell_list_availability_id = None;
         self.unavailable_spell_list_positions.clear();
         self.triggered_event_ai_scripts.clear();
@@ -527,6 +531,7 @@ impl DbCreatureRuntime {
         self.active_auras.clear();
         self.next_spell_list_update_at = None;
         self.spell_cooldowns_until.clear();
+        self.spell_school_lockouts_until.clear();
         self.spell_list_availability_id = None;
         self.unavailable_spell_list_positions.clear();
         self.triggered_event_ai_scripts.clear();

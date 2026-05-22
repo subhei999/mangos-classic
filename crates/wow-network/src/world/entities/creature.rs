@@ -57,6 +57,7 @@ pub(in crate::world) struct Creature {
     pub(in crate::world) active_auras: Vec<ActiveAura>,
     pub(in crate::world) next_spell_list_update_at: Option<Instant>,
     pub(in crate::world) spell_cooldowns_until: HashMap<u32, Instant>,
+    pub(in crate::world) spell_school_lockouts_until: HashMap<u32, Instant>,
     pub(in crate::world) spell_list_availability_id: Option<u32>,
     pub(in crate::world) unavailable_spell_list_positions: HashSet<u32>,
     pub(in crate::world) triggered_event_ai_scripts: HashSet<i32>,

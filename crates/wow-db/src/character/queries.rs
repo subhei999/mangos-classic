@@ -6,7 +6,9 @@ pub async fn get_character_enum_entries(
     let rows = sqlx::query_as::<_, CharacterEnumEntry>(
         "SELECT characters.guid, characters.name, characters.race, characters.class, \
                 characters.gender, characters.playerBytes, characters.playerBytes2, \
-                characters.level, characters.xp, characters.zone, characters.map, \
+                characters.level, characters.xp, characters.rest_bonus, \
+                characters.logout_time, characters.is_logout_resting, \
+                characters.zone, characters.map, \
                 characters.position_x, characters.position_y, characters.position_z, \
                 characters.orientation, \
                 guild_member.guildid, characters.playerFlags, characters.at_login, \

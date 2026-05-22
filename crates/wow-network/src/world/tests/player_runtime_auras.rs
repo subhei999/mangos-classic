@@ -85,6 +85,7 @@ fn test_player_runtime_with_controller(
         health: 20,
         max_health: 20,
         xp: 0,
+        rest_bonus: 0.0,
         power1: 0,
         max_power1: 0,
         last_mana_use_at: None,
@@ -3720,6 +3721,53 @@ fn map_owned_consumable_resource_updates_survive_later_session_sync() {
 }
 
 #[test]
+fn map_runtime_session_sync_persists_rested_xp_visual_state() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(7, SessionId(7), position))
+        .unwrap();
+    let rested_player_bytes2 = player_bytes2_with_rest_bonus(0, 11.0);
+    let session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_visual: Some(PlayerVisualState {
+                gender: 0,
+                player_bytes: 0,
+                player_bytes2: rested_player_bytes2,
+                equipment_cache: None,
+                guildid: None,
+            }),
+            ..CharacterSessionState::default()
+        },
+        rest: RestSessionState {
+            rest_bonus: 11.0,
+            ..RestSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    map.sync_player_gameplay_state(7, &session);
+
+    let snapshot = map.player_runtime_snapshot(7).unwrap();
+    assert_eq!(snapshot.rest_bonus, 11.0);
+    assert_eq!(snapshot.player_bytes2, rested_player_bytes2);
+    let session_snapshot = map.player_runtime_session_snapshot(7).unwrap();
+    assert_eq!(session_snapshot.rest_bonus, 11.0);
+}
+
+#[test]
 fn map_runtime_fall_land_applies_cmangos_fall_damage_and_log() {
     let mut map = MapRuntime::new(0, 0);
     let start = WorldPosition::new(0, -8950.0, -130.0, 100.0, 0.0);
@@ -4706,6 +4754,8 @@ fn player_reward_level_up_refreshes_world_stats_for_regen_cap() {
         PlayerRewardRuntimeUpdate {
             level: 2,
             xp: 0,
+            rest_bonus: 0.0,
+            player_bytes2: 0,
             health: 40,
             max_health: new_max_health,
             power1: 0,
@@ -4870,6 +4920,51 @@ fn map_runtime_mana_regen_obeys_recent_mana_use_interrupt() {
         .unwrap();
     assert_eq!(packets.len(), 1);
     assert!(map.players.get(&1).unwrap().power1 > 10);
+}
+
+#[test]
+fn map_runtime_evocation_modifiers_regen_mana_during_interrupt() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(1, SessionId(1), position);
+    player.class = 8;
+    player.spirit = 80;
+    player.max_power1 = 500;
+    player.power1 = 10;
+    let now = Instant::now();
+    player.last_mana_use_at = Some(now);
+    player.active_auras.push(ActiveAura {
+        spell_id: 12051,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 1),
+        level: 20,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: Some(8_000),
+        expires_at: Some(now + Duration::from_secs(8)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![
+            AuraStatModifier::PowerRegenPercent {
+                power_type: POWER_TYPE_MANA,
+                percent: 1500,
+            },
+            AuraStatModifier::ManaRegenInterruptPercent { percent: 100 },
+        ],
+        proc_triggers: Vec::new(),
+    });
+    map.add_player(player).unwrap();
+
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    let packets = map
+        .advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+
+    assert_eq!(packets.len(), 1);
+    assert!(
+        map.players.get(&1).unwrap().power1 > 10,
+        "Evocation's generic aura modifiers should restore mana during the recent-cast window"
+    );
 }
 
 #[test]

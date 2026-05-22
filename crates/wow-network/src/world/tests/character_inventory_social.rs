@@ -25,6 +25,33 @@ fn validates_classic_race_class_pairs() {
 }
 
 #[test]
+fn rest_bonus_math_follows_cmangos_bubble_rate_and_cap() {
+    assert_eq!(compute_rest_bonus(28_800, 20_000) as u32, 500);
+    assert_eq!(rest_bonus_max(20_000) as u32, 15_000);
+    assert_eq!(
+        offline_rest_bonus(14_900.0, 1, true, 28_801, 10, 20_000) as u32,
+        15_000
+    );
+    assert_eq!(rest_state_for_bonus(10.0), REST_STATE_NORMAL);
+    assert_eq!(rest_state_for_bonus(11.0), REST_STATE_RESTED);
+}
+
+#[test]
+fn rest_update_packet_marks_xp_bar_rested_when_bonus_crosses_threshold() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let player_bytes2 = player_bytes2_with_rest_bonus(0, 11.0);
+    let body = build_player_rest_update_body(7, player_bytes2, 11.0).unwrap();
+    let values_start = 5 + 1 + PackedGuid::packed_size(player);
+    let values = decode_update_values(&body[values_start..]);
+
+    assert_eq!(
+        values[PLAYER_BYTES_2],
+        Some((REST_STATE_RESTED as u32) << 24)
+    );
+    assert_eq!(values[PLAYER_REST_STATE_EXPERIENCE], Some(11));
+}
+
+#[test]
 fn serializes_character_enum_entry() {
     let body = build_char_enum_body(&[CharacterEnumEntry {
         guid: 7,
@@ -36,6 +63,9 @@ fn serializes_character_enum_entry() {
         player_bytes2: 0x0000_0005,
         level: 1,
         xp: 0,
+        rest_bonus: 0.0,
+        logout_time: 0,
+        is_logout_resting: 0,
         zone: 12,
         map: 0,
         position_x: -8949.95,
@@ -92,6 +122,9 @@ fn login_verify_world_packet_shape() {
         player_bytes2: 0,
         level: 1,
         xp: 0,
+        rest_bonus: 0.0,
+        logout_time: 0,
+        is_logout_resting: 0,
         zone: 12,
         map: 0,
         position_x: -8949.95,
@@ -339,6 +372,9 @@ fn warrior_unit_bytes_set_battle_stance_for_stance_action_bar() {
         player_bytes2: 0,
         level: 1,
         xp: 0,
+        rest_bonus: 0.0,
+        logout_time: 0,
+        is_logout_resting: 0,
         zone: 12,
         map: 0,
         position_x: -8949.95,
@@ -3134,6 +3170,9 @@ fn builds_create_blocks_for_equipped_and_backpack_items() {
         player_bytes2: 0,
         level: 1,
         xp: 0,
+        rest_bonus: 0.0,
+        logout_time: 0,
+        is_logout_resting: 0,
         zone: 12,
         map: 0,
         position_x: -8949.95,
@@ -3417,6 +3456,9 @@ fn maps_classic_race_gender_display_ids() {
         player_bytes2: 0,
         level: 1,
         xp: 0,
+        rest_bonus: 0.0,
+        logout_time: 0,
+        is_logout_resting: 0,
         zone: 12,
         map: 0,
         position_x: -8949.95,
@@ -4760,6 +4802,7 @@ fn party_member_stats_full_body_matches_cmangos_core_fields() {
         race: 1,
         class: 1,
         xp: 0,
+        rest_bonus: 0.0,
         health: 33,
         max_health: 44,
         power1: 0,
@@ -4777,6 +4820,7 @@ fn party_member_stats_full_body_matches_cmangos_core_fields() {
         spell_cooldown_categories: HashMap::new(),
         spell_cooldown_item_ids: HashMap::new(),
         queued_next_melee_spell: None,
+        player_bytes2: 0,
         combo_target: None,
         combo_points: 0,
         base_combat_stats: test_player_combat_stats(),
@@ -4819,6 +4863,7 @@ fn party_member_stats_reports_rogue_energy_power() {
         race: 1,
         class: 4,
         xp: 0,
+        rest_bonus: 0.0,
         health: 33,
         max_health: 44,
         power1: 0,
@@ -4836,6 +4881,7 @@ fn party_member_stats_reports_rogue_energy_power() {
         spell_cooldown_categories: HashMap::new(),
         spell_cooldown_item_ids: HashMap::new(),
         queued_next_melee_spell: None,
+        player_bytes2: 0,
         combo_target: None,
         combo_points: 0,
         base_combat_stats: test_player_combat_stats(),
@@ -6367,7 +6413,6 @@ fn recognizes_observed_movement_opcodes() {
 fn recognizes_expected_world_bootstrap_noise() {
     for opcode in [
         WorldOpcode::CmsgCancelTrade as u32,
-        WorldOpcode::CmsgZoneUpdate as u32,
         WorldOpcode::CmsgMeetingStoneInfo as u32,
         WorldOpcode::CmsgRequestRaidInfo as u32,
         WorldOpcode::CmsgMoveTimeSkipped as u32,
@@ -6384,6 +6429,7 @@ fn recognizes_expected_world_bootstrap_noise() {
         WorldOpcode::CmsgStandStateChange as u32,
         WorldOpcode::CmsgSetSelection as u32,
         WorldOpcode::CmsgSetTargetObsolete as u32,
+        WorldOpcode::CmsgZoneUpdate as u32,
     ] {
         assert!(
             !is_expected_noop_opcode(opcode),

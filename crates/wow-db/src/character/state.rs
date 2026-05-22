@@ -80,6 +80,29 @@ pub async fn update_character_position_and_vitals(
     Ok(result.rows_affected())
 }
 
+pub async fn update_character_rest_state(
+    pool: &MySqlPool,
+    guid: u32,
+    rest_bonus: f32,
+    is_logout_resting: bool,
+    logout_time: u64,
+) -> Result<u64, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_rest_state_save");
+    let result = sqlx::query(
+        "UPDATE characters \
+         SET rest_bonus = ?, logout_time = ?, is_logout_resting = ? \
+         WHERE guid = ?",
+    )
+    .bind(rest_bonus)
+    .bind(logout_time)
+    .bind(u8::from(is_logout_resting))
+    .bind(guid)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
 pub async fn update_character_explored_zones(
     pool: &MySqlPool,
     guid: u32,

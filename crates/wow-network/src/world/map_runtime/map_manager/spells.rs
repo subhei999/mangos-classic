@@ -100,6 +100,29 @@ impl MapRuntimeManager {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(in crate::world) async fn start_player_self_aura_channel(
+        &self,
+        map_id: u32,
+        caster: ObjectGuid,
+        caster_character_guid: u32,
+        spell_id: u32,
+        duration_millis: u32,
+        channel_interrupt_flags: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<PlayerChannelEvent>> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let event = map.lock().await.start_player_self_aura_channel(
+            caster,
+            caster_character_guid,
+            spell_id,
+            duration_millis,
+            channel_interrupt_flags,
+            now,
+        )?;
+        Ok(event)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::world) async fn start_player_periodic_trigger_channel(
         &self,
         map_id: u32,
@@ -758,6 +781,29 @@ impl MapRuntimeManager {
                 character_guid,
                 position,
                 radius,
+            );
+        targets
+    }
+
+    pub(in crate::world) async fn nearby_attackable_db_creature_guids_in_player_spell_cone(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        radius: f32,
+        cone_radians: f32,
+    ) -> Vec<ObjectGuid> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let targets = map
+            .lock()
+            .await
+            .nearby_attackable_db_creature_guids_in_player_spell_cone(
+                &self.faction_templates,
+                character_guid,
+                radius,
+                cone_radians,
             );
         targets
     }

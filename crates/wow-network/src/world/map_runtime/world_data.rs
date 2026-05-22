@@ -11,6 +11,7 @@ pub(in crate::world) struct WorldDataFiles {
     pub(in crate::world) spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
     pub(in crate::world) spell_durations: HashMap<u32, SpellDurationEntry>,
     pub(in crate::world) spell_radii: HashMap<u32, SpellRadiusEntry>,
+    pub(in crate::world) spell_cones: HashMap<u32, SpellConeEntry>,
     pub(in crate::world) spell_ranges: HashMap<u32, SpellRangeEntry>,
     pub(in crate::world) skill_line_abilities_by_spell: HashMap<u32, Vec<SkillLineAbilityEntry>>,
     pub(in crate::world) skill_lines: HashMap<u32, SkillLineEntry>,
@@ -19,6 +20,7 @@ pub(in crate::world) struct WorldDataFiles {
     pub(in crate::world) faction_templates: FactionTemplateStore,
     pub(in crate::world) item_random_properties: HashMap<u32, ItemRandomPropertyEntry>,
     pub(in crate::world) bank_bag_slot_prices: HashMap<u32, u32>,
+    pub(in crate::world) area_triggers: HashMap<u32, AreaTriggerEntry>,
     pub(in crate::world) area_tables: AreaTableStore,
     pub(in crate::world) wmo_area_tables: WmoAreaTableStore,
     pub(in crate::world) mmap_headers: HashSet<u32>,
@@ -39,6 +41,7 @@ impl WorldDataFiles {
             spell_cast_times: HashMap::new(),
             spell_durations: HashMap::new(),
             spell_radii: HashMap::new(),
+            spell_cones: HashMap::new(),
             spell_ranges: HashMap::new(),
             skill_line_abilities_by_spell: HashMap::new(),
             skill_lines: HashMap::new(),
@@ -46,6 +49,7 @@ impl WorldDataFiles {
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
             bank_bag_slot_prices: HashMap::new(),
+            area_triggers: HashMap::new(),
             area_tables: AreaTableStore::default(),
             wmo_area_tables: WmoAreaTableStore::default(),
             mmap_headers: HashSet::new(),
@@ -67,6 +71,7 @@ impl WorldDataFiles {
             load_spell_cast_times(&data_dir.join("dbc").join("SpellCastTimes.dbc"));
         let spell_durations = load_spell_durations(&data_dir.join("dbc").join("SpellDuration.dbc"));
         let spell_radii = load_spell_radii(&data_dir.join("dbc").join("SpellRadius.dbc"));
+        let spell_cones = load_spell_cones(&data_dir);
         let spell_ranges = load_spell_ranges(&data_dir.join("dbc").join("SpellRange.dbc"));
         let skill_line_abilities_by_spell =
             load_skill_line_abilities(&data_dir.join("dbc").join("SkillLineAbility.dbc"));
@@ -79,6 +84,7 @@ impl WorldDataFiles {
             load_item_random_properties(&data_dir.join("dbc").join("ItemRandomProperties.dbc"));
         let bank_bag_slot_prices =
             load_bank_bag_slot_prices(&data_dir.join("dbc").join("BankBagSlotPrices.dbc"));
+        let area_triggers = load_area_triggers(&data_dir.join("dbc").join("AreaTrigger.dbc"));
         let area_tables = load_area_tables(&data_dir.join("dbc").join("AreaTable.dbc"));
         let wmo_area_tables = load_wmo_area_tables(&data_dir.join("dbc").join("WMOAreaTable.dbc"));
         let mut mmap_headers = HashSet::new();
@@ -134,6 +140,7 @@ impl WorldDataFiles {
             spell_cast_times,
             spell_durations,
             spell_radii,
+            spell_cones,
             spell_ranges,
             skill_line_abilities_by_spell,
             skill_lines,
@@ -141,6 +148,7 @@ impl WorldDataFiles {
             faction_templates,
             item_random_properties,
             bank_bag_slot_prices,
+            area_triggers,
             area_tables,
             wmo_area_tables,
             mmap_headers,
@@ -172,6 +180,17 @@ impl WorldDataFiles {
         map_id: u32,
     ) -> Option<AreaTableEntry> {
         self.area_tables.entry_by_flag_and_map(area_flag, map_id)
+    }
+
+    pub(in crate::world) fn area_trigger_contains_position(
+        &self,
+        trigger_id: u32,
+        position: WorldPosition,
+        delta: f32,
+    ) -> Option<bool> {
+        self.area_triggers
+            .get(&trigger_id)
+            .map(|trigger| trigger.contains_position(position, delta))
     }
 
     pub(in crate::world) fn area_entry_by_wmo_triple_and_map(
@@ -233,6 +252,53 @@ pub(in crate::world) struct AreaTableEntry {
     pub(in crate::world) explore_flag: u16,
     pub(in crate::world) flags: u32,
     pub(in crate::world) area_level: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::world) struct SpellConeEntry {
+    pub(in crate::world) angle_degrees: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::world) struct AreaTriggerEntry {
+    pub(in crate::world) id: u32,
+    pub(in crate::world) map_id: u32,
+    pub(in crate::world) x: f32,
+    pub(in crate::world) y: f32,
+    pub(in crate::world) z: f32,
+    pub(in crate::world) radius: f32,
+    pub(in crate::world) box_x: f32,
+    pub(in crate::world) box_y: f32,
+    pub(in crate::world) box_z: f32,
+    pub(in crate::world) box_orientation: f32,
+}
+
+impl AreaTriggerEntry {
+    pub(in crate::world) fn contains_position(&self, position: WorldPosition, delta: f32) -> bool {
+        if position.map_id != self.map_id {
+            return false;
+        }
+        if self.radius > 0.0 {
+            let dx = position.x - self.x;
+            let dy = position.y - self.y;
+            let dz = position.z - self.z;
+            return dx * dx + dy * dy + dz * dz <= (self.radius + delta) * (self.radius + delta);
+        }
+
+        let rotation = 2.0 * std::f32::consts::PI - self.box_orientation;
+        let sin_val = rotation.sin();
+        let cos_val = rotation.cos();
+        let player_box_dist_x = position.x - self.x;
+        let player_box_dist_y = position.y - self.y;
+        let rot_player_x = self.x + player_box_dist_x * cos_val - player_box_dist_y * sin_val;
+        let rot_player_y = self.y + player_box_dist_y * cos_val + player_box_dist_x * sin_val;
+        let dx = rot_player_x - self.x;
+        let dy = rot_player_y - self.y;
+        let dz = position.z - self.z;
+        dx.abs() <= self.box_x / 2.0 + delta
+            && dy.abs() <= self.box_y / 2.0 + delta
+            && dz.abs() <= self.box_z / 2.0 + delta
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -789,6 +855,73 @@ pub(in crate::world) fn load_area_tables(path: &std::path::Path) -> AreaTableSto
     AreaTableStore::from_entries(parse_area_tables(&bytes))
 }
 
+pub(in crate::world) fn load_area_triggers(
+    path: &std::path::Path,
+) -> HashMap<u32, AreaTriggerEntry> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_area_triggers(&bytes)
+}
+
+pub(in crate::world) fn parse_area_triggers(bytes: &[u8]) -> HashMap<u32, AreaTriggerEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const AREA_TRIGGER_MIN_FIELD_COUNT: usize = 10;
+    const AREA_TRIGGER_ID_FIELD: usize = 0;
+    const AREA_TRIGGER_MAP_FIELD: usize = 1;
+    const AREA_TRIGGER_X_FIELD: usize = 2;
+    const AREA_TRIGGER_Y_FIELD: usize = 3;
+    const AREA_TRIGGER_Z_FIELD: usize = 4;
+    const AREA_TRIGGER_RADIUS_FIELD: usize = 5;
+    const AREA_TRIGGER_BOX_X_FIELD: usize = 6;
+    const AREA_TRIGGER_BOX_Y_FIELD: usize = 7;
+    const AREA_TRIGGER_BOX_Z_FIELD: usize = 8;
+    const AREA_TRIGGER_BOX_ORIENTATION_FIELD: usize = 9;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < AREA_TRIGGER_MIN_FIELD_COUNT || record_size < field_count * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut triggers = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field_u32 = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let field_f32 = |index: usize| f32::from_bits(field_u32(index));
+        let id = field_u32(AREA_TRIGGER_ID_FIELD);
+        if id == 0 {
+            continue;
+        }
+        triggers.insert(
+            id,
+            AreaTriggerEntry {
+                id,
+                map_id: field_u32(AREA_TRIGGER_MAP_FIELD),
+                x: field_f32(AREA_TRIGGER_X_FIELD),
+                y: field_f32(AREA_TRIGGER_Y_FIELD),
+                z: field_f32(AREA_TRIGGER_Z_FIELD),
+                radius: field_f32(AREA_TRIGGER_RADIUS_FIELD),
+                box_x: field_f32(AREA_TRIGGER_BOX_X_FIELD),
+                box_y: field_f32(AREA_TRIGGER_BOX_Y_FIELD),
+                box_z: field_f32(AREA_TRIGGER_BOX_Z_FIELD),
+                box_orientation: field_f32(AREA_TRIGGER_BOX_ORIENTATION_FIELD),
+            },
+        );
+    }
+    triggers
+}
+
 pub(in crate::world) fn parse_area_tables(bytes: &[u8]) -> HashMap<u32, AreaTableEntry> {
     const DBC_HEADER_SIZE: usize = 20;
     const AREA_TABLE_MIN_FIELD_COUNT: usize = 25;
@@ -972,6 +1105,51 @@ pub(in crate::world) fn load_spell_radii(path: &std::path::Path) -> HashMap<u32,
         return HashMap::new();
     };
     parse_spell_radii(&bytes)
+}
+
+pub(in crate::world) fn load_spell_cones(
+    data_dir: &std::path::Path,
+) -> HashMap<u32, SpellConeEntry> {
+    let candidates = [
+        data_dir
+            .join("dbc")
+            .join("original_data")
+            .join("SpellCone.sql"),
+        data_dir.join("SpellCone.sql"),
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join("sql")
+            .join("base")
+            .join("dbc")
+            .join("original_data")
+            .join("SpellCone.sql"),
+    ];
+    candidates
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
+        .map(|sql| parse_spell_cones_sql(&sql))
+        .unwrap_or_default()
+}
+
+pub(in crate::world) fn parse_spell_cones_sql(sql: &str) -> HashMap<u32, SpellConeEntry> {
+    let Some(values_start) = sql.find("VALUES") else {
+        return HashMap::new();
+    };
+    let mut entries = HashMap::new();
+    for tuple in sql[values_start..].split('(').skip(1) {
+        let Some(tuple) = tuple.split(')').next() else {
+            continue;
+        };
+        let mut fields = tuple.split(',').map(str::trim);
+        let Some(id) = fields.next().and_then(|value| value.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(angle_degrees) = fields.next().and_then(|value| value.parse::<i32>().ok()) else {
+            continue;
+        };
+        entries.insert(id, SpellConeEntry { angle_degrees });
+    }
+    entries
 }
 
 pub(in crate::world) fn load_skill_line_abilities(

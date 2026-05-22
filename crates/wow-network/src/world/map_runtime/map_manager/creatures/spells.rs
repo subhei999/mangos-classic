@@ -147,6 +147,27 @@ impl MapRuntimeManager {
         due_at
     }
 
+    pub(in crate::world) async fn interrupt_db_creature_spell_cast(
+        &self,
+        map_id: u32,
+        caster: ObjectGuid,
+        failure: u8,
+        school_lockout_duration: Option<Duration>,
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureInterruptedSpellCastEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map.lock().await.interrupt_db_creature_spell_cast(
+            caster,
+            failure,
+            school_lockout_duration,
+            now,
+        );
+        event
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(in crate::world) async fn process_db_creature_event_ai_hp_actions(
         &self,

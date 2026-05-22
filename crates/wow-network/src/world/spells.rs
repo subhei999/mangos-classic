@@ -311,17 +311,35 @@ pub(in crate::world) async fn player_aura_rank_cast_failure(
     targets: &SpellCastTargets,
     caster: ObjectGuid,
 ) -> anyhow::Result<Option<u8>> {
-    if !spell_has_aura_application(spell_template)
+    let plan = SpellInfo::from_template(spell_template)
+        .player_spell_plan()
+        .filter(|plan| plan.profile.kind == spell_profile.kind);
+    let Some(plan) = plan else {
+        return Ok(None);
+    };
+    let has_aura_application = plan
+        .effects
+        .iter()
+        .any(|effect| effect.dispatch == SpellEffectDispatch::ApplyAura);
+    let has_direct_damage_application = plan.effects.iter().any(|effect| {
+        matches!(
+            effect.dispatch,
+            SpellEffectDispatch::SchoolDamage
+                | SpellEffectDispatch::WeaponDamage
+                | SpellEffectDispatch::WeaponPercentDamage
+        )
+    });
+    if !has_aura_application
         || !matches!(
-            spell_profile.kind,
+            plan.profile.kind,
             SpellCastKind::AuraApplication | SpellCastKind::DirectHeal
         )
-        || spell_has_direct_damage_application(spell_template)
+        || has_direct_damage_application
     {
         return Ok(None);
     }
-    match spell_profile.aura_target {
-        SpellAuraTarget::Caster => {
+    match plan.target {
+        SpellPlanTarget::Caster => {
             let resolution = aura_rank_conflict_resolution(
                 deps.shared_world.object_mgr,
                 deps.world_db_pool,
@@ -332,7 +350,7 @@ pub(in crate::world) async fn player_aura_rank_cast_failure(
             .await?;
             Ok(resolution.failure)
         }
-        SpellAuraTarget::UnitTarget => {
+        SpellPlanTarget::Unit | SpellPlanTarget::HostileUnit | SpellPlanTarget::FriendlyUnit => {
             let Some(character) = session.character.active_character.as_ref() else {
                 return Ok(None);
             };
@@ -376,7 +394,9 @@ pub(in crate::world) async fn player_aura_rank_cast_failure(
             .await?;
             Ok(resolution.failure)
         }
-        SpellAuraTarget::CasterAreaEnemy | SpellAuraTarget::DestinationAreaEnemy => Ok(None),
+        SpellPlanTarget::CasterAreaEnemy { .. }
+        | SpellPlanTarget::DestinationAreaEnemy
+        | SpellPlanTarget::Destination => Ok(None),
     }
 }
 
@@ -392,9 +412,13 @@ pub(in crate::world) async fn begin_failed_hostile_db_creature_spell_retaliation
     targets: &SpellCastTargets,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let has_hostile_unit_aura = matches!(spell_profile.aura_target, SpellAuraTarget::UnitTarget)
-        && spell_template_has_hostile_unit_aura(spell_template);
-    if !has_hostile_unit_aura && !spell_template_has_hostile_unit_school_damage(spell_template) {
+    let spell_plan = SpellInfo::from_template(spell_template)
+        .player_spell_plan()
+        .filter(|plan| plan.profile.kind == spell_profile.kind);
+    if !spell_plan
+        .as_ref()
+        .is_some_and(SpellPlan::should_retaliate_on_failed_hostile_cast)
+    {
         return Ok(());
     }
     let Some(target) = targets.unit_target.filter(|target| target.is_creature()) else {
@@ -422,7 +446,13 @@ pub(in crate::world) async fn player_db_creature_spell_target_outcome(
     spell_profile: &SpellCastProfile,
     targets: &SpellCastTargets,
 ) -> anyhow::Result<Option<PlayerSpellTargetOutcome>> {
-    if !spell_uses_db_creature_unit_target_outcome(spell_template, spell_profile) {
+    let spell_plan = SpellInfo::from_template(spell_template)
+        .player_spell_plan()
+        .filter(|plan| plan.profile.kind == spell_profile.kind);
+    if !spell_plan
+        .as_ref()
+        .is_some_and(SpellPlan::uses_db_creature_unit_target_outcome)
+    {
         return Ok(None);
     }
     let Some(target) = targets.unit_target.filter(|target| target.is_creature()) else {
@@ -468,34 +498,6 @@ pub(in crate::world) async fn player_db_creature_spell_target_outcome(
     }))
 }
 
-fn spell_uses_db_creature_unit_target_outcome(
-    spell_template: &wow_db::SpellTemplateQuery,
-    spell_profile: &SpellCastProfile,
-) -> bool {
-    let has_hostile_unit_school_damage =
-        spell_template_has_hostile_unit_school_damage(spell_template);
-    let has_hostile_unit_aura = matches!(spell_profile.aura_target, SpellAuraTarget::UnitTarget)
-        && spell_template_has_hostile_unit_aura(spell_template);
-    matches!(
-        spell_profile.kind,
-        SpellCastKind::InstantDamage | SpellCastKind::AuraApplication
-    ) && (has_hostile_unit_school_damage || has_hostile_unit_aura)
-}
-
-fn spell_template_has_hostile_unit_school_damage(
-    spell_template: &wow_db::SpellTemplateQuery,
-) -> bool {
-    SpellInfo::from_template(spell_template)
-        .effects
-        .iter()
-        .any(|effect| {
-            effect.dispatch == SpellEffectDispatch::SchoolDamage
-                && [effect.implicit_target_a, effect.implicit_target_b]
-                    .into_iter()
-                    .any(|target| target == TARGET_UNIT_ENEMY)
-        })
-}
-
 fn spell_target_outcome_school_and_damage_class(
     spell_template: &wow_db::SpellTemplateQuery,
 ) -> (u8, u32) {
@@ -508,18 +510,6 @@ fn spell_target_outcome_school_and_damage_class(
         spell_template.dmg_class
     };
     (school, dmg_class)
-}
-
-fn spell_template_has_hostile_unit_aura(spell_template: &wow_db::SpellTemplateQuery) -> bool {
-    SpellInfo::from_template(spell_template)
-        .effects
-        .iter()
-        .any(|effect| {
-            matches!(effect.dispatch, SpellEffectDispatch::ApplyAura)
-                && [effect.implicit_target_a, effect.implicit_target_b]
-                    .into_iter()
-                    .any(|target| target == TARGET_UNIT_ENEMY)
-        })
 }
 
 pub(in crate::world) async fn spell_combo_point_cast_failure(
@@ -551,9 +541,13 @@ pub(in crate::world) async fn spell_heal_cast_failure(
     targets: &SpellCastTargets,
 ) -> Option<u8> {
     let character = session.character.active_character.as_ref()?;
-    if SpellInfo::from_template(spell_template).unit_target_kind(SpellCastKind::DirectHeal)
-        == SpellTargetKind::Caster
-    {
+    let spell_info = SpellInfo::from_template(spell_template);
+    let target_kind = spell_info
+        .player_spell_plan()
+        .filter(|plan| plan.profile.kind == SpellCastKind::DirectHeal)
+        .map(|plan| plan.target.target_kind())
+        .unwrap_or(SpellTargetKind::Caster);
+    if target_kind == SpellTargetKind::Caster {
         return None;
     }
     let target = targets.unit_target?;
@@ -582,7 +576,12 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
     spell_profile: &SpellCastProfile,
     targets: &SpellCastTargets,
 ) -> Option<u8> {
-    let target_kind = SpellInfo::from_template(spell_template).unit_target_kind(spell_profile.kind);
+    let spell_info = SpellInfo::from_template(spell_template);
+    let target_kind = spell_info
+        .player_spell_plan()
+        .filter(|plan| plan.profile.kind == spell_profile.kind)
+        .map(|plan| plan.target.target_kind())
+        .unwrap_or(SpellTargetKind::Caster);
     if target_kind.requires_unit_target() && targets.unit_target.is_none() {
         return Some(SPELL_FAILED_BAD_IMPLICIT_TARGETS);
     }
@@ -644,6 +643,7 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
     match validation.check {
         PlayerSpellTargetCheck::Clear => None,
         PlayerSpellTargetCheck::BadFacing => Some(SPELL_FAILED_UNIT_NOT_INFRONT),
+        PlayerSpellTargetCheck::NotAttackable => Some(SPELL_FAILED_BAD_TARGETS),
         PlayerSpellTargetCheck::NavigationBlocked(
             DbCreatureNavigationResult::LineOfSightBlocked,
         ) => Some(SPELL_FAILED_LINE_OF_SIGHT),
@@ -676,7 +676,11 @@ pub(in crate::world) async fn resolve_player_spell_cast_targets(
     spell_info: &SpellInfo<'_>,
     kind: SpellCastKind,
 ) -> SpellCastTargets {
-    let target_kind = spell_info.unit_target_kind(kind);
+    let target_kind = spell_info
+        .player_spell_plan()
+        .filter(|plan| plan.profile.kind == kind)
+        .map(|plan| plan.target.target_kind())
+        .unwrap_or(SpellTargetKind::Caster);
     if target_kind.requires_unit_target() && targets.unit_target.is_none() {
         if let Some(selected_target) = maps.player_selected_target(map_id, character_guid).await {
             targets.target_mask =
@@ -688,9 +692,10 @@ pub(in crate::world) async fn resolve_player_spell_cast_targets(
 }
 
 pub(in crate::world) fn spell_blocks_mana_regen(template: &wow_db::SpellTemplateQuery) -> bool {
-    template.power_type == POWER_TYPE_MANA
-        && template.mana_cost > 0
-        && (template.attributes_ex2 & SPELL_ATTR_EX2_DONT_BLOCK_MANA_REGEN) == 0
+    SpellInfo::from_template(template)
+        .player_spell_plan()
+        .map(|plan| plan.behavior.blocks_mana_regen)
+        .unwrap_or(false)
 }
 
 pub(in crate::world) async fn sync_session_player_power_from_map(
@@ -754,9 +759,13 @@ pub(in crate::world) async fn spell_travel_delay_millis(
     }
     let spell_info = SpellInfo::from_template(spell_template);
     let has_missile_damage = spell_info
-        .effects
-        .iter()
-        .any(|effect| effect.dispatch == SpellEffectDispatch::SchoolDamage);
+        .player_spell_plan()
+        .map(|plan| {
+            plan.effects
+                .iter()
+                .any(|effect| effect.dispatch == SpellEffectDispatch::SchoolDamage)
+        })
+        .unwrap_or(false);
     if !has_missile_damage {
         return 0;
     }
@@ -785,6 +794,7 @@ mod cooldowns;
 mod definitions;
 mod effects;
 mod packets;
+mod plan;
 mod skills;
 mod spell;
 mod spell_mgr;
@@ -797,6 +807,7 @@ pub(in crate::world) use self::cooldowns::*;
 pub(in crate::world) use self::definitions::*;
 pub(in crate::world) use self::effects::*;
 pub(in crate::world) use self::packets::*;
+pub(in crate::world) use self::plan::plan_effect_target;
 pub(in crate::world) use self::skills::*;
 pub(in crate::world) use self::spell::*;
 pub(in crate::world) use self::spell_mgr::*;
@@ -819,29 +830,6 @@ pub(in crate::world) fn item_use_spell_cast_profile(
     SpellInfo::from_template(template)
         .prepare_item_cast(ObjectGuid::EMPTY)
         .map(|prepared| prepared.profile)
-}
-
-pub(in crate::world) fn spell_has_aura_application(template: &wow_db::SpellTemplateQuery) -> bool {
-    SpellInfo::from_template(template)
-        .effects
-        .iter()
-        .any(|effect| effect.dispatch == SpellEffectDispatch::ApplyAura)
-}
-
-pub(in crate::world) fn spell_has_direct_damage_application(
-    template: &wow_db::SpellTemplateQuery,
-) -> bool {
-    SpellInfo::from_template(template)
-        .effects
-        .iter()
-        .any(|effect| {
-            matches!(
-                effect.dispatch,
-                SpellEffectDispatch::SchoolDamage
-                    | SpellEffectDispatch::WeaponDamage
-                    | SpellEffectDispatch::WeaponPercentDamage
-            )
-        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -993,11 +981,24 @@ pub(in crate::world) fn build_active_aura(
         })
         .unwrap_or(0);
     let spell_info = SpellInfo::from_template(template);
+    let channel_interrupt_flags = spell_info
+        .plan_channel()
+        .map_or(0, |channel| match channel {
+            SpellPlanChannel::SelfAura {
+                interrupt_flags, ..
+            }
+            | SpellPlanChannel::UnitPeriodicTrigger {
+                interrupt_flags, ..
+            }
+            | SpellPlanChannel::PersistentArea {
+                interrupt_flags, ..
+            } => interrupt_flags,
+        });
     ActiveAura {
         spell_id: template.id,
         caster,
         level,
-        interrupt_flags: template.aura_interrupt_flags,
+        interrupt_flags: template.aura_interrupt_flags | channel_interrupt_flags,
         positive: active_aura_is_positive(&spell_info),
         visible: true,
         duration_millis: (duration_millis > 0).then_some(duration_millis as u32),
@@ -1319,7 +1320,7 @@ pub(in crate::world) fn passive_spell_active_aura(
 pub(in crate::world) fn spell_needs_passive_cast_at_learn(
     template: &wow_db::SpellTemplateQuery,
 ) -> bool {
-    template.attributes & SPELL_ATTR_PASSIVE != 0 && spell_has_aura_application(template)
+    SpellInfo::from_template(template).needs_passive_cast_at_learn()
 }
 
 pub(in crate::world) fn spell_aura_stat_modifiers(
@@ -1388,6 +1389,15 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
                 amount: spell_effect_calculated_i32(effect, value_context),
                 mana_multiplier_millis: (effect.multiple_value.max(0.0) * 1000.0).round() as u32,
             }),
+            SPELL_AURA_MOD_POWER_REGEN_PERCENT => Some(AuraStatModifier::PowerRegenPercent {
+                power_type: effect.misc_value.max(0) as u32,
+                percent: spell_effect_calculated_i32(effect, value_context),
+            }),
+            SPELL_AURA_MOD_MANA_REGEN_INTERRUPT => {
+                Some(AuraStatModifier::ManaRegenInterruptPercent {
+                    percent: spell_effect_calculated_i32(effect, value_context),
+                })
+            }
             SPELL_AURA_MOD_STAT => {
                 let stat = usize::try_from(effect.misc_value).ok();
                 Some(AuraStatModifier::Stat {
@@ -1441,6 +1451,14 @@ pub(in crate::world) fn spell_school_mask_from_misc_value(misc_value: i32) -> u3
         u32::MAX
     } else {
         misc_value as u32
+    }
+}
+
+pub(in crate::world) fn spell_school_mask_from_school(school: u32) -> u32 {
+    if school < MAX_SPELL_SCHOOL as u32 {
+        1u32 << school
+    } else {
+        school
     }
 }
 

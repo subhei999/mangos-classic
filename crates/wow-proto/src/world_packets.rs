@@ -870,6 +870,29 @@ impl AreaTriggerRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoneUpdateRequest {
+    pub zone_id: u32,
+}
+
+impl ZoneUpdateRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        if buf.remaining() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CMSG_ZONEUPDATE missing zone id",
+            ));
+        }
+        Ok(Self {
+            zone_id: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.zone_id);
+    }
+}
+
 macro_rules! empty_request {
     ($name:ident) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -3109,6 +3132,7 @@ impl ServerWorldPacket for MsgCorpseQueryResponse {
 pub struct SmsgLogXpGainResponse {
     pub source: Option<ObjectGuid>,
     pub given_xp: u32,
+    pub base_xp: u32,
 }
 
 impl ServerWorldPacket for SmsgLogXpGainResponse {
@@ -3119,7 +3143,7 @@ impl ServerWorldPacket for SmsgLogXpGainResponse {
         buf.put_u32_le(self.given_xp);
         buf.put_u8(u8::from(self.source.is_none()));
         if self.source.is_some() {
-            buf.put_u32_le(self.given_xp);
+            buf.put_u32_le(self.base_xp);
             buf.put_f32_le(1.0);
         }
     }
@@ -5781,6 +5805,7 @@ mod tests {
         let xp = SmsgLogXpGainResponse {
             source: Some(guid),
             given_xp: 52,
+            base_xp: 52,
         };
         let mut expected_xp = Vec::new();
         expected_xp.extend_from_slice(&guid.raw().to_le_bytes());

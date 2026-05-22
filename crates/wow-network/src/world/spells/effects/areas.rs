@@ -85,16 +85,25 @@ pub(in crate::world) async fn apply_player_persistent_area_aura_effect(
         return Ok(());
     };
 
+    let channel = SpellInfo::from_template(spell_template).plan_channel();
+    let (channeled, duration_index, channel_interrupt_flags) = match channel {
+        Some(SpellPlanChannel::PersistentArea {
+            duration_index,
+            interrupt_flags,
+        }) => (true, duration_index, interrupt_flags),
+        _ => (false, spell_template.duration_index, 0),
+    };
+
     let Some(duration) = deps
         .shared_world
         .maps
-        .spell_duration(spell_template.duration_index)
+        .spell_duration(duration_index)
         .map(|duration| duration.duration_millis)
         .filter(|duration| *duration > 0)
     else {
         warn!(
             spell_id = spell_template.id,
-            duration_index = spell_template.duration_index,
+            duration_index,
             "Skipping persistent area aura with missing positive SpellDuration.dbc row"
         );
 
@@ -108,10 +117,6 @@ pub(in crate::world) async fn apply_player_persistent_area_aura_effect(
         value_context,
         now,
     );
-
-    let channeled = (spell_template.attributes_ex
-        & (SPELL_ATTR_EX_IS_CHANNELED | SPELL_ATTR_EX_IS_SELF_CHANNELED))
-        != 0;
 
     let Some(event) = deps
         .shared_world
@@ -127,7 +132,7 @@ pub(in crate::world) async fn apply_player_persistent_area_aura_effect(
             duration as u32,
             periodic_damage,
             channeled,
-            spell_template.channel_interrupt_flags,
+            channel_interrupt_flags,
             now,
         )
         .await?
@@ -217,6 +222,16 @@ pub(in crate::world) async fn apply_player_periodic_trigger_channel_effect(
 
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    let Some(SpellPlanChannel::UnitPeriodicTrigger {
+        trigger_spell,
+        tick_millis,
+        duration_index,
+        interrupt_flags,
+    }) = SpellInfo::from_template(spell_template).plan_channel()
+    else {
+        return Ok(());
+    };
+
     let Some(target) = targets.unit_target else {
         warn!(
             spell_id = spell_template.id,
@@ -226,11 +241,11 @@ pub(in crate::world) async fn apply_player_periodic_trigger_channel_effect(
         return Ok(());
     };
 
-    if effect.trigger_spell == 0 || effect.amplitude == 0 {
+    if trigger_spell == 0 || tick_millis == 0 || effect.trigger_spell != trigger_spell {
         warn!(
             spell_id = spell_template.id,
-            effect_trigger_spell = effect.trigger_spell,
-            effect_amplitude = effect.amplitude,
+            effect_trigger_spell = trigger_spell,
+            effect_amplitude = tick_millis,
             "Skipping periodic trigger channel with incomplete trigger data"
         );
 
@@ -240,13 +255,13 @@ pub(in crate::world) async fn apply_player_periodic_trigger_channel_effect(
     let Some(duration) = deps
         .shared_world
         .maps
-        .spell_duration(spell_template.duration_index)
+        .spell_duration(duration_index)
         .map(|duration| duration.duration_millis)
         .filter(|duration| *duration > 0)
     else {
         warn!(
             spell_id = spell_template.id,
-            duration_index = spell_template.duration_index,
+            duration_index,
             "Skipping periodic trigger channel with missing positive SpellDuration.dbc row"
         );
 
@@ -256,12 +271,12 @@ pub(in crate::world) async fn apply_player_periodic_trigger_channel_effect(
     let Some(triggered_template) = deps
         .shared_world
         .object_mgr
-        .spell_template(deps.world_db_pool, effect.trigger_spell)
+        .spell_template(deps.world_db_pool, trigger_spell)
         .await?
     else {
         warn!(
             spell_id = spell_template.id,
-            triggered_spell_id = effect.trigger_spell,
+            triggered_spell_id = trigger_spell,
             "Skipping periodic trigger channel with missing triggered spell_template row"
         );
 
@@ -273,7 +288,7 @@ pub(in crate::world) async fn apply_player_periodic_trigger_channel_effect(
     let Some(triggered_profile) = triggered_info.player_cast_profile() else {
         warn!(
             spell_id = spell_template.id,
-            triggered_spell_id = effect.trigger_spell,
+            triggered_spell_id = trigger_spell,
             "Skipping periodic trigger channel with unsupported triggered spell shape"
         );
 
@@ -300,7 +315,7 @@ pub(in crate::world) async fn apply_player_periodic_trigger_channel_effect(
     else {
         warn!(
             spell_id = spell_template.id,
-            triggered_spell_id = effect.trigger_spell,
+            triggered_spell_id = trigger_spell,
             "Skipping periodic trigger channel whose triggered spell has no direct damage effect"
         );
 
@@ -317,9 +332,9 @@ pub(in crate::world) async fn apply_player_periodic_trigger_channel_effect(
             spell_template.id,
             target,
             duration as u32,
-            effect.amplitude,
+            tick_millis,
             damage_effect,
-            spell_template.channel_interrupt_flags,
+            interrupt_flags,
             triggered_template.speed,
             now,
         )

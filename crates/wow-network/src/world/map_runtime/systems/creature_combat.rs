@@ -143,6 +143,7 @@ pub(in crate::world) enum PlayerSpellTargetCheck {
     NoActiveCharacter,
     MissingTarget,
     TargetNotAlive,
+    NotAttackable,
     NavigationBlocked(DbCreatureNavigationResult),
     OutOfRange,
     TooClose,
@@ -379,6 +380,7 @@ impl MapRuntime {
 
     pub(in crate::world) fn validate_player_spell_against_db_creature(
         &self,
+        faction_templates: &FactionTemplateStore,
         character_guid: u32,
         target: ObjectGuid,
         navigation: &DbCreatureNavigationGuardrail,
@@ -398,6 +400,15 @@ impl MapRuntime {
         if !creature.is_alive() {
             return PlayerSpellTargetValidation {
                 check: PlayerSpellTargetCheck::TargetNotAlive,
+            };
+        }
+        if !can_player_attack_creature_with_spell(
+            faction_templates,
+            creature.spawn.template.faction,
+            player.race,
+        ) {
+            return PlayerSpellTargetValidation {
+                check: PlayerSpellTargetCheck::NotAttackable,
             };
         }
         let navigation_check =
@@ -930,9 +941,11 @@ impl MapRuntime {
         if active_aura_creature_spell_cast_failure(&creature.active_auras).is_some() {
             return None;
         }
-        if (template.attributes_ex & SPELL_ATTR_EX_NO_AUTOCAST_AI) != 0
-            || (template.attributes & SPELL_ATTR_PASSIVE) != 0
-        {
+        if !db_creature_spell_school_lockout_ready(
+            &creature.spell_school_lockouts_until,
+            spell_school_mask_from_school(template.school),
+            now,
+        ) {
             return None;
         }
         let spell_info = SpellInfo::from_template(template);
@@ -943,47 +956,40 @@ impl MapRuntime {
             .max(creature.spawn.template.min_level);
         let value_context =
             SpellEffectValueContext::with_spell_rank_level(template, (caster_level / 5) as i32, 0);
-        let aura = (spell_info.has_effect(SpellEffectDispatch::ApplyAura)
-            && (target.is_player() || target.is_creature()))
-        .then(|| build_active_aura(template, caster, caster_level, value_context, now, duration));
-        let effect = if spell_info.has_direct_damage_effect() {
-            let amount = spell_info.direct_damage_with_context(value_context);
-            if amount == 0 {
-                return None;
-            }
-            ActiveDbCreatureSpellEffect::Damage {
+        let plan = spell_info.db_creature_spell_plan(target, value_context)?;
+        let aura = plan.aura.then(|| {
+            build_active_aura(template, caster, caster_level, value_context, now, duration)
+        });
+        let effect = match plan.effect {
+            DbCreatureSpellPlanEffect::Damage {
                 amount,
-                school: template.school as u8,
-                dmg_class: template.dmg_class,
-                attributes_ex2: template.attributes_ex2,
-                attributes_ex3: template.attributes_ex3,
+                school,
+                dmg_class,
+                attributes_ex2,
+                attributes_ex3,
+            } => ActiveDbCreatureSpellEffect::Damage {
+                amount,
+                school,
+                dmg_class,
+                attributes_ex2,
+                attributes_ex3,
+            },
+            DbCreatureSpellPlanEffect::Heal { amount } => {
+                ActiveDbCreatureSpellEffect::Heal { amount }
             }
-        } else if spell_info.has_direct_heal_effect() {
-            let amount = spell_info.direct_heal();
-            if amount == 0 {
-                return None;
-            }
-            ActiveDbCreatureSpellEffect::Heal { amount }
-        } else if aura.is_some() {
-            ActiveDbCreatureSpellEffect::None
-        } else {
-            return None;
-        };
-        let mana_cost = if template.power_type == POWER_TYPE_MANA {
-            template.mana_cost
-        } else {
-            0
+            DbCreatureSpellPlanEffect::AuraOnly => ActiveDbCreatureSpellEffect::None,
         };
         let cast_time_millis = spell_cast_time_millis(cast_time);
         Some(ActiveDbCreatureSpellCast {
             caster,
             target,
-            spell_id: template.id,
-            requires_behind: spell_info.requires_behind_target(),
+            spell_id: plan.spell_id,
+            school_mask: spell_school_mask_from_school(template.school),
+            requires_behind: plan.requires_behind,
             effect,
             aura,
             range,
-            mana_cost,
+            mana_cost: plan.mana_cost,
             cast_time_millis,
             due_at: now + Duration::from_millis(cast_time_millis as u64),
         })
@@ -1745,6 +1751,26 @@ impl MapRuntime {
         })
     }
 
+    pub(in crate::world) fn interrupt_db_creature_spell_cast(
+        &mut self,
+        caster: ObjectGuid,
+        failure: u8,
+        school_lockout_duration: Option<Duration>,
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureInterruptedSpellCastEvent>> {
+        let Some(cast) = self.active_creature_spell_casts.remove(&caster.raw()) else {
+            return Ok(None);
+        };
+        if let Some(duration) = school_lockout_duration.filter(|duration| !duration.is_zero()) {
+            if let Some(creature) = self.creatures.get_mut(&caster.raw()) {
+                db_creature_insert_spell_school_lockout(creature, cast.school_mask, now + duration);
+            }
+        }
+        self.sync_db_creature_ooc_event_ai_tracking(caster.raw(), now);
+        self.db_creature_interrupted_spell_cast_event(caster, cast.spell_id, failure)
+            .map(Some)
+    }
+
     pub(in crate::world) fn active_db_creature_spell_cast_due_at(
         &self,
         attacker: ObjectGuid,
@@ -2351,6 +2377,7 @@ impl MapRuntime {
                 opcode: WorldOpcode::SmsgAttackerStateUpdate as u16,
                 body: build_attacker_state_update_body_for_outcome(attacker, victim, outcome, 0)?,
             };
+            let attacker_state_body = attacker_state.body.clone();
             let health_update_body = build_player_health_update_body(victim, victim_health)?;
             let health_update = OutboundWorldPacket {
                 opcode: WorldOpcode::SmsgUpdateObject as u16,
@@ -2378,6 +2405,7 @@ impl MapRuntime {
                 combat,
                 direct_packets: Vec::new(),
                 aura_packet: None,
+                attacker_state_body,
                 health_update_body,
                 observer_packets,
             }));
@@ -2400,10 +2428,25 @@ impl MapRuntime {
         if damage > 0 {
             self.refresh_db_creature_combat_leash(attacker, now);
         }
+        let mut packet_outcome = outcome;
+        if applied.absorbed_damage > 0 {
+            packet_outcome.hit_info |= HITINFO_ABSORB;
+            packet_outcome.absorbed = packet_outcome
+                .absorbed
+                .saturating_add(applied.absorbed_damage);
+            packet_outcome.total_damage = applied.applied_damage;
+            packet_outcome.school_damage = applied.applied_damage;
+        }
         let attacker_state = OutboundWorldPacket {
             opcode: WorldOpcode::SmsgAttackerStateUpdate as u16,
-            body: build_attacker_state_update_body_for_outcome(attacker, victim, outcome, 0)?,
+            body: build_attacker_state_update_body_for_outcome(
+                attacker,
+                victim,
+                packet_outcome,
+                0,
+            )?,
         };
+        let attacker_state_body = attacker_state.body.clone();
         let health_update = OutboundWorldPacket {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
             body: health_update_body.clone(),
@@ -2430,6 +2473,7 @@ impl MapRuntime {
             combat,
             direct_packets,
             aura_packet,
+            attacker_state_body,
             health_update_body,
             observer_packets,
         }))
@@ -2480,25 +2524,6 @@ impl MapRuntime {
             ),
         ));
         let requested_damage = outcome.final_damage;
-        let damage = victim_player.health.min(requested_damage);
-        let spell_non_melee_log_body = outcome
-            .miss_info
-            .is_none()
-            .then(|| {
-                build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
-                    attacker,
-                    target: victim,
-                    spell_id,
-                    damage: requested_damage,
-                    school,
-                    absorb: outcome.absorb,
-                    resist: outcome.resist,
-                    periodic: false,
-                    blocked: outcome.blocked,
-                    hit_info: outcome.hit_info,
-                })
-            })
-            .transpose()?;
         let spell_miss_log_body = outcome
             .miss_info
             .map(|miss_info| build_spell_log_miss_body(attacker, victim, spell_id, miss_info))
@@ -2512,6 +2537,8 @@ impl MapRuntime {
             aura_packet,
             health_update_body,
             mut observer_packets,
+            runtime_absorb,
+            applied_damage,
         ) = if requested_damage == 0 {
             (
                 victim_health_before,
@@ -2520,12 +2547,14 @@ impl MapRuntime {
                 None,
                 build_player_health_update_body(victim, victim_health_before)?,
                 Vec::new(),
+                0,
+                0,
             )
         } else {
             let Some(applied) = self.apply_player_world_damage_with_school_mask(
                 victim,
                 Some(attacker),
-                damage,
+                requested_damage,
                 WorldDamageKind::SpellDirect,
                 u32::from(school).max(SPELL_SCHOOL_MASK_NORMAL),
                 now,
@@ -2540,10 +2569,31 @@ impl MapRuntime {
                 applied.aura_packet,
                 applied.health_packet.body.clone(),
                 applied.observer_packets,
+                applied.absorbed_damage,
+                applied.applied_damage,
             )
         };
-        if damage > 0 {
-            self.add_db_creature_threat(attacker, victim, damage as f32);
+        let total_absorb = outcome.absorb.saturating_add(runtime_absorb);
+        let spell_non_melee_log_body = outcome
+            .miss_info
+            .is_none()
+            .then(|| {
+                build_spell_non_melee_damage_log_body(SpellNonMeleeDamageLogPacket {
+                    attacker,
+                    target: victim,
+                    spell_id,
+                    damage: applied_damage,
+                    school,
+                    absorb: total_absorb,
+                    resist: outcome.resist,
+                    periodic: false,
+                    blocked: outcome.blocked,
+                    hit_info: outcome.hit_info,
+                })
+            })
+            .transpose()?;
+        if requested_damage > 0 {
+            self.add_db_creature_threat(attacker, victim, requested_damage as f32);
             self.refresh_db_creature_combat_leash(attacker, now);
         }
         for player_guid in self.nearby_player_guids(
@@ -2578,7 +2628,7 @@ impl MapRuntime {
             }
         }
         Ok(Some(DbCreaturePlayerSpellDamageEvent {
-            damage,
+            damage: applied_damage,
             victim_health,
             outcome,
             spell_non_melee_log_body,
@@ -2993,6 +3043,23 @@ pub(in crate::world) fn db_creature_spell_cooldown_ready(
                 .is_none_or(|cooldown| now >= *cooldown))
 }
 
+pub(in crate::world) fn db_creature_spell_school_lockout_ready(
+    lockouts_until: &std::collections::HashMap<u32, Instant>,
+    school_mask: u32,
+    now: Instant,
+) -> bool {
+    if school_mask == 0 {
+        return true;
+    }
+    (0..32).all(|bit_index| {
+        let bit = 1u32 << bit_index;
+        school_mask & bit == 0
+            || lockouts_until
+                .get(&bit)
+                .is_none_or(|lockout_until| now >= *lockout_until)
+    })
+}
+
 pub(in crate::world) fn db_creature_spell_list_repeat_cooldown_key(
     spell: &wow_db::CreatureSpellListQuery,
     template_category: u32,
@@ -3047,6 +3114,31 @@ pub(in crate::world) fn db_creature_insert_spell_cooldown(
             }
         })
         .or_insert(cooldown_until);
+}
+
+pub(in crate::world) fn db_creature_insert_spell_school_lockout(
+    creature: &mut DbCreatureRuntime,
+    school_mask: u32,
+    lockout_until: Instant,
+) {
+    if school_mask == 0 {
+        return;
+    }
+    for bit_index in 0..32 {
+        let bit = 1u32 << bit_index;
+        if school_mask & bit == 0 {
+            continue;
+        }
+        creature
+            .spell_school_lockouts_until
+            .entry(bit)
+            .and_modify(|existing| {
+                if lockout_until > *existing {
+                    *existing = lockout_until;
+                }
+            })
+            .or_insert(lockout_until);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

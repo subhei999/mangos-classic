@@ -716,6 +716,63 @@ fn area_table_dbc_parser_indexes_explore_flags_by_map() {
 }
 
 #[test]
+fn area_trigger_dbc_parser_reads_cmangos_geometry() {
+    let bytes = test_u32_dbc(&[
+        [
+            100,
+            0,
+            10.0f32.to_bits(),
+            20.0f32.to_bits(),
+            30.0f32.to_bits(),
+            5.0f32.to_bits(),
+            0,
+            0,
+            0,
+            0,
+        ],
+        [
+            200,
+            1,
+            100.0f32.to_bits(),
+            100.0f32.to_bits(),
+            40.0f32.to_bits(),
+            0,
+            4.0f32.to_bits(),
+            10.0f32.to_bits(),
+            6.0f32.to_bits(),
+            std::f32::consts::FRAC_PI_2.to_bits(),
+        ],
+    ]);
+    let mut files = WorldDataFiles::fallback();
+    files.area_triggers = parse_area_triggers(&bytes);
+
+    assert_eq!(
+        files.area_trigger_contains_position(100, WorldPosition::new(0, 13.0, 24.0, 30.0, 0.0), 0.0),
+        Some(true)
+    );
+    assert_eq!(
+        files.area_trigger_contains_position(100, WorldPosition::new(0, 16.0, 20.0, 30.0, 0.0), 0.0),
+        Some(false)
+    );
+    assert_eq!(
+        files.area_trigger_contains_position(100, WorldPosition::new(1, 10.0, 20.0, 30.0, 0.0), 0.0),
+        Some(false)
+    );
+    assert_eq!(
+        files.area_trigger_contains_position(200, WorldPosition::new(1, 104.0, 100.0, 42.0, 0.0), 0.0),
+        Some(true)
+    );
+    assert_eq!(
+        files.area_trigger_contains_position(200, WorldPosition::new(1, 106.0, 100.0, 42.0, 0.0), 0.0),
+        Some(false)
+    );
+    assert_eq!(
+        files.area_trigger_contains_position(999, WorldPosition::new(1, 100.0, 100.0, 40.0, 0.0), 0.0),
+        None
+    );
+}
+
+#[test]
 fn wmo_area_table_dbc_parser_maps_vmap_triple_to_area_table_entry() {
     let area_bytes = test_u32_dbc(&[
         [

@@ -6,8 +6,6 @@ pub(in crate::world) struct SpellInfo<'a> {
     pub(in crate::world) effects: [SpellInfoEffect; 3],
 }
 
-pub(in crate::world) const SPELL_ATTR_EX_NO_AUTOCAST_AI: u32 = 0x0002_0000;
-
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 pub(in crate::world) struct SpellInfoEffect {
@@ -137,54 +135,12 @@ impl<'a> SpellInfo<'a> {
     }
 
     pub(in crate::world) fn player_cast_profile(&self) -> Option<SpellCastProfile> {
-        let kind = if self.is_auto_repeat_ranged() {
-            SpellCastKind::AutoRepeatRanged
-        } else if self.has_on_next_swing_attribute() {
-            SpellCastKind::NextMeleeSwing
-        } else if self.has_effect(SpellEffectDispatch::Charge) {
-            SpellCastKind::Charge
-        } else if self.has_effect(SpellEffectDispatch::Teleport)
-            || self.has_effect(SpellEffectDispatch::Leap)
-        {
-            SpellCastKind::Teleport
-        } else if self.has_direct_heal_effect() {
-            SpellCastKind::DirectHeal
-        } else if self.has_effect(SpellEffectDispatch::Dispel) {
-            SpellCastKind::AuraApplication
-        } else if self.has_effect(SpellEffectDispatch::CreateItem) {
-            SpellCastKind::CreateItem
-        } else if self.has_effect(SpellEffectDispatch::ApplyAura) {
-            SpellCastKind::AuraApplication
-        } else if self.has_direct_damage_effect() {
-            SpellCastKind::InstantDamage
-        } else if self.has_effect(SpellEffectDispatch::PersistentAreaAura) {
-            SpellCastKind::AuraApplication
-        } else {
-            return None;
-        };
-        Some(self.build_cast_profile(kind))
+        self.player_spell_plan().map(|plan| plan.profile)
     }
 
     pub(in crate::world) fn item_cast_profile(&self) -> Option<SpellCastProfile> {
-        if self.has_effect(SpellEffectDispatch::Charge) || self.has_on_next_swing_attribute() {
-            return None;
-        }
-        let kind = if self.has_effect(SpellEffectDispatch::ApplyAura) {
-            SpellCastKind::AuraApplication
-        } else if self.has_effect(SpellEffectDispatch::Teleport) {
-            SpellCastKind::Teleport
-        } else if self.has_item_direct_effect() {
-            SpellCastKind::InstantDamage
-        } else {
-            return None;
-        };
-        let mut profile = self.build_cast_profile(kind);
-        profile.bonus_damage = 0;
-        if kind != SpellCastKind::InstantDamage {
-            profile.damage = 0;
-        }
-        profile.requires_melee = false;
-        Some(profile)
+        self.item_spell_plan(ObjectGuid::new(HighGuid::Item, 0, 0))
+            .map(|plan| plan.profile)
     }
 
     pub(in crate::world) fn build_cast_profile(&self, kind: SpellCastKind) -> SpellCastProfile {
@@ -227,17 +183,6 @@ impl<'a> SpellInfo<'a> {
             .any(|effect| effect.dispatch == dispatch)
     }
 
-    pub(in crate::world) fn has_channeled_periodic_trigger(&self) -> bool {
-        (self.template.attributes_ex
-            & (SPELL_ATTR_EX_IS_CHANNELED | SPELL_ATTR_EX_IS_SELF_CHANNELED))
-            != 0
-            && self.effects.iter().any(|effect| {
-                effect.dispatch == SpellEffectDispatch::ApplyAura
-                    && effect.aura_name == SPELL_AURA_PERIODIC_TRIGGER_SPELL
-                    && effect.trigger_spell != 0
-            })
-    }
-
     pub(in crate::world) fn has_on_next_swing_attribute(&self) -> bool {
         (self.template.attributes & (SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE | SPELL_ATTR_ON_NEXT_SWING))
             != 0
@@ -277,11 +222,14 @@ impl<'a> SpellInfo<'a> {
         })
     }
 
-    pub(in crate::world) fn direct_heal(&self) -> u32 {
+    pub(in crate::world) fn direct_heal_with_context(
+        &self,
+        value_context: SpellEffectValueContext,
+    ) -> u32 {
         self.effects
             .iter()
             .filter(|effect| effect.dispatch == SpellEffectDispatch::Heal)
-            .filter_map(|effect| spell_effect_simple_value(effect.base_points))
+            .filter_map(|effect| spell_effect_calculated_u32(*effect, value_context))
             .sum()
     }
 
@@ -315,77 +263,6 @@ impl<'a> SpellInfo<'a> {
                 _ => SpellAuraTarget::UnitTarget,
             })
             .unwrap_or(SpellAuraTarget::Caster)
-    }
-
-    pub(in crate::world) fn unit_target_kind(&self, kind: SpellCastKind) -> SpellTargetKind {
-        match kind {
-            SpellCastKind::AutoRepeatRanged
-            | SpellCastKind::Charge
-            | SpellCastKind::NextMeleeSwing => SpellTargetKind::HostileUnit,
-            SpellCastKind::DirectHeal => {
-                if self.aura_target() == SpellAuraTarget::Caster {
-                    SpellTargetKind::Caster
-                } else {
-                    SpellTargetKind::FriendlyUnit
-                }
-            }
-            SpellCastKind::AuraApplication => {
-                if self.has_channeled_periodic_trigger() {
-                    return SpellTargetKind::HostileUnit;
-                }
-                let aura_target = self.aura_target();
-                if matches!(
-                    aura_target,
-                    SpellAuraTarget::Caster | SpellAuraTarget::CasterAreaEnemy
-                ) {
-                    SpellTargetKind::Caster
-                } else if aura_target == SpellAuraTarget::DestinationAreaEnemy {
-                    SpellTargetKind::Destination
-                } else if self.effects.iter().any(|effect| {
-                    effect_targets_direct_hostile_unit(*effect)
-                        || effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE
-                        || effect.aura_name == SPELL_AURA_PERIODIC_TRIGGER_SPELL
-                }) {
-                    SpellTargetKind::HostileUnit
-                } else if self
-                    .effects
-                    .iter()
-                    .any(|effect| effect_targets_direct_friendly_unit(*effect))
-                {
-                    SpellTargetKind::FriendlyUnit
-                } else {
-                    SpellTargetKind::Unit
-                }
-            }
-            SpellCastKind::InstantDamage => {
-                if self.effects.iter().any(|effect| {
-                    matches!(
-                        effect.dispatch,
-                        SpellEffectDispatch::SchoolDamage
-                            | SpellEffectDispatch::WeaponDamage
-                            | SpellEffectDispatch::WeaponPercentDamage
-                    ) && effect_targets_destination_hostile_area(*effect)
-                }) {
-                    SpellTargetKind::Destination
-                } else if self.effects.iter().any(|effect| {
-                    matches!(
-                        effect.dispatch,
-                        SpellEffectDispatch::SchoolDamage
-                            | SpellEffectDispatch::WeaponDamage
-                            | SpellEffectDispatch::WeaponPercentDamage
-                    ) && (effect.implicit_target_a == TARGET_UNIT_CASTER
-                        || effect_targets_caster_centered_hostile_area(*effect)
-                        || effect_targets_destination_hostile_area(*effect))
-                }) {
-                    SpellTargetKind::Caster
-                } else {
-                    SpellTargetKind::HostileUnit
-                }
-            }
-            SpellCastKind::CreateItem
-            | SpellCastKind::OpeningGameObject
-            | SpellCastKind::Teleport => SpellTargetKind::Caster,
-        }
     }
 
     pub(in crate::world) fn bonus_damage(&self) -> u32 {
@@ -507,6 +384,13 @@ pub(in crate::world) fn effect_targets_caster_centered_hostile_area(
         || effect_targets_caster_source_hostile_area(effect)
 }
 
+pub(in crate::world) fn effect_targets_caster_centered_hostile_cone(
+    effect: SpellInfoEffect,
+) -> bool {
+    is_caster_centered_hostile_cone_target(effect.implicit_target_a)
+        || is_caster_centered_hostile_cone_target(effect.implicit_target_b)
+}
+
 pub(in crate::world) fn effect_targets_destination_hostile_area(effect: SpellInfoEffect) -> bool {
     is_destination_hostile_area_target(effect.implicit_target_a)
         || is_destination_hostile_area_target(effect.implicit_target_b)
@@ -549,7 +433,17 @@ pub(in crate::world) fn is_direct_friendly_unit_target(target: u32) -> bool {
 pub(in crate::world) fn is_caster_centered_hostile_area_target(target: u32) -> bool {
     matches!(
         target,
-        TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC | TARGET_ENUM_UNITS_ENEMY_WITHIN_CASTER_RANGE
+        TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC
+            | TARGET_ENUM_UNITS_ENEMY_WITHIN_CASTER_RANGE
+            | TARGET_ENUM_UNITS_ENEMY_IN_CONE_24
+            | TARGET_ENUM_UNITS_ENEMY_IN_CONE_54
+    )
+}
+
+pub(in crate::world) fn is_caster_centered_hostile_cone_target(target: u32) -> bool {
+    matches!(
+        target,
+        TARGET_ENUM_UNITS_ENEMY_IN_CONE_24 | TARGET_ENUM_UNITS_ENEMY_IN_CONE_54
     )
 }
 

@@ -724,11 +724,39 @@ impl MapRuntime {
                 player.last_mana_use_at.is_some_and(|last_mana_use_at| {
                     now.saturating_duration_since(last_mana_use_at) < PLAYER_MANA_REGEN_INTERRUPT
                 });
-            if !mana_regen_blocked_by_recent_cast
-                && player.max_power1 > 0
-                && player.power1 < player.max_power1
-            {
-                let regen = mana_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);
+            if player.max_power1 > 0 && player.power1 < player.max_power1 {
+                let spirit_regen =
+                    mana_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);
+                let regen_multiplier = player
+                    .active_auras
+                    .iter()
+                    .flat_map(|aura| aura.stat_modifiers.iter())
+                    .filter_map(|modifier| match modifier {
+                        AuraStatModifier::PowerRegenPercent {
+                            power_type,
+                            percent,
+                        } if *power_type == POWER_TYPE_MANA => Some(*percent),
+                        _ => None,
+                    })
+                    .fold(1.0_f32, |multiplier, percent| {
+                        multiplier * (1.0 + percent as f32 / 100.0)
+                    });
+                let interrupt_percent = player
+                    .active_auras
+                    .iter()
+                    .flat_map(|aura| aura.stat_modifiers.iter())
+                    .filter_map(|modifier| match modifier {
+                        AuraStatModifier::ManaRegenInterruptPercent { percent } => Some(*percent),
+                        _ => None,
+                    })
+                    .sum::<i32>()
+                    .clamp(0, 100) as f32
+                    / 100.0;
+                let regen = if mana_regen_blocked_by_recent_cast {
+                    spirit_regen * regen_multiplier * interrupt_percent
+                } else {
+                    spirit_regen * regen_multiplier
+                };
                 let gained = (regen * 2.0).floor() as u32;
                 if gained > 0 {
                     let new_mana = player.power1.saturating_add(gained).min(player.max_power1);
@@ -1692,6 +1720,10 @@ impl MapRuntime {
         if let Some(character) = session.character.active_character.as_ref() {
             player.level = character.level;
             player.xp = character.xp;
+            player.rest_bonus = session.rest.rest_bonus;
+            if let Some(visual) = session.character.player_visual.as_ref() {
+                player.player_bytes2 = visual.player_bytes2;
+            }
             if !map_death_is_newer {
                 player.flags = session.character.player_flags;
                 player.position = character.position;
@@ -1734,6 +1766,7 @@ impl MapRuntime {
             race: player.race,
             class: player.class,
             xp: player.xp,
+            rest_bonus: player.rest_bonus,
             health: player.health,
             max_health: player.max_health,
             power1: player.power1,
@@ -1753,6 +1786,7 @@ impl MapRuntime {
             spell_cooldown_categories: player.spell_cooldown_categories.clone(),
             spell_cooldown_item_ids: player.spell_cooldown_item_ids.clone(),
             queued_next_melee_spell: player.queued_next_melee_spell,
+            player_bytes2: player.player_bytes2,
             base_combat_stats: player.base_combat_stats,
             combat_stats: player.combat_stats,
             in_combat: player.in_combat,
@@ -1778,6 +1812,7 @@ impl MapRuntime {
             stand_state: player.stand_state,
             level: player.level,
             xp: player.xp,
+            rest_bonus: player.rest_bonus,
             health: player.health,
             max_health: player.max_health,
             power1: player.power1,
@@ -1814,6 +1849,8 @@ impl MapRuntime {
         };
         player.level = reward.level;
         player.xp = reward.xp;
+        player.rest_bonus = reward.rest_bonus;
+        player.player_bytes2 = reward.player_bytes2;
         if let Some(world_stats) = reward.world_stats {
             player.base_world_stats = world_stats;
             player.effective_world_stats =

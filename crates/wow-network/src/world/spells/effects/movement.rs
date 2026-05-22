@@ -124,9 +124,7 @@ pub(in crate::world) fn player_near_teleport_forward_destination(
         return None;
     }
 
-    if effect.implicit_target_a != TARGET_LOCATION_CASTER_FRONT_LEAP
-        && effect.implicit_target_b != TARGET_LOCATION_CASTER_FRONT_LEAP
-    {
+    if plan_effect_target(effect) != SpellPlanEffectTarget::CasterFrontLeap {
         return None;
     }
 

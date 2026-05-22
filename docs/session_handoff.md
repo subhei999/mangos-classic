@@ -8,19 +8,23 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 
 - Branch: `codex/auctionhouse`
 - Workspace: `C:\Users\subhe\Documents\mangos-worktrees\auctionhouse`
-- Base checkpoint for this worker branch: `58851c5fd`
-- Current uncommitted state completes auction house Phase 1 and Phase 2 on the
-  code side, including config parity knobs and grouped market behavior for
-  alliance, horde, neutral, and optional cross-faction auction access.
+- Branch now contains the latest `codex/rusty-mangos` spell-system baseline
+  plus commit `95765e16b Implement auction house parity flow`.
+- Current state is the auction-house implementation rebased by merge onto the
+  current integration branch. The only manual merge touch was this handoff.
 
 ## Current Goal
 
-Latest user-directed priority: implement auction house support on this dedicated
-branch, keeping parity with CMaNGOS and isolating the work from the main dirty
-integration workspace.
+Latest user-directed priority: bring the auction house branch into
+`codex/rusty-mangos`, test it on top of the current integration baseline, and
+merge it once the integrated result is good.
 
 ## What Changed Recently
 
+- Inherited the current generic spell-system baseline from
+  `codex/rusty-mangos`, including the recent `SpellPlan` sweep, cone targeting,
+  absorb combat-log fixes, Evocation-style mana regen modifiers, and
+  Counterspell school lockout work.
 - Added Classic auction protocol coverage in `wow-proto` and `wow-network` for:
   - `MSG_AUCTION_HELLO`
   - `CMSG_AUCTION_LIST_ITEMS`
@@ -37,12 +41,11 @@ integration workspace.
   - `SMSG_AUCTION_OWNER_NOTIFICATION`
 - Added a dedicated world auction handler that:
   - validates auctioneer interaction against live creature snapshots,
-  - opens the AH both from direct `MSG_AUCTION_HELLO` and gossip service
+  - opens the AH from both direct `MSG_AUCTION_HELLO` and gossip service
     selection,
   - reads browse data from `auction` plus `item_instance`,
-  - pages owner, bidder, and search results with CMaNGOS-compatible list
-    behavior.
-- Added Phase 2 mutation flows:
+  - pages owner, bidder, and search results with CMaNGOS-style list behavior.
+- Added auction mutation flows:
   - sell/create with DBC-backed deposit data, inventory ownership transfer, and
     auction row creation in one DB transaction,
   - cancel/remove with bidder refund mail, owner return mail, cancel cut, and
@@ -50,8 +53,8 @@ integration workspace.
   - bid/buyout with increment validation, self-raise delta charging, outbid
     refund mail, buyout settlement mail, and live owner/bidder notifications.
 - Added world-owned expiry processing:
-  - expired auctions are discovered and settled once globally from the map tick,
-  - no-bid auctions return the item to the owner by mail,
+  - expired auctions settle once globally from the map tick,
+  - no-bid expirations return the item to the owner by mail,
   - sold expirations mail owner profit and winner item delivery,
   - online owners and bidders receive the same live notifications as direct
     mutation paths.
@@ -65,56 +68,53 @@ integration workspace.
   - `Rate.Auction.Cut`
   - `Auction.Deposit.Min`
 - Corrected market grouping behavior to match CMaNGOS ownership boundaries:
-  - DB rows continue to store the real entry `houseid`,
+  - DB rows keep the real entry `houseid`,
   - alliance city houses share one market,
   - horde city houses share one market,
   - neutral goblin houses stay separate,
   - when `AllowTwoSide.Interaction.Auction = true`, all houses share the global
     market while still using the entry house id for UI and DBC rates.
-- Refactored auction handler dependencies into small dep structs so the parity
-  slice stays clippy-clean.
 
 ## Tests Run
 
-- Focused parity/config validation:
+- Pre-merge integration baseline in `codex/rusty-mangos`:
+  - `.\scripts\test-rust.cmd`
+- Auction branch before merge:
   - `cargo fmt -p wow-config -p wow-db -p wow-network -p worldserver`
   - `cargo check -p wow-network -p wow-config -p worldserver`
   - `cargo test -p wow-config world_config -- --nocapture`
   - `cargo test -p wow-network auction -- --nocapture`
   - `cargo test -p wow-network parse_world_client_packet_decodes_control_requests -- --nocapture`
-- Broad workspace baseline:
-  - `.\scripts\test-rust.cmd`
-    - clippy/check passed,
-    - same known local baseline failure remains:
-      - `world::tests::map_runtime_manager_advances_3196_event_ai_immolate_with_delayed_completion`
-      - `world::tests::map_runtime_direct_completion_after_manager_started_3196_immolate_does_not_hang`
-    - cause remains local MySQL auth:
-      `1698 (28000): Access denied for user 'root'@'localhost'`
+- Still needed on the integrated branch after this merge-up:
+  - rerun focused auction/config coverage,
+  - rerun `.\scripts\test-rust.cmd`,
+  - perform live 1.12 client smoke for auction flows.
 
 ## Known Blockers / Unproven Areas
 
-- Code-side auction Phase 2 is complete, but the full AH flow is still unproven
-  against a live 1.12 client session in this worktree.
+- The merged code still needs post-integration validation on this branch before
+  it should be merged back into `codex/rusty-mangos`.
+- Full auction flow remains unproven against a live 1.12 client session:
+  browse, sell, cancel, bid, buyout, outbid mail, grouped markets, neutral
+  separation, optional global market, and expiry settlement all still need
+  smoke confirmation.
 - Search `usable` filtering still does not include the extra CMaNGOS
   recipe-known suppression path.
-- Full workspace green remains blocked locally by the unrelated MySQL auth issue
-  on the two EventAI immolate tests above.
+- The unrelated local MySQL auth issue can still block the two known EventAI
+  immolate tests in broad DB-backed runs if those tests are exercised again.
 
 ## Recommended Next Task
 
-Run live 1.12 client smoke for the completed AH stack:
+Validate the integrated auction branch, then merge it into
+`codex/rusty-mangos` if clean:
 
-- open faction and neutral auctioneers,
-- create auctions with multiple durations and confirm deposit behavior,
-- cancel auctions with and without active bids,
-- bid, outbid, and buy out across two characters,
-- verify grouped city-house visibility and neutral separation,
-- flip `AllowTwoSide.Interaction.Auction` and confirm all houses share one
-  market,
-- let an auction expire and confirm settlement mail plus online notifications.
-
-If live testing reveals packet or UI mismatches, fix those directly on this
-branch before considering it ready to merge back.
+- run focused auction/config/protocol tests on this merged branch,
+- run `.\scripts\test-rust.cmd`,
+- smoke faction, neutral, and optional cross-faction auction access in a live
+  client,
+- fix any packet or UI mismatches directly on `codex/auctionhouse`,
+- merge `codex/auctionhouse` back into `codex/rusty-mangos` once the integrated
+  result is proven.
 
 ## Key Files
 
@@ -129,6 +129,9 @@ branch before considering it ready to merge back.
 - `crates/wow-db/src/character/auction.rs`
 - `crates/wow-config/src/lib.rs`
 - `bins/worldserver/src/main.rs`
+- `crates/wow-network/src/world/spells/plan.rs`
+- `crates/wow-network/src/world/tests/spells.rs`
+- `crates/wow-network/src/world/tests/query_gossip_data.rs`
 - `src/game/AuctionHouse/AuctionHouseHandler.cpp`
 - `src/game/AuctionHouse/AuctionHouseMgr.cpp`
 - `src/game/World/World.cpp`

@@ -30,6 +30,8 @@ pub(in crate::world) enum SpellEffectDispatch {
 
     DispelMechanic,
 
+    InterruptCast,
+
     PersistentAreaAura,
 
     LearnSpell,
@@ -123,6 +125,8 @@ impl SpellEffectDispatch {
 
             SPELL_EFFECT_DISPEL_MECHANIC => Self::DispelMechanic,
 
+            SPELL_EFFECT_INTERRUPT_CAST => Self::InterruptCast,
+
             SPELL_EFFECT_PERSISTENT_AREA_AURA => Self::PersistentAreaAura,
 
             33 | 59 => Self::OpenLock,
@@ -170,6 +174,7 @@ pub(in crate::world) fn spell_effect_support(effect_id: u32) -> SpellMechanicSup
         | SPELL_EFFECT_ADD_COMBO_POINTS
         | SPELL_EFFECT_CHARGE
         | SPELL_EFFECT_DISPEL
+        | SPELL_EFFECT_INTERRUPT_CAST
         | SPELL_EFFECT_PERSISTENT_AREA_AURA
         | SPELL_EFFECT_NORMALIZED_WEAPON_DMG => SpellMechanicSupport::Implemented,
 
@@ -229,8 +234,6 @@ pub(in crate::world) fn spell_effect_support(effect_id: u32) -> SpellMechanicSup
         63 | 125 => SpellMechanicSupport::Pending("threat"),
 
         67 | 75 => SpellMechanicSupport::Pending("special heal"),
-
-        68 => SpellMechanicSupport::Pending("interrupt cast"),
 
         69 => SpellMechanicSupport::Pending("distract"),
 
@@ -299,6 +302,8 @@ pub(in crate::world) fn spell_aura_support(aura_type: u32) -> SpellMechanicSuppo
         | SPELL_AURA_MOD_RESISTANCE_PCT
         | SPELL_AURA_MOD_REGEN
         | SPELL_AURA_MOD_POWER_REGEN
+        | SPELL_AURA_MOD_POWER_REGEN_PERCENT
+        | SPELL_AURA_MOD_MANA_REGEN_INTERRUPT
         | SPELL_AURA_MOD_SKILL_TALENT
         | SPELL_AURA_MOD_ATTACK_POWER
         | SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE
@@ -328,12 +333,12 @@ pub(in crate::world) fn spell_aura_support(aura_type: u32) -> SpellMechanicSuppo
         43 | 107 | 108 | 109 | 111 | 112 => SpellMechanicSupport::Pending("trigger/script aura"),
 
         9 | 10 | 11 | 14 | 15 | 28 | 32 | 34 | 35 | 47 | 49 | 51 | 52 | 54 | 55 | 57 | 58 | 59
-        | 65 | 70 | 71 | 72 | 73 | 79 | 80 | 83 | 87 | 88 | 89 | 90 | 91 | 102 | 103 | 110
-        | 113 | 114 | 115 | 116 | 117 | 118 | 122 | 123 | 124 | 125 | 126 | 127 | 129 | 130
-        | 131 | 132 | 133 | 134 | 135 | 136 | 140 | 141 | 142 | 143 | 147 | 149 | 150 | 152
-        | 153 | 154 | 155 | 157 | 158 | 160 | 161 | 163 | 165 | 166 | 167 | 168 | 169 | 171
-        | 172 | 174 | 175 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188
-        | 189 | 190 | 191 => SpellMechanicSupport::Pending("stat/combat modifier"),
+        | 65 | 70 | 71 | 72 | 73 | 79 | 80 | 83 | 87 | 88 | 89 | 90 | 91 | 102 | 103 | 113
+        | 114 | 115 | 116 | 117 | 118 | 122 | 123 | 124 | 125 | 126 | 127 | 129 | 130 | 131
+        | 132 | 133 | 135 | 136 | 140 | 141 | 142 | 143 | 147 | 149 | 150 | 152 | 153 | 154
+        | 155 | 157 | 158 | 160 | 161 | 163 | 165 | 166 | 167 | 168 | 169 | 171 | 172 | 174
+        | 175 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190
+        | 191 => SpellMechanicSupport::Pending("stat/combat modifier"),
 
         68 | 75 | 119 | 120 | 121 | 139 | 145 | 146 | 151 | 159 | 170 | 173 => {
             SpellMechanicSupport::Pending("tracking/reaction/client state")
@@ -475,6 +480,8 @@ pub(in crate::world) fn spell_effect_coverage_name(effect_id: u32) -> &'static s
         SPELL_EFFECT_DISPEL => "SPELL_EFFECT_DISPEL",
 
         SPELL_EFFECT_DISPEL_MECHANIC => "SPELL_EFFECT_DISPEL_MECHANIC",
+
+        SPELL_EFFECT_INTERRUPT_CAST => "SPELL_EFFECT_INTERRUPT_CAST",
 
         SPELL_EFFECT_PERSISTENT_AREA_AURA => "SPELL_EFFECT_PERSISTENT_AREA_AURA",
 

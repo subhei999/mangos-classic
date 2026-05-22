@@ -7,12 +7,15 @@ use eframe::egui::{
 };
 use eframe::{App, CreationContext, NativeOptions};
 use serde::{Deserialize, Serialize};
+use std::backtrace::Backtrace;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
@@ -21,7 +24,15 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+static LAUNCHER_LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+static LAUNCHER_PANIC_LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
 fn main() -> eframe::Result {
+    if let Ok(paths) = LauncherPaths::discover() {
+        initialize_launcher_log_files(&paths);
+        install_panic_log_hook();
+    }
+
     let options = NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1120.0, 720.0])
@@ -333,6 +344,9 @@ impl LauncherApp {
         install_style(&cc.egui_ctx);
 
         let paths = LauncherPaths::discover();
+        if let Ok(paths) = &paths {
+            initialize_launcher_log_files(paths);
+        }
         let settings = paths
             .as_ref()
             .map(|paths| LauncherSettings::load(&paths.settings))
@@ -351,7 +365,13 @@ impl LauncherApp {
         if let Some(path) = &autodetected_client {
             settings.client_dir = path.clone();
         }
-        let mut log = String::new();
+        let mut log = paths
+            .as_ref()
+            .map(|paths| read_log_group("Launcher", &launcher_log_paths(paths)))
+            .unwrap_or_default();
+        if !log.is_empty() && !log.ends_with('\n') {
+            log.push('\n');
+        }
         match &paths {
             Ok(paths) => {
                 log.push_str(&format!("Launcher root: {}\n", paths.root.display()));
@@ -647,7 +667,7 @@ impl LauncherApp {
         if let Ok(paths) = &self.paths {
             let log_dir = paths.app_data.join("logs");
             self.server_log = match self.selected_log {
-                LogView::Launcher => self.log.clone(),
+                LogView::Launcher => read_log_group("Launcher", &launcher_log_paths(paths)),
                 LogView::Auth => read_log_group(
                     "Authserver",
                     &[
@@ -673,6 +693,7 @@ impl LauncherApp {
 
     fn append_log(&mut self, text: &str) {
         self.log.push_str(text);
+        append_launcher_log_text(text);
         if self.log.len() > 160_000 {
             let keep_from = self.log.len().saturating_sub(120_000);
             self.log = self.log[keep_from..].to_string();
@@ -1047,6 +1068,8 @@ impl LauncherApp {
                 }
                 if self.selected_log == LogView::Launcher && ui.button("Clear").clicked() {
                     self.log.clear();
+                    truncate_launcher_log_files();
+                    self.refresh_file_log();
                 }
                 if ui.button("Status").clicked() {
                     self.run_action("Status");
@@ -1756,6 +1779,83 @@ fn read_log_group(title: &str, paths: &[PathBuf]) -> String {
         }
     }
     output
+}
+
+fn initialize_launcher_log_files(paths: &LauncherPaths) {
+    let log_dir = paths.app_data.join("logs");
+    let _ = fs::create_dir_all(&log_dir);
+    let _ = LAUNCHER_LOG_PATH.set(log_dir.join("launcher.log"));
+    let _ = LAUNCHER_PANIC_LOG_PATH.set(log_dir.join("launcher-panic.log"));
+}
+
+fn launcher_log_paths(paths: &LauncherPaths) -> [PathBuf; 2] {
+    let log_dir = paths.app_data.join("logs");
+    [
+        log_dir.join("launcher.log"),
+        log_dir.join("launcher-panic.log"),
+    ]
+}
+
+fn append_launcher_log_text(text: &str) {
+    let Some(path) = LAUNCHER_LOG_PATH.get() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = std::io::Write::write_all(&mut file, text.as_bytes());
+    }
+}
+
+fn truncate_launcher_log_files() {
+    if let Some(path) = LAUNCHER_LOG_PATH.get() {
+        let _ = fs::write(path, "");
+    }
+    if let Some(path) = LAUNCHER_PANIC_LOG_PATH.get() {
+        let _ = fs::write(path, "");
+    }
+}
+
+fn install_panic_log_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        let location = info
+            .location()
+            .map(|location| {
+                format!(
+                    "{}:{}:{}",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let payload = if let Some(message) = info.payload().downcast_ref::<&str>() {
+            (*message).to_string()
+        } else if let Some(message) = info.payload().downcast_ref::<String>() {
+            message.clone()
+        } else {
+            "non-string panic payload".to_string()
+        };
+        let backtrace = Backtrace::force_capture();
+        let text = format!(
+            "[panic unix={timestamp}] {payload}\nlocation: {location}\nbacktrace:\n{backtrace}\n\n"
+        );
+
+        append_launcher_log_text(&text);
+        if let Some(path) = LAUNCHER_PANIC_LOG_PATH.get() {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+                let _ = std::io::Write::write_all(&mut file, text.as_bytes());
+            }
+        }
+    }));
 }
 
 fn read_text_tail(path: &Path, max_bytes: usize) -> String {

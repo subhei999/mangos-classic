@@ -11,6 +11,7 @@ include!("character/lifecycle.rs");
 include!("character/creation.rs");
 include!("character/state.rs");
 include!("character/inventory.rs");
+include!("character/auction.rs");
 include!("character/mail.rs");
 include!("character/progression.rs");
 include!("character/starter.rs");

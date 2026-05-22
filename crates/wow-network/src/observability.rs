@@ -437,6 +437,8 @@ pub(crate) struct NativeMmapQueryTimings {
 pub enum MapTickPhase {
     StaticGameEventRefresh,
     StaticGameEventRefreshDispatch,
+    AuctionExpiration,
+    AuctionExpirationDispatch,
     DbCreatureLifecycle,
     DbCreatureLifecycleDispatch,
     PlayerVisibilityRefresh,
@@ -474,6 +476,8 @@ impl MapTickPhase {
         match self {
             Self::StaticGameEventRefresh => "static_game_event_refresh",
             Self::StaticGameEventRefreshDispatch => "static_game_event_refresh_dispatch",
+            Self::AuctionExpiration => "auction_expiration",
+            Self::AuctionExpirationDispatch => "auction_expiration_dispatch",
             Self::DbCreatureLifecycle => "db_creature_lifecycle",
             Self::DbCreatureLifecycleDispatch => "db_creature_lifecycle_dispatch",
             Self::PlayerVisibilityRefresh => "player_visibility_refresh",
@@ -588,6 +592,8 @@ const MAP_TICK_PHASES: [MapTickPhase; 32] = [
 struct MapPhaseDurations {
     static_game_event_refresh: Histogram,
     static_game_event_refresh_dispatch: Histogram,
+    auction_expiration: Histogram,
+    auction_expiration_dispatch: Histogram,
     db_creature_lifecycle: Histogram,
     db_creature_lifecycle_dispatch: Histogram,
     player_visibility_refresh: Histogram,
@@ -656,6 +662,8 @@ impl MapPhaseDurations {
             MapTickPhase::StaticGameEventRefreshDispatch => {
                 &self.static_game_event_refresh_dispatch
             }
+            MapTickPhase::AuctionExpiration => &self.auction_expiration,
+            MapTickPhase::AuctionExpirationDispatch => &self.auction_expiration_dispatch,
             MapTickPhase::DbCreatureLifecycle => &self.db_creature_lifecycle,
             MapTickPhase::DbCreatureLifecycleDispatch => &self.db_creature_lifecycle_dispatch,
             MapTickPhase::PlayerVisibilityRefresh => &self.player_visibility_refresh,

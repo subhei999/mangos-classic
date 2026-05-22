@@ -3758,6 +3758,7 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         data_dir_for_native: None,
         maps_available: false,
         vmaps_available: false,
+        auction_houses: HashMap::new(),
         creature_display_scales: HashMap::new(),
         spell_cast_times: HashMap::from([(
             7,
@@ -5675,6 +5676,7 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
         data_dir_for_native: None,
         maps_available: false,
         vmaps_available: false,
+        auction_houses: HashMap::new(),
         creature_display_scales: HashMap::new(),
         spell_cast_times: HashMap::from([(
             7,
@@ -6220,6 +6222,7 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
         data_dir_for_native: None,
         maps_available: false,
         vmaps_available: false,
+        auction_houses: HashMap::new(),
         creature_display_scales: HashMap::new(),
         spell_cast_times: HashMap::from([(
             7,
@@ -6379,6 +6382,7 @@ async fn cast_time_spell_rechecks_los_before_completion_go() {
         data_dir_for_native: None,
         maps_available: false,
         vmaps_available: false,
+        auction_houses: HashMap::new(),
         creature_display_scales: HashMap::new(),
         spell_cast_times: HashMap::from([(
             7,

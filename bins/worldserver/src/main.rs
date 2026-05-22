@@ -7,8 +7,7 @@ use wow_common::position::WorldPosition;
 use wow_config::{PlayerbotRandomDistribution, WorldServerConfig};
 use wow_db::create_pool;
 use wow_db::{CharacterDeleteMethod, CharacterDeleteOptions};
-use wow_network::world::PlayerbotSpawnConfig;
-use wow_network::world::WorldServerOptions;
+use wow_network::world::{AuctionRuntimeConfig, PlayerbotSpawnConfig, WorldServerOptions};
 use wow_network::WorldServer;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -158,6 +157,13 @@ async fn main() -> anyhow::Result<()> {
             movement_actor_enabled: config.world.experimental_movement_actor,
             movement_actor_queue_capacity: config.world.experimental_movement_actor_queue_capacity,
             movement_actor_max_batch_size: config.world.experimental_movement_actor_max_batch_size,
+            auction_config: AuctionRuntimeConfig {
+                allow_two_side_interaction_auction: config.world.allow_two_side_interaction_auction,
+                time_rate: f64::from(config.world.rate_auction_time),
+                deposit_rate: f64::from(config.world.rate_auction_deposit),
+                cut_rate: f64::from(config.world.rate_auction_cut),
+                deposit_min: config.world.auction_deposit_min,
+            },
             playerbots,
         },
     )

@@ -62,6 +62,22 @@ pub struct WorldConfig {
     pub experimental_movement_actor_queue_capacity: usize,
     #[serde(default = "default_experimental_movement_actor_max_batch_size")]
     pub experimental_movement_actor_max_batch_size: usize,
+    #[serde(
+        default = "default_allow_two_side_interaction_auction",
+        alias = "AllowTwoSide.Interaction.Auction"
+    )]
+    pub allow_two_side_interaction_auction: bool,
+    #[serde(default = "default_rate_auction_time", alias = "Rate.Auction.Time")]
+    pub rate_auction_time: f32,
+    #[serde(
+        default = "default_rate_auction_deposit",
+        alias = "Rate.Auction.Deposit"
+    )]
+    pub rate_auction_deposit: f32,
+    #[serde(default = "default_rate_auction_cut", alias = "Rate.Auction.Cut")]
+    pub rate_auction_cut: f32,
+    #[serde(default = "default_auction_deposit_min", alias = "Auction.Deposit.Min")]
+    pub auction_deposit_min: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +273,21 @@ fn default_experimental_movement_actor_queue_capacity() -> usize {
 fn default_experimental_movement_actor_max_batch_size() -> usize {
     64
 }
+fn default_allow_two_side_interaction_auction() -> bool {
+    false
+}
+fn default_rate_auction_time() -> f32 {
+    1.0
+}
+fn default_rate_auction_deposit() -> f32 {
+    1.0
+}
+fn default_rate_auction_cut() -> f32 {
+    1.0
+}
+fn default_auction_deposit_min() -> u32 {
+    0
+}
 
 // ---------------------------------------------------------------------------
 // AuthServerConfig
@@ -325,6 +356,11 @@ impl Default for WorldConfig {
                 default_experimental_movement_actor_queue_capacity(),
             experimental_movement_actor_max_batch_size:
                 default_experimental_movement_actor_max_batch_size(),
+            allow_two_side_interaction_auction: default_allow_two_side_interaction_auction(),
+            rate_auction_time: default_rate_auction_time(),
+            rate_auction_deposit: default_rate_auction_deposit(),
+            rate_auction_cut: default_rate_auction_cut(),
+            auction_deposit_min: default_auction_deposit_min(),
         }
     }
 }
@@ -396,6 +432,11 @@ database = "realmd"
         assert!(!wc.experimental_movement_actor);
         assert_eq!(wc.experimental_movement_actor_queue_capacity, 1024);
         assert_eq!(wc.experimental_movement_actor_max_batch_size, 64);
+        assert!(!wc.allow_two_side_interaction_auction);
+        assert!((wc.rate_auction_time - 1.0).abs() < f32::EPSILON);
+        assert!((wc.rate_auction_deposit - 1.0).abs() < f32::EPSILON);
+        assert!((wc.rate_auction_cut - 1.0).abs() < f32::EPSILON);
+        assert_eq!(wc.auction_deposit_min, 0);
     }
 
     #[test]
@@ -449,6 +490,37 @@ experimental_movement_actor_max_batch_size = 128
             2048
         );
         assert_eq!(config.world.experimental_movement_actor_max_batch_size, 128);
+    }
+
+    #[test]
+    fn world_config_accepts_cmangos_auction_knobs() {
+        let toml_content = r#"
+[world_database]
+database = "mangos"
+
+[character_database]
+database = "characters"
+
+[login_database]
+database = "realmd"
+
+[world]
+"AllowTwoSide.Interaction.Auction" = true
+"Rate.Auction.Time" = 2.5
+"Rate.Auction.Deposit" = 1.75
+"Rate.Auction.Cut" = 0.5
+"Auction.Deposit.Min" = 123
+"#;
+        let config: WorldServerConfig = Figment::new()
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("should parse CMaNGOS-shaped auction knobs");
+
+        assert!(config.world.allow_two_side_interaction_auction);
+        assert!((config.world.rate_auction_time - 2.5).abs() < f32::EPSILON);
+        assert!((config.world.rate_auction_deposit - 1.75).abs() < f32::EPSILON);
+        assert!((config.world.rate_auction_cut - 0.5).abs() < f32::EPSILON);
+        assert_eq!(config.world.auction_deposit_min, 123);
     }
 
     #[test]

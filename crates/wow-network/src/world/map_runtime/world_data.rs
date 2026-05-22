@@ -6,6 +6,7 @@ pub(in crate::world) struct WorldDataFiles {
     pub(in crate::world) data_dir_for_native: Option<std::ffi::CString>,
     pub(in crate::world) maps_available: bool,
     pub(in crate::world) vmaps_available: bool,
+    pub(in crate::world) auction_houses: HashMap<u32, AuctionHouseEntry>,
     pub(in crate::world) creature_display_scales: HashMap<u32, f32>,
     pub(in crate::world) spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
     pub(in crate::world) spell_durations: HashMap<u32, SpellDurationEntry>,
@@ -33,6 +34,7 @@ impl WorldDataFiles {
             data_dir_for_native: None,
             maps_available: false,
             vmaps_available: false,
+            auction_houses: HashMap::new(),
             creature_display_scales: HashMap::new(),
             spell_cast_times: HashMap::new(),
             spell_durations: HashMap::new(),
@@ -57,6 +59,7 @@ impl WorldDataFiles {
         let data_dir = data_dir.into();
         let maps_available = data_dir.join("maps").is_dir();
         let vmaps_available = data_dir.join("vmaps").is_dir();
+        let auction_houses = load_auction_houses(&data_dir.join("dbc").join("AuctionHouse.dbc"));
         let creature_display_scales = load_creature_display_info_scales(
             &data_dir.join("dbc").join("CreatureDisplayInfo.dbc"),
         );
@@ -126,6 +129,7 @@ impl WorldDataFiles {
             data_dir,
             maps_available,
             vmaps_available,
+            auction_houses,
             creature_display_scales,
             spell_cast_times,
             spell_durations,
@@ -190,6 +194,14 @@ pub(in crate::world) struct SpellCastTimeEntry {
     pub(in crate::world) cast_time_millis: i32,
     pub(in crate::world) cast_time_per_level_millis: i32,
     pub(in crate::world) min_cast_time_millis: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct AuctionHouseEntry {
+    pub(in crate::world) house_id: u32,
+    pub(in crate::world) faction: u32,
+    pub(in crate::world) deposit_percent: u32,
+    pub(in crate::world) cut_percent: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -572,6 +584,56 @@ pub(in crate::world) fn load_faction_templates(path: &std::path::Path) -> Factio
         return FactionTemplateStore::fallback_bridge();
     };
     FactionTemplateStore::from_dbc(parse_faction_templates(&bytes))
+}
+
+pub(in crate::world) fn load_auction_houses(
+    path: &std::path::Path,
+) -> HashMap<u32, AuctionHouseEntry> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_auction_houses(&bytes)
+}
+
+pub(in crate::world) fn parse_auction_houses(bytes: &[u8]) -> HashMap<u32, AuctionHouseEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const AUCTION_HOUSE_FIELD_COUNT: usize = 4;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < AUCTION_HOUSE_FIELD_COUNT || record_size < AUCTION_HOUSE_FIELD_COUNT * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut entries = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let house_id = field(0);
+        if house_id == 0 {
+            continue;
+        }
+        entries.insert(
+            house_id,
+            AuctionHouseEntry {
+                house_id,
+                faction: field(1),
+                deposit_percent: field(2),
+                cut_percent: field(3),
+            },
+        );
+    }
+    entries
 }
 
 pub(in crate::world) fn parse_faction_templates(

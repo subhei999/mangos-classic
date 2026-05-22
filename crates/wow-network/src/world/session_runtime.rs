@@ -8,6 +8,7 @@ pub(in crate::world) struct WorldRuntimeState {
     pub(in crate::world) world_db_pool: MySqlPool,
     pub(in crate::world) world_data_files: Arc<WorldDataFiles>,
     pub(in crate::world) world_tick_interval: Duration,
+    pub(in crate::world) auction_config: AuctionRuntimeConfig,
     pub(in crate::world) game_event_schedules: Arc<Vec<wow_db::GameEventScheduleQuery>>,
     pub(in crate::world) sessions: Arc<SessionRegistry>,
     pub(in crate::world) maps: Arc<MapRuntimeManager>,

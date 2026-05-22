@@ -649,6 +649,32 @@ fn bank_bag_slot_price_dbc_parser_reads_cmangos_rows() {
 }
 
 #[test]
+fn auction_house_dbc_parser_reads_cmangos_rates() {
+    let bytes = test_u32_dbc(&[[1, 12, 25, 5], [7, 120, 15, 15]]);
+
+    let auction_houses = parse_auction_houses(&bytes);
+
+    assert_eq!(
+        auction_houses.get(&1),
+        Some(&AuctionHouseEntry {
+            house_id: 1,
+            faction: 12,
+            deposit_percent: 25,
+            cut_percent: 5,
+        })
+    );
+    assert_eq!(
+        auction_houses.get(&7),
+        Some(&AuctionHouseEntry {
+            house_id: 7,
+            faction: 120,
+            deposit_percent: 15,
+            cut_percent: 15,
+        })
+    );
+}
+
+#[test]
 fn area_table_dbc_parser_indexes_explore_flags_by_map() {
     let bytes = test_u32_dbc(&[
         [

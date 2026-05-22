@@ -92,7 +92,14 @@ pub(in crate::world) async fn dispatch_world_packet(
         | packets::ParsedWorldClientPacket::BuyItem(_)
         | packets::ParsedWorldClientPacket::BuyItemInSlot(_)
         | packets::ParsedWorldClientPacket::TrainerList(_)
-        | packets::ParsedWorldClientPacket::TrainerBuySpell(_) => {
+        | packets::ParsedWorldClientPacket::TrainerBuySpell(_)
+        | packets::ParsedWorldClientPacket::AuctionHello(_)
+        | packets::ParsedWorldClientPacket::AuctionSellItem(_)
+        | packets::ParsedWorldClientPacket::AuctionRemoveItem(_)
+        | packets::ParsedWorldClientPacket::AuctionPlaceBid(_)
+        | packets::ParsedWorldClientPacket::AuctionListItems(_)
+        | packets::ParsedWorldClientPacket::AuctionListOwnerItems(_)
+        | packets::ParsedWorldClientPacket::AuctionListBidderItems(_) => {
             handlers::npc::dispatch_npc_packet(ctx, packet).await
         }
         packets::ParsedWorldClientPacket::Loot(_)

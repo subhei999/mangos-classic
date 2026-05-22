@@ -87,12 +87,22 @@ pub struct WorldServer {
     runtime_state: WorldRuntimeState,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct AuctionRuntimeConfig {
+    pub allow_two_side_interaction_auction: bool,
+    pub time_rate: f64,
+    pub deposit_rate: f64,
+    pub cut_rate: f64,
+    pub deposit_min: u32,
+}
+
 pub struct WorldServerOptions {
     pub data_dir: PathBuf,
     pub world_tick_interval: Duration,
     pub movement_actor_enabled: bool,
     pub movement_actor_queue_capacity: usize,
     pub movement_actor_max_batch_size: usize,
+    pub auction_config: AuctionRuntimeConfig,
     pub playerbots: Vec<PlayerbotSpawnConfig>,
 }
 
@@ -111,6 +121,7 @@ impl WorldServer {
             movement_actor_enabled,
             movement_actor_queue_capacity,
             movement_actor_max_batch_size,
+            auction_config,
             playerbots,
         } = options;
         if world_tick_interval.is_zero() {
@@ -243,6 +254,7 @@ impl WorldServer {
                 object_mgr,
                 playerbots,
                 vendor_stock: VendorStockState::default(),
+                auction_config,
             },
         })
     }

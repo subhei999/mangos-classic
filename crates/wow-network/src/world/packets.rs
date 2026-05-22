@@ -1,12 +1,14 @@
 use wow_proto::world::WorldOpcode;
 use wow_proto::{
-    AreaTriggerRequest, AttackStopRequest, AttackSwingRequest, AutostoreLootItemRequest,
-    BankItemRequest, BankerActivateRequest, BuyBankSlotRequest, BuyItemInSlotRequest,
-    BuyItemRequest, BuybackItemRequest, CancelAutoRepeatSpellRequest, CancelCastRequest,
-    CastSpellRequest, CharCreateRequest, CharDeleteRequest, CharEnumRequest, CorpseQueryRequest,
-    CreatureQueryRequest, DestroyItemRequest, GameObjectQueryRequest, GameObjectUseRequest,
-    GetMailListRequest, GmTicketGetTicketRequest, GossipHelloRequest, GossipSelectOptionRequest,
-    GroupAcceptRequest, GroupAssistantLeaderRequest, GroupCancelRequest,
+    AreaTriggerRequest, AttackStopRequest, AttackSwingRequest, AuctionHelloRequest,
+    AuctionListBidderItemsRequest, AuctionListItemsRequest, AuctionListOwnerItemsRequest,
+    AuctionPlaceBidRequest, AuctionRemoveItemRequest, AuctionSellItemRequest,
+    AutostoreLootItemRequest, BankItemRequest, BankerActivateRequest, BuyBankSlotRequest,
+    BuyItemInSlotRequest, BuyItemRequest, BuybackItemRequest, CancelAutoRepeatSpellRequest,
+    CancelCastRequest, CastSpellRequest, CharCreateRequest, CharDeleteRequest, CharEnumRequest,
+    CorpseQueryRequest, CreatureQueryRequest, DestroyItemRequest, GameObjectQueryRequest,
+    GameObjectUseRequest, GetMailListRequest, GmTicketGetTicketRequest, GossipHelloRequest,
+    GossipSelectOptionRequest, GroupAcceptRequest, GroupAssistantLeaderRequest, GroupCancelRequest,
     GroupChangeSubGroupRequest, GroupDeclineRequest, GroupDisbandRequest, GroupInviteRequest,
     GroupRaidConvertRequest, GroupSetLeaderRequest, GroupUninviteGuidRequest, GroupUninviteRequest,
     InventoryMoveClientRequest, ItemNameQueryRequest, ItemQuerySingleRequest, ItemTextQueryRequest,
@@ -117,6 +119,13 @@ pub(super) enum ParsedWorldClientPacket {
     QueryNextMailTime(QueryNextMailTimeRequest),
     SendMail(SendMailRequest),
     GetMailList(GetMailListRequest),
+    AuctionHello(AuctionHelloRequest),
+    AuctionSellItem(AuctionSellItemRequest),
+    AuctionRemoveItem(AuctionRemoveItemRequest),
+    AuctionPlaceBid(AuctionPlaceBidRequest),
+    AuctionListItems(AuctionListItemsRequest),
+    AuctionListOwnerItems(AuctionListOwnerItemsRequest),
+    AuctionListBidderItems(AuctionListBidderItemsRequest),
     MailTakeMoney(MailIdRequest),
     MailTakeItem(MailIdRequest),
     MailMarkAsRead(MailIdRequest),
@@ -252,6 +261,13 @@ impl ParsedWorldClientPacket {
             Self::QueryNextMailTime(_) => WorldOpcode::MsgQueryNextMailTime.into(),
             Self::SendMail(_) => WorldOpcode::CmsgSendMail.into(),
             Self::GetMailList(_) => WorldOpcode::CmsgGetMailList.into(),
+            Self::AuctionHello(_) => WorldOpcode::MsgAuctionHello.into(),
+            Self::AuctionSellItem(_) => WorldOpcode::CmsgAuctionSellItem.into(),
+            Self::AuctionRemoveItem(_) => WorldOpcode::CmsgAuctionRemoveItem.into(),
+            Self::AuctionPlaceBid(_) => WorldOpcode::CmsgAuctionPlaceBid.into(),
+            Self::AuctionListItems(_) => WorldOpcode::CmsgAuctionListItems.into(),
+            Self::AuctionListOwnerItems(_) => WorldOpcode::CmsgAuctionListOwnerItems.into(),
+            Self::AuctionListBidderItems(_) => WorldOpcode::CmsgAuctionListBidderItems.into(),
             Self::MailTakeMoney(_) => WorldOpcode::CmsgMailTakeMoney.into(),
             Self::MailTakeItem(_) => WorldOpcode::CmsgMailTakeItem.into(),
             Self::MailMarkAsRead(_) => WorldOpcode::CmsgMailMarkAsRead.into(),
@@ -633,6 +649,48 @@ impl ParsedWorldClientPacket {
         GetMailList,
         GetMailListRequest,
         "CMSG_GET_MAIL_LIST"
+    );
+    packet_accessor!(
+        auction_hello,
+        AuctionHello,
+        AuctionHelloRequest,
+        "CMSG_AUCTION_HELLO"
+    );
+    packet_accessor!(
+        auction_sell_item,
+        AuctionSellItem,
+        AuctionSellItemRequest,
+        "CMSG_AUCTION_SELL_ITEM"
+    );
+    packet_accessor!(
+        auction_remove_item,
+        AuctionRemoveItem,
+        AuctionRemoveItemRequest,
+        "CMSG_AUCTION_REMOVE_ITEM"
+    );
+    packet_accessor!(
+        auction_place_bid,
+        AuctionPlaceBid,
+        AuctionPlaceBidRequest,
+        "CMSG_AUCTION_PLACE_BID"
+    );
+    packet_accessor!(
+        auction_list_items,
+        AuctionListItems,
+        AuctionListItemsRequest,
+        "CMSG_AUCTION_LIST_ITEMS"
+    );
+    packet_accessor!(
+        auction_list_owner_items,
+        AuctionListOwnerItems,
+        AuctionListOwnerItemsRequest,
+        "CMSG_AUCTION_LIST_OWNER_ITEMS"
+    );
+    packet_accessor!(
+        auction_list_bidder_items,
+        AuctionListBidderItems,
+        AuctionListBidderItemsRequest,
+        "CMSG_AUCTION_LIST_BIDDER_ITEMS"
     );
     packet_accessor!(
         mail_create_text_item,
@@ -1221,6 +1279,48 @@ pub(super) fn parse_world_client_packet(
                 GetMailListRequest::read(&mut body)?,
             ))
         }
+        Ok(WorldOpcode::MsgAuctionHello) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::AuctionHello(
+                AuctionHelloRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgAuctionSellItem) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::AuctionSellItem(
+                AuctionSellItemRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgAuctionRemoveItem) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::AuctionRemoveItem(
+                AuctionRemoveItemRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgAuctionPlaceBid) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::AuctionPlaceBid(
+                AuctionPlaceBidRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgAuctionListItems) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::AuctionListItems(
+                AuctionListItemsRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgAuctionListOwnerItems) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::AuctionListOwnerItems(
+                AuctionListOwnerItemsRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgAuctionListBidderItems) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::AuctionListBidderItems(
+                AuctionListBidderItemsRequest::read(&mut body)?,
+            ))
+        }
         Ok(WorldOpcode::CmsgMailTakeMoney) => {
             let mut body = body;
             Ok(ParsedWorldClientPacket::MailTakeMoney(MailIdRequest::read(
@@ -1456,6 +1556,89 @@ mod packet_dispatch_tests {
             parsed.trainer_list().unwrap().raw_guid,
             0xF130_0000_0000_0037
         );
+
+        let mut auction_search_body = Vec::new();
+        auction_search_body.extend_from_slice(&0xF130_0000_0000_0042u64.to_le_bytes());
+        auction_search_body.extend_from_slice(&50u32.to_le_bytes());
+        auction_search_body.extend_from_slice(b"sword\0");
+        auction_search_body.push(10);
+        auction_search_body.push(20);
+        auction_search_body.extend_from_slice(&13u32.to_le_bytes());
+        auction_search_body.extend_from_slice(&2u32.to_le_bytes());
+        auction_search_body.extend_from_slice(&7u32.to_le_bytes());
+        auction_search_body.extend_from_slice(&2u32.to_le_bytes());
+        auction_search_body.push(1);
+        let parsed = parse_world_client_packet(0x0258, &auction_search_body).unwrap();
+        let auction_search = parsed.auction_list_items().unwrap();
+        assert_eq!(auction_search.auctioneer_raw_guid, 0xF130_0000_0000_0042);
+        assert_eq!(auction_search.list_from, 50);
+        assert_eq!(auction_search.searched_name, "sword");
+        assert_eq!(auction_search.level_min, 10);
+        assert_eq!(auction_search.level_max, 20);
+        assert_eq!(auction_search.inventory_type, 13);
+        assert_eq!(auction_search.item_class, 2);
+        assert_eq!(auction_search.item_subclass, 7);
+        assert_eq!(auction_search.quality, 2);
+        assert_eq!(auction_search.usable, 1);
+
+        let parsed =
+            parse_world_client_packet(0x0255, &0xF130_0000_0000_0042u64.to_le_bytes()).unwrap();
+        assert_eq!(
+            parsed.auction_hello().unwrap().auctioneer_raw_guid,
+            0xF130_0000_0000_0042
+        );
+
+        let mut auction_sell_body = Vec::new();
+        auction_sell_body.extend_from_slice(&0xF130_0000_0000_0042u64.to_le_bytes());
+        auction_sell_body.extend_from_slice(&0x4000_0000_0000_0091u64.to_le_bytes());
+        auction_sell_body.extend_from_slice(&1_000u32.to_le_bytes());
+        auction_sell_body.extend_from_slice(&2_000u32.to_le_bytes());
+        auction_sell_body.extend_from_slice(&120u32.to_le_bytes());
+        let parsed = parse_world_client_packet(0x0256, &auction_sell_body).unwrap();
+        let auction_sell = parsed.auction_sell_item().unwrap();
+        assert_eq!(auction_sell.auctioneer_raw_guid, 0xF130_0000_0000_0042);
+        assert_eq!(auction_sell.item_raw_guid, 0x4000_0000_0000_0091);
+        assert_eq!(auction_sell.bid, 1_000);
+        assert_eq!(auction_sell.buyout, 2_000);
+        assert_eq!(auction_sell.duration_minutes, 120);
+
+        let mut auction_remove_body = Vec::new();
+        auction_remove_body.extend_from_slice(&0xF130_0000_0000_0042u64.to_le_bytes());
+        auction_remove_body.extend_from_slice(&77u32.to_le_bytes());
+        let parsed = parse_world_client_packet(0x0257, &auction_remove_body).unwrap();
+        let auction_remove = parsed.auction_remove_item().unwrap();
+        assert_eq!(auction_remove.auctioneer_raw_guid, 0xF130_0000_0000_0042);
+        assert_eq!(auction_remove.auction_id, 77);
+
+        let mut auction_bid_body = Vec::new();
+        auction_bid_body.extend_from_slice(&0xF130_0000_0000_0042u64.to_le_bytes());
+        auction_bid_body.extend_from_slice(&77u32.to_le_bytes());
+        auction_bid_body.extend_from_slice(&1_500u32.to_le_bytes());
+        let parsed = parse_world_client_packet(0x025A, &auction_bid_body).unwrap();
+        let auction_bid = parsed.auction_place_bid().unwrap();
+        assert_eq!(auction_bid.auctioneer_raw_guid, 0xF130_0000_0000_0042);
+        assert_eq!(auction_bid.auction_id, 77);
+        assert_eq!(auction_bid.price, 1_500);
+
+        let mut auction_owner_body = Vec::new();
+        auction_owner_body.extend_from_slice(&0xF130_0000_0000_0042u64.to_le_bytes());
+        auction_owner_body.extend_from_slice(&100u32.to_le_bytes());
+        let parsed = parse_world_client_packet(0x0259, &auction_owner_body).unwrap();
+        let owner_items = parsed.auction_list_owner_items().unwrap();
+        assert_eq!(owner_items.auctioneer_raw_guid, 0xF130_0000_0000_0042);
+        assert_eq!(owner_items.list_from, 100);
+
+        let mut auction_bidder_body = Vec::new();
+        auction_bidder_body.extend_from_slice(&0xF130_0000_0000_0042u64.to_le_bytes());
+        auction_bidder_body.extend_from_slice(&0u32.to_le_bytes());
+        auction_bidder_body.extend_from_slice(&2u32.to_le_bytes());
+        auction_bidder_body.extend_from_slice(&17u32.to_le_bytes());
+        auction_bidder_body.extend_from_slice(&29u32.to_le_bytes());
+        let parsed = parse_world_client_packet(0x0264, &auction_bidder_body).unwrap();
+        let bidder_items = parsed.auction_list_bidder_items().unwrap();
+        assert_eq!(bidder_items.auctioneer_raw_guid, 0xF130_0000_0000_0042);
+        assert_eq!(bidder_items.list_from, 0);
+        assert_eq!(bidder_items.outbid_auction_ids, vec![17, 29]);
     }
 
     #[test]

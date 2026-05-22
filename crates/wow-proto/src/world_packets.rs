@@ -241,7 +241,20 @@ pub enum WorldOpcode {
     SmsgSpellLogMiss = 0x024B,
     SmsgPeriodicAuraLog = 0x024E,
     SmsgSpellNonMeleeDamageLog = 0x0250,
+    MsgAuctionHello = 0x0255,
+    CmsgAuctionSellItem = 0x0256,
+    CmsgAuctionRemoveItem = 0x0257,
+    CmsgAuctionListItems = 0x0258,
+    CmsgAuctionListOwnerItems = 0x0259,
+    CmsgAuctionPlaceBid = 0x025A,
+    SmsgAuctionCommandResult = 0x025B,
+    SmsgAuctionListResult = 0x025C,
+    SmsgAuctionOwnerListResult = 0x025D,
+    SmsgAuctionBidderNotification = 0x025E,
+    SmsgAuctionOwnerNotification = 0x025F,
     SmsgDispelFailed = 0x0262,
+    CmsgAuctionListBidderItems = 0x0264,
+    SmsgAuctionBidderListResult = 0x0265,
     CmsgSetAmmo = 0x0268,
     SmsgCorpseReclaimDelay = 0x0269,
     CmsgSetActiveMover = 0x026A,
@@ -253,6 +266,7 @@ pub enum WorldOpcode {
     CmsgAutobankItem = 0x0283,
     MsgQueryNextMailTime = 0x0284,
     SmsgReceivedMail = 0x0285,
+    SmsgAuctionRemovedNotification = 0x028D,
     CmsgGroupRaidConvert = 0x028E,
     CmsgGroupAssistantLeader = 0x028F,
     CmsgBuybackItem = 0x0290,
@@ -517,7 +531,20 @@ impl TryFrom<u32> for WorldOpcode {
             0x024B => Ok(Self::SmsgSpellLogMiss),
             0x024E => Ok(Self::SmsgPeriodicAuraLog),
             0x0250 => Ok(Self::SmsgSpellNonMeleeDamageLog),
+            0x0255 => Ok(Self::MsgAuctionHello),
+            0x0256 => Ok(Self::CmsgAuctionSellItem),
+            0x0257 => Ok(Self::CmsgAuctionRemoveItem),
+            0x0258 => Ok(Self::CmsgAuctionListItems),
+            0x0259 => Ok(Self::CmsgAuctionListOwnerItems),
+            0x025A => Ok(Self::CmsgAuctionPlaceBid),
+            0x025B => Ok(Self::SmsgAuctionCommandResult),
+            0x025C => Ok(Self::SmsgAuctionListResult),
+            0x025D => Ok(Self::SmsgAuctionOwnerListResult),
+            0x025E => Ok(Self::SmsgAuctionBidderNotification),
+            0x025F => Ok(Self::SmsgAuctionOwnerNotification),
             0x0262 => Ok(Self::SmsgDispelFailed),
+            0x0264 => Ok(Self::CmsgAuctionListBidderItems),
+            0x0265 => Ok(Self::SmsgAuctionBidderListResult),
             0x0268 => Ok(Self::CmsgSetAmmo),
             0x0269 => Ok(Self::SmsgCorpseReclaimDelay),
             0x026A => Ok(Self::CmsgSetActiveMover),
@@ -529,6 +556,7 @@ impl TryFrom<u32> for WorldOpcode {
             0x0283 => Ok(Self::CmsgAutobankItem),
             0x0284 => Ok(Self::MsgQueryNextMailTime),
             0x0285 => Ok(Self::SmsgReceivedMail),
+            0x028D => Ok(Self::SmsgAuctionRemovedNotification),
             0x028E => Ok(Self::CmsgGroupRaidConvert),
             0x028F => Ok(Self::CmsgGroupAssistantLeader),
             0x0290 => Ok(Self::CmsgBuybackItem),
@@ -688,10 +716,18 @@ impl WorldOpcode {
                 | Self::SmsgSpellLogMiss
                 | Self::SmsgPeriodicAuraLog
                 | Self::SmsgSpellNonMeleeDamageLog
+                | Self::MsgAuctionHello
+                | Self::SmsgAuctionCommandResult
+                | Self::SmsgAuctionListResult
+                | Self::SmsgAuctionOwnerListResult
+                | Self::SmsgAuctionBidderNotification
+                | Self::SmsgAuctionOwnerNotification
                 | Self::SmsgDispelFailed
+                | Self::SmsgAuctionBidderListResult
                 | Self::SmsgCorpseReclaimDelay
                 | Self::SmsgSpellDispelLog
                 | Self::SmsgReceivedMail
+                | Self::SmsgAuctionRemovedNotification
                 | Self::SmsgStandStateUpdate
                 | Self::SmsgLootAllPassed
                 | Self::SmsgLootRollWon
@@ -990,6 +1026,410 @@ impl MailCreateTextItemRequest {
         buf.put_u32_le(self.mail_id);
         buf.put_u32_le(self.mail_template_id);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuctionHelloRequest {
+    pub auctioneer_raw_guid: u64,
+}
+
+impl AuctionHelloRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_exact_remaining(buf, 8, "CMSG_AUCTION_HELLO")?;
+        Ok(Self {
+            auctioneer_raw_guid: buf.get_u64_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.auctioneer_raw_guid);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuctionSellItemRequest {
+    pub auctioneer_raw_guid: u64,
+    pub item_raw_guid: u64,
+    pub bid: u32,
+    pub buyout: u32,
+    pub duration_minutes: u32,
+}
+
+impl AuctionSellItemRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_exact_remaining(buf, 28, "CMSG_AUCTION_SELL_ITEM")?;
+        Ok(Self {
+            auctioneer_raw_guid: buf.get_u64_le(),
+            item_raw_guid: buf.get_u64_le(),
+            bid: buf.get_u32_le(),
+            buyout: buf.get_u32_le(),
+            duration_minutes: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.auctioneer_raw_guid);
+        buf.put_u64_le(self.item_raw_guid);
+        buf.put_u32_le(self.bid);
+        buf.put_u32_le(self.buyout);
+        buf.put_u32_le(self.duration_minutes);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuctionRemoveItemRequest {
+    pub auctioneer_raw_guid: u64,
+    pub auction_id: u32,
+}
+
+impl AuctionRemoveItemRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_exact_remaining(buf, 12, "CMSG_AUCTION_REMOVE_ITEM")?;
+        Ok(Self {
+            auctioneer_raw_guid: buf.get_u64_le(),
+            auction_id: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.auctioneer_raw_guid);
+        buf.put_u32_le(self.auction_id);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuctionPlaceBidRequest {
+    pub auctioneer_raw_guid: u64,
+    pub auction_id: u32,
+    pub price: u32,
+}
+
+impl AuctionPlaceBidRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_exact_remaining(buf, 16, "CMSG_AUCTION_PLACE_BID")?;
+        Ok(Self {
+            auctioneer_raw_guid: buf.get_u64_le(),
+            auction_id: buf.get_u32_le(),
+            price: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.auctioneer_raw_guid);
+        buf.put_u32_le(self.auction_id);
+        buf.put_u32_le(self.price);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuctionListItemsRequest {
+    pub auctioneer_raw_guid: u64,
+    pub list_from: u32,
+    pub searched_name: String,
+    pub level_min: u8,
+    pub level_max: u8,
+    pub inventory_type: u32,
+    pub item_class: u32,
+    pub item_subclass: u32,
+    pub quality: u32,
+    pub usable: u8,
+}
+
+impl AuctionListItemsRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_remaining(buf, 8, "CMSG_AUCTION_LIST_ITEMS")?;
+        let auctioneer_raw_guid = buf.get_u64_le();
+        ensure_remaining(buf, 4, "CMSG_AUCTION_LIST_ITEMS")?;
+        let list_from = buf.get_u32_le();
+        let searched_name = read_c_string_request(buf, "CMSG_AUCTION_LIST_ITEMS")?;
+        ensure_exact_remaining(buf, 19, "CMSG_AUCTION_LIST_ITEMS")?;
+        Ok(Self {
+            auctioneer_raw_guid,
+            list_from,
+            searched_name,
+            level_min: buf.get_u8(),
+            level_max: buf.get_u8(),
+            inventory_type: buf.get_u32_le(),
+            item_class: buf.get_u32_le(),
+            item_subclass: buf.get_u32_le(),
+            quality: buf.get_u32_le(),
+            usable: buf.get_u8(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.auctioneer_raw_guid);
+        buf.put_u32_le(self.list_from);
+        write_c_string(buf, &self.searched_name);
+        buf.put_u8(self.level_min);
+        buf.put_u8(self.level_max);
+        buf.put_u32_le(self.inventory_type);
+        buf.put_u32_le(self.item_class);
+        buf.put_u32_le(self.item_subclass);
+        buf.put_u32_le(self.quality);
+        buf.put_u8(self.usable);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuctionListOwnerItemsRequest {
+    pub auctioneer_raw_guid: u64,
+    pub list_from: u32,
+}
+
+impl AuctionListOwnerItemsRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_exact_remaining(buf, 12, "CMSG_AUCTION_LIST_OWNER_ITEMS")?;
+        Ok(Self {
+            auctioneer_raw_guid: buf.get_u64_le(),
+            list_from: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.auctioneer_raw_guid);
+        buf.put_u32_le(self.list_from);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuctionListBidderItemsRequest {
+    pub auctioneer_raw_guid: u64,
+    pub list_from: u32,
+    pub outbid_auction_ids: Vec<u32>,
+}
+
+impl AuctionListBidderItemsRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_remaining(buf, 16, "CMSG_AUCTION_LIST_BIDDER_ITEMS")?;
+        let auctioneer_raw_guid = buf.get_u64_le();
+        let list_from = buf.get_u32_le();
+        let outbid_count = buf.get_u32_le() as usize;
+        ensure_exact_remaining(
+            buf,
+            outbid_count * std::mem::size_of::<u32>(),
+            "CMSG_AUCTION_LIST_BIDDER_ITEMS",
+        )?;
+        let mut outbid_auction_ids = Vec::with_capacity(outbid_count);
+        for _ in 0..outbid_count {
+            outbid_auction_ids.push(buf.get_u32_le());
+        }
+        Ok(Self {
+            auctioneer_raw_guid,
+            list_from,
+            outbid_auction_ids,
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.auctioneer_raw_guid);
+        buf.put_u32_le(self.list_from);
+        buf.put_u32_le(self.outbid_auction_ids.len() as u32);
+        for auction_id in &self.outbid_auction_ids {
+            buf.put_u32_le(*auction_id);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgAuctionHelloResponse {
+    pub auctioneer: ObjectGuid,
+    pub house_id: u32,
+}
+
+impl ServerWorldPacket for SmsgAuctionHelloResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::MsgAuctionHello;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.auctioneer.raw());
+        buf.put_u32_le(self.house_id);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgAuctionCommandResultResponse {
+    pub auction_id: u32,
+    pub action: u32,
+    pub error_code: u32,
+    pub bid_min_outbid: Option<u32>,
+    pub inventory_error: Option<u32>,
+    pub higher_bidder: Option<ObjectGuid>,
+    pub higher_bid: Option<u32>,
+    pub higher_min_outbid: Option<u32>,
+}
+
+impl ServerWorldPacket for SmsgAuctionCommandResultResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgAuctionCommandResult;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.auction_id);
+        buf.put_u32_le(self.action);
+        buf.put_u32_le(self.error_code);
+        match (self.action, self.error_code) {
+            (2, 0) => buf.put_u32_le(self.bid_min_outbid.unwrap_or(0)),
+            (_, 1) => buf.put_u32_le(self.inventory_error.unwrap_or(0)),
+            (_, 5) => {
+                buf.put_u64_le(self.higher_bidder.unwrap_or(ObjectGuid::from_raw(0)).raw());
+                buf.put_u32_le(self.higher_bid.unwrap_or(0));
+                buf.put_u32_le(self.higher_min_outbid.unwrap_or(0));
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgAuctionBidderNotificationResponse {
+    pub house_id: u32,
+    pub auction_id: u32,
+    pub bidder: ObjectGuid,
+    pub bid_or_zero_if_won: u32,
+    pub min_outbid: u32,
+    pub item_template: u32,
+    pub item_random_property_id: i32,
+}
+
+impl ServerWorldPacket for SmsgAuctionBidderNotificationResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgAuctionBidderNotification;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.house_id);
+        buf.put_u32_le(self.auction_id);
+        buf.put_u64_le(self.bidder.raw());
+        buf.put_u32_le(self.bid_or_zero_if_won);
+        buf.put_u32_le(self.min_outbid);
+        buf.put_u32_le(self.item_template);
+        buf.put_i32_le(self.item_random_property_id);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgAuctionOwnerNotificationResponse {
+    pub auction_id: u32,
+    pub bid: u32,
+    pub min_outbid: u32,
+    pub bidder: ObjectGuid,
+    pub item_template: u32,
+    pub item_random_property_id: i32,
+}
+
+impl ServerWorldPacket for SmsgAuctionOwnerNotificationResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgAuctionOwnerNotification;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.auction_id);
+        buf.put_u32_le(self.bid);
+        buf.put_u32_le(self.min_outbid);
+        buf.put_u64_le(self.bidder.raw());
+        buf.put_u32_le(self.item_template);
+        buf.put_i32_le(self.item_random_property_id);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgAuctionRemovedNotificationResponse {
+    pub auction_id: u32,
+    pub item_template: u32,
+    pub item_random_property_id: i32,
+}
+
+impl ServerWorldPacket for SmsgAuctionRemovedNotificationResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgAuctionRemovedNotification;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.auction_id);
+        buf.put_u32_le(self.item_template);
+        buf.put_i32_le(self.item_random_property_id);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuctionInfoResponse {
+    pub id: u32,
+    pub item: u32,
+    pub enchantment: u32,
+    pub random_property_id: u32,
+    pub suffix_factor: u32,
+    pub count: u32,
+    pub charges: u32,
+    pub owner: ObjectGuid,
+    pub start_bid: u32,
+    pub min_outbid: u32,
+    pub buyout: u32,
+    pub time_left_millis: u32,
+    pub bidder: ObjectGuid,
+    pub current_bid: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsgAuctionListResultResponse {
+    pub auctions: Vec<AuctionInfoResponse>,
+    pub total_count: u32,
+}
+
+impl ServerWorldPacket for SmsgAuctionListResultResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgAuctionListResult;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.auctions.len() as u32);
+        for auction in &self.auctions {
+            write_auction_info(buf, auction);
+        }
+        buf.put_u32_le(self.total_count);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsgAuctionOwnerListResultResponse {
+    pub auctions: Vec<AuctionInfoResponse>,
+    pub total_count: u32,
+}
+
+impl ServerWorldPacket for SmsgAuctionOwnerListResultResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgAuctionOwnerListResult;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.auctions.len() as u32);
+        for auction in &self.auctions {
+            write_auction_info(buf, auction);
+        }
+        buf.put_u32_le(self.total_count);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsgAuctionBidderListResultResponse {
+    pub auctions: Vec<AuctionInfoResponse>,
+    pub total_count: u32,
+}
+
+impl ServerWorldPacket for SmsgAuctionBidderListResultResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgAuctionBidderListResult;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.auctions.len() as u32);
+        for auction in &self.auctions {
+            write_auction_info(buf, auction);
+        }
+        buf.put_u32_le(self.total_count);
+    }
+}
+
+fn write_auction_info(buf: &mut impl BufMut, auction: &AuctionInfoResponse) {
+    buf.put_u32_le(auction.id);
+    buf.put_u32_le(auction.item);
+    buf.put_u32_le(auction.enchantment);
+    buf.put_u32_le(auction.random_property_id);
+    buf.put_u32_le(auction.suffix_factor);
+    buf.put_u32_le(auction.count);
+    buf.put_u32_le(auction.charges);
+    buf.put_u64_le(auction.owner.raw());
+    buf.put_u32_le(auction.start_bid);
+    buf.put_u32_le(auction.min_outbid);
+    buf.put_u32_le(auction.buyout);
+    buf.put_u32_le(auction.time_left_millis);
+    buf.put_u64_le(auction.bidder.raw());
+    buf.put_u32_le(auction.current_bid);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5523,6 +5963,26 @@ mod tests {
             WorldOpcode::SmsgTrainerList
         );
         assert_eq!(
+            WorldOpcode::try_from(0x0255).unwrap(),
+            WorldOpcode::MsgAuctionHello
+        );
+        assert_eq!(
+            WorldOpcode::try_from(0x0258).unwrap(),
+            WorldOpcode::CmsgAuctionListItems
+        );
+        assert_eq!(
+            WorldOpcode::try_from(0x025C).unwrap(),
+            WorldOpcode::SmsgAuctionListResult
+        );
+        assert_eq!(
+            WorldOpcode::try_from(0x025D).unwrap(),
+            WorldOpcode::SmsgAuctionOwnerListResult
+        );
+        assert_eq!(
+            WorldOpcode::try_from(0x0265).unwrap(),
+            WorldOpcode::SmsgAuctionBidderListResult
+        );
+        assert_eq!(
             WorldOpcode::try_from(0x017B).unwrap(),
             WorldOpcode::CmsgGossipHello
         );
@@ -5689,6 +6149,95 @@ mod tests {
         gossip.write(&mut bytes);
         assert_eq!(GossipHelloRequest::read(&mut &bytes[..]).unwrap(), gossip);
 
+        let auction_search = AuctionListItemsRequest {
+            auctioneer_raw_guid: 0xF130_0000_0000_0042,
+            list_from: 50,
+            searched_name: "sword".to_string(),
+            level_min: 10,
+            level_max: 20,
+            inventory_type: 13,
+            item_class: 2,
+            item_subclass: 7,
+            quality: 2,
+            usable: 1,
+        };
+        bytes.clear();
+        auction_search.write(&mut bytes);
+        assert_eq!(
+            AuctionListItemsRequest::read(&mut &bytes[..]).unwrap(),
+            auction_search
+        );
+
+        let auction_hello = AuctionHelloRequest {
+            auctioneer_raw_guid: 0xF130_0000_0000_0042,
+        };
+        bytes.clear();
+        auction_hello.write(&mut bytes);
+        assert_eq!(
+            AuctionHelloRequest::read(&mut &bytes[..]).unwrap(),
+            auction_hello
+        );
+
+        let auction_sell = AuctionSellItemRequest {
+            auctioneer_raw_guid: 0xF130_0000_0000_0042,
+            item_raw_guid: 0x4000_0000_0000_0091,
+            bid: 1_000,
+            buyout: 2_000,
+            duration_minutes: 120,
+        };
+        bytes.clear();
+        auction_sell.write(&mut bytes);
+        assert_eq!(
+            AuctionSellItemRequest::read(&mut &bytes[..]).unwrap(),
+            auction_sell
+        );
+
+        let auction_remove = AuctionRemoveItemRequest {
+            auctioneer_raw_guid: 0xF130_0000_0000_0042,
+            auction_id: 77,
+        };
+        bytes.clear();
+        auction_remove.write(&mut bytes);
+        assert_eq!(
+            AuctionRemoveItemRequest::read(&mut &bytes[..]).unwrap(),
+            auction_remove
+        );
+
+        let auction_bid = AuctionPlaceBidRequest {
+            auctioneer_raw_guid: 0xF130_0000_0000_0042,
+            auction_id: 77,
+            price: 1_500,
+        };
+        bytes.clear();
+        auction_bid.write(&mut bytes);
+        assert_eq!(
+            AuctionPlaceBidRequest::read(&mut &bytes[..]).unwrap(),
+            auction_bid
+        );
+
+        let owner_items = AuctionListOwnerItemsRequest {
+            auctioneer_raw_guid: 0xF130_0000_0000_0042,
+            list_from: 100,
+        };
+        bytes.clear();
+        owner_items.write(&mut bytes);
+        assert_eq!(
+            AuctionListOwnerItemsRequest::read(&mut &bytes[..]).unwrap(),
+            owner_items
+        );
+
+        let bidder_items = AuctionListBidderItemsRequest {
+            auctioneer_raw_guid: 0xF130_0000_0000_0042,
+            list_from: 0,
+            outbid_auction_ids: vec![17, 29],
+        };
+        bytes.clear();
+        bidder_items.write(&mut bytes);
+        assert_eq!(
+            AuctionListBidderItemsRequest::read(&mut &bytes[..]).unwrap(),
+            bidder_items
+        );
+
         let invite = GroupInviteRequest {
             member_name: "Ada".to_string(),
         };
@@ -5782,5 +6331,101 @@ mod tests {
         let bytes = [1u8; WorldAuthSessionRequest::MIN_SIZE];
         let error = WorldAuthSessionRequest::read(&mut &bytes[..]).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn auction_packets_match_vanilla_shapes() {
+        let auctioneer = ObjectGuid::new(wow_common::guid::HighGuid::Unit, 7, 42);
+        let hello = SmsgAuctionHelloResponse {
+            auctioneer,
+            house_id: 7,
+        };
+        let hello_body = hello.body();
+        assert_eq!(hello_body.len(), 12);
+        assert_eq!(&hello_body[0..8], &auctioneer.raw().to_le_bytes());
+        assert_eq!(&hello_body[8..12], &7u32.to_le_bytes());
+
+        let command = SmsgAuctionCommandResultResponse {
+            auction_id: 77,
+            action: 0,
+            error_code: 1,
+            bid_min_outbid: None,
+            inventory_error: Some(2),
+            higher_bidder: None,
+            higher_bid: None,
+            higher_min_outbid: None,
+        };
+        assert_eq!(
+            command.body(),
+            [77u32, 0, 1, 2]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
+
+        let bid_ok = SmsgAuctionCommandResultResponse {
+            auction_id: 77,
+            action: 2,
+            error_code: 0,
+            bid_min_outbid: Some(5),
+            inventory_error: None,
+            higher_bidder: None,
+            higher_bid: None,
+            higher_min_outbid: None,
+        };
+        assert_eq!(
+            bid_ok.body(),
+            [77u32, 2, 0, 5]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
+
+        let removed = SmsgAuctionRemovedNotificationResponse {
+            auction_id: 77,
+            item_template: 744,
+            item_random_property_id: -15,
+        };
+        assert_eq!(
+            removed.body(),
+            [77u32, 744, u32::MAX - 14]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
+
+        let auction = AuctionInfoResponse {
+            id: 77,
+            item: 744,
+            enchantment: 1900,
+            random_property_id: 0,
+            suffix_factor: 0,
+            count: 3,
+            charges: u32::MAX,
+            owner: ObjectGuid::new(wow_common::guid::HighGuid::Player, 0, 11),
+            start_bid: 100,
+            min_outbid: 5,
+            buyout: 500,
+            time_left_millis: 60_000,
+            bidder: ObjectGuid::new(wow_common::guid::HighGuid::Player, 0, 12),
+            current_bid: 125,
+        };
+        let body = SmsgAuctionListResultResponse {
+            auctions: vec![auction],
+            total_count: 1,
+        }
+        .body();
+        assert_eq!(&body[0..4], &1u32.to_le_bytes());
+        assert_eq!(&body[4..8], &77u32.to_le_bytes());
+        assert_eq!(&body[8..12], &744u32.to_le_bytes());
+        assert_eq!(&body[28..32], &u32::MAX.to_le_bytes());
+        assert_eq!(&body[32..40], &auction.owner.raw().to_le_bytes());
+        assert_eq!(&body[40..44], &100u32.to_le_bytes());
+        assert_eq!(&body[44..48], &5u32.to_le_bytes());
+        assert_eq!(&body[48..52], &500u32.to_le_bytes());
+        assert_eq!(&body[52..56], &60_000u32.to_le_bytes());
+        assert_eq!(&body[56..64], &auction.bidder.raw().to_le_bytes());
+        assert_eq!(&body[64..68], &125u32.to_le_bytes());
+        assert_eq!(&body[68..72], &1u32.to_le_bytes());
     }
 }

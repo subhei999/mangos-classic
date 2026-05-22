@@ -1,5 +1,6 @@
 use super::*;
 
+pub(in crate::world) mod auction;
 pub(in crate::world) mod bank;
 pub(in crate::world) mod character;
 pub(in crate::world) mod chat;
@@ -24,6 +25,7 @@ pub(in crate::world) mod trainer;
 pub(in crate::world) mod vendor;
 mod vmap_los;
 
+pub(in crate::world) use self::auction::*;
 pub(in crate::world) use self::chat::*;
 pub(in crate::world) use self::creature::*;
 pub(in crate::world) use self::death::*;

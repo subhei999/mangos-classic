@@ -61,9 +61,10 @@ pub(in crate::world) async fn run_map_runtime_update_loop(runtime_state: WorldRu
         let now = Instant::now();
         let tick_started_at = now;
         let tick_lag = now.saturating_duration_since(next_tick_at);
+        let now_epoch_secs = current_unix_epoch_secs();
         let game_events = GameEventState::from_schedules_at(
             &runtime_state.game_event_schedules,
-            current_unix_epoch_secs() as i64,
+            now_epoch_secs as i64,
         );
         let phase_started_at = Instant::now();
         match runtime_state
@@ -92,6 +93,31 @@ pub(in crate::world) async fn run_map_runtime_update_loop(runtime_state: WorldRu
                 );
                 crate::observability::record_map_tick_error();
                 warn!("Map runtime game-event spawn refresh failed: {error}");
+            }
+        }
+        let phase_started_at = Instant::now();
+        match process_expired_auctions(&runtime_state, now_epoch_secs).await {
+            Ok(packets) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::AuctionExpiration,
+                    phase_started_at.elapsed(),
+                );
+                if !packets.is_empty() {
+                    let dispatch_started_at = Instant::now();
+                    runtime_state.sessions.dispatch(packets).await;
+                    crate::observability::record_map_phase_duration(
+                        crate::observability::MapTickPhase::AuctionExpirationDispatch,
+                        dispatch_started_at.elapsed(),
+                    );
+                }
+            }
+            Err(error) => {
+                crate::observability::record_map_phase_duration(
+                    crate::observability::MapTickPhase::AuctionExpiration,
+                    phase_started_at.elapsed(),
+                );
+                crate::observability::record_map_tick_error();
+                warn!("Map runtime auction expiration failed: {error}");
             }
         }
         let phase_started_at = Instant::now();
@@ -578,4 +604,94 @@ async fn persist_respawn_updates_batched(
         .await?;
     }
     Ok(())
+}
+
+async fn process_expired_auctions(
+    runtime_state: &WorldRuntimeState,
+    now_epoch_secs: u64,
+) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+    let candidates =
+        wow_db::list_expired_auction_candidates(&runtime_state.character_db_pool, now_epoch_secs)
+            .await?;
+    let mut packets = Vec::new();
+
+    for candidate in candidates {
+        let Some(auction_house) = runtime_state
+            .world_data_files
+            .auction_houses
+            .get(&candidate.house_id)
+            .copied()
+        else {
+            warn!(
+                auction_id = candidate.auction_id,
+                house_id = candidate.house_id,
+                "AuctionHouse.dbc entry missing for auction expiration"
+            );
+            continue;
+        };
+
+        let Some(expired) = wow_db::expire_auction(
+            &runtime_state.character_db_pool,
+            wow_db::ExpireAuctionRequest {
+                auction_id: candidate.auction_id,
+                house_id: candidate.house_id,
+                now_unix_secs: now_epoch_secs,
+                cut_percent: auction_house.cut_percent,
+                cut_rate: runtime_state.auction_config.cut_rate,
+                expired_answer: AUCTION_EXPIRED_ANSWER,
+                won_answer: AUCTION_WON_ANSWER,
+                successful_answer: AUCTION_SUCCESSFUL_ANSWER,
+                mail_checked: MAIL_CHECK_MASK_COPIED,
+                mail_message_type: AUCTION_MAIL_MESSAGE_TYPE,
+                mail_stationery: AUCTION_MAIL_STATIONERY,
+                mail_expire_delay_secs: MAIL_EXPIRY_SECS,
+            },
+        )
+        .await?
+        else {
+            continue;
+        };
+
+        if let Some(owner_session_id) = runtime_state
+            .sessions
+            .session_for_character(expired.owner_guid)
+            .await
+        {
+            packets.push((
+                owner_session_id,
+                build_auction_owner_notification_packet(
+                    expired.auction_id,
+                    expired.current_bid,
+                    expired.current_min_outbid,
+                    expired.bidder_guid,
+                    matches!(expired.kind, wow_db::ExpireAuctionKind::Sold),
+                    expired.item_template,
+                    expired.item_random_property_id,
+                ),
+            ));
+        }
+
+        if matches!(expired.kind, wow_db::ExpireAuctionKind::Sold) {
+            if let Some(bidder_session_id) = runtime_state
+                .sessions
+                .session_for_character(expired.bidder_guid)
+                .await
+            {
+                packets.push((
+                    bidder_session_id,
+                    build_auction_bidder_notification_packet(
+                        expired.house_id,
+                        expired.auction_id,
+                        expired.bidder_guid,
+                        0,
+                        expired.current_min_outbid,
+                        expired.item_template,
+                        expired.item_random_property_id,
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(packets)
 }

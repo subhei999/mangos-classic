@@ -5,6 +5,8 @@ use wow_proto::world::WorldOpcode;
 pub(in crate::world) struct GossipSelectDeps<'a> {
     pub(in crate::world) character_db_pool: &'a MySqlPool,
     pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_data_files: &'a WorldDataFiles,
+    pub(in crate::world) auction_config: AuctionRuntimeConfig,
     pub(in crate::world) vendor_stock: &'a VendorStockState,
     pub(in crate::world) object_mgr: &'a ObjectMgr,
     pub(in crate::world) maps: &'a Arc<MapRuntimeManager>,
@@ -204,6 +206,18 @@ async fn dispatch_db_gossip_selection(
                 deps.character_db_pool,
                 deps.world_db_pool,
                 deps.maps.as_ref(),
+                guid,
+                session,
+                header_crypto,
+            )
+            .await
+        }
+        GOSSIP_OPTION_AUCTIONEER => {
+            send_auction_hello(
+                stream,
+                deps.maps,
+                deps.world_data_files,
+                deps.auction_config,
                 guid,
                 session,
                 header_crypto,

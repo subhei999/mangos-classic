@@ -1,9 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eframe::egui::{
-    self, Align, Button, CentralPanel, Color32, Context, CornerRadius, Frame, Layout, Margin,
-    ProgressBar, RichText, ScrollArea, SidePanel, Stroke, TextEdit, TopBottomPanel, Ui, Vec2,
-    Visuals,
+    self, Align, Button, CentralPanel, Color32, Context, CornerRadius, Frame, Label, Layout,
+    Margin, ProgressBar, RichText, ScrollArea, SidePanel, Stroke, TextEdit, TextWrapMode,
+    TopBottomPanel, Ui, Vec2, Visuals,
 };
 use eframe::{App, CreationContext, NativeOptions};
 use serde::{Deserialize, Serialize};
@@ -163,12 +163,9 @@ fn default_world_port() -> u16 {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
-    Home,
-    Setup,
-    Health,
+    Server,
     Logs,
     Repair,
-    Updates,
     Advanced,
 }
 
@@ -333,6 +330,8 @@ struct LauncherApp {
     health: HealthSnapshot,
     update: UpdateSnapshot,
     last_health_refresh: Instant,
+    last_update_check: Instant,
+    has_checked_for_updates: bool,
     skip_world_import: bool,
     force_world_import: bool,
     no_realmlist_update: bool,
@@ -389,7 +388,7 @@ impl LauncherApp {
         Self {
             paths,
             settings,
-            page: Page::Home,
+            page: Page::Server,
             state: OperationState::Idle,
             output: None,
             progress: None,
@@ -403,6 +402,8 @@ impl LauncherApp {
             health: HealthSnapshot::default(),
             update: UpdateSnapshot::new(build_id),
             last_health_refresh: Instant::now() - Duration::from_secs(10),
+            last_update_check: Instant::now() - Duration::from_secs(60),
+            has_checked_for_updates: false,
             skip_world_import: false,
             force_world_import: false,
             no_realmlist_update: false,
@@ -425,12 +426,16 @@ impl LauncherApp {
             return;
         };
 
-        if matches!(action, "InstallStart" | "Install" | "Configure")
-            && self.settings.client_dir.trim().is_empty()
-        {
-            self.append_log("Select your World of Warcraft 1.12.1 client folder first.\n");
-            self.page = Page::Setup;
-            return;
+        if matches!(action, "InstallStart" | "Install" | "Configure") {
+            self.ensure_client_dir();
+            if self.settings.client_dir.trim().is_empty() {
+                self.append_log(
+                    "No WoW client folder is configured. Use Choose Folder to point at WoW 1.12.1.\n",
+                );
+                self.status_message = "Choose your WoW folder".to_string();
+                self.page = Page::Server;
+                return;
+            }
         }
 
         let args = self.build_args(&paths, action, update_asset);
@@ -536,6 +541,10 @@ impl LauncherApp {
             args.push("-UpdateAsset".to_string());
             args.push(update_asset.to_string());
         }
+        if action == "ApplyUpdate" {
+            args.push("-LauncherPid".to_string());
+            args.push(std::process::id().to_string());
+        }
 
         args
     }
@@ -555,6 +564,11 @@ impl LauncherApp {
             }
 
             if let Some(code) = finished {
+                let completed_action = self
+                    .progress
+                    .as_ref()
+                    .map(|progress| progress.action.clone())
+                    .unwrap_or_default();
                 self.append_log(&format!("> exited with code {code}\n"));
                 self.state = OperationState::Idle;
                 if let Some(progress) = &mut self.progress {
@@ -575,6 +589,19 @@ impl LauncherApp {
                 }
                 self.refresh_status();
                 self.refresh_health();
+                if completed_action == "CheckUpdates" {
+                    self.last_update_check = Instant::now();
+                    self.has_checked_for_updates = true;
+                    if code == 0 && self.update.available == Some(true) && self.can_self_update() {
+                        self.append_log(
+                            "Launcher update found. Applying the packaged app update automatically.\n",
+                        );
+                        self.run_action("ApplyUpdate");
+                    }
+                } else if completed_action == "ApplyUpdate" && code == 0 {
+                    self.status_message = "Applying launcher update".to_string();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             } else {
                 self.output = Some(output);
                 ctx.request_repaint_after(Duration::from_millis(100));
@@ -706,10 +733,19 @@ impl LauncherApp {
             .pick_folder()
         {
             self.settings.client_dir = path.display().to_string();
+            self.status_message = "WoW client folder selected".to_string();
+            self.append_log(&format!(
+                "Using WoW client folder: {}\n",
+                self.settings.client_dir
+            ));
         }
     }
 
-    fn auto_detect_client(&mut self) {
+    fn ensure_client_dir(&mut self) -> bool {
+        if !self.settings.client_dir.trim().is_empty() {
+            return true;
+        }
+
         if let Some(path) = discover_wow_client_dir() {
             self.settings.client_dir = path.display().to_string();
             self.status_message = "WoW client detected".to_string();
@@ -717,9 +753,9 @@ impl LauncherApp {
                 "Auto-detected WoW client: {}\n",
                 self.settings.client_dir
             ));
+            true
         } else {
-            self.status_message = "No WoW client found".to_string();
-            self.append_log("Could not auto-detect a WoW client folder.\n");
+            false
         }
     }
 
@@ -729,7 +765,6 @@ impl LauncherApp {
         if !wow_exe.is_file() {
             self.status_message = "WoW.exe not found".to_string();
             self.append_log("Cannot launch client: select a folder containing WoW.exe first.\n");
-            self.page = Page::Setup;
             return;
         }
 
@@ -759,6 +794,66 @@ impl LauncherApp {
         open_url("http://127.0.0.1:9091/dashboard");
     }
 
+    fn can_self_update(&self) -> bool {
+        self.paths.as_ref().is_ok_and(|paths| {
+            paths.build_info.is_file() && paths.root.join("RustyMangosLauncher.exe").is_file()
+        })
+    }
+
+    fn has_saved_setup(&self) -> bool {
+        self.paths
+            .as_ref()
+            .is_ok_and(|paths| paths.settings.is_file())
+    }
+
+    fn server_primary_action(&self) -> (&'static str, &'static str) {
+        if self.ports.db || self.ports.auth || self.ports.world {
+            ("Stop", "STOP SERVER")
+        } else if self.has_saved_setup() {
+            ("Start", "START SERVER")
+        } else {
+            ("InstallStart", "INSTALL & START")
+        }
+    }
+
+    fn refresh_overview(&mut self) {
+        self.refresh_status();
+        self.refresh_health();
+        self.maybe_check_for_updates(true);
+    }
+
+    fn maybe_check_for_updates(&mut self, force: bool) {
+        if self.state != OperationState::Idle {
+            return;
+        }
+
+        let due = force
+            || !self.has_checked_for_updates
+            || self.last_update_check.elapsed() >= Duration::from_secs(60 * 30);
+        if due {
+            self.run_action("CheckUpdates");
+        }
+    }
+
+    fn update_summary(&self) -> (String, Color32) {
+        let label = if self.state == OperationState::Running {
+            match self
+                .progress
+                .as_ref()
+                .map(|progress| progress.action.as_str())
+            {
+                Some("CheckUpdates") => "Checking for updates".to_string(),
+                Some("ApplyUpdate") => "Applying update".to_string(),
+                _ => self.update.status_label().to_string(),
+            }
+        } else if self.update.available == Some(true) && self.can_self_update() {
+            "Updating automatically".to_string()
+        } else {
+            self.update.status_label().to_string()
+        };
+        (label, self.update.status_color())
+    }
+
     fn draw_sidebar(&mut self, ui: &mut Ui) {
         ui.add_space(8.0);
         ui.label(
@@ -774,12 +869,9 @@ impl LauncherApp {
         );
         ui.add_space(26.0);
 
-        nav_button(ui, &mut self.page, Page::Home, "SERVER");
-        nav_button(ui, &mut self.page, Page::Setup, "SETUP");
-        nav_button(ui, &mut self.page, Page::Health, "HEALTH");
+        nav_button(ui, &mut self.page, Page::Server, "SERVER");
         nav_button(ui, &mut self.page, Page::Logs, "LOGS");
         nav_button(ui, &mut self.page, Page::Repair, "REPAIR");
-        nav_button(ui, &mut self.page, Page::Updates, "UPDATES");
         nav_button(ui, &mut self.page, Page::Advanced, "ADVANCED");
 
         ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
@@ -807,17 +899,27 @@ impl LauncherApp {
                     ))
                     .clicked()
                 {
-                    self.refresh_status();
+                    self.refresh_overview();
+                }
+                if self.update.available == Some(true)
+                    && !self.can_self_update()
+                    && !self.update.release_url.is_empty()
+                    && ui.button("Release").clicked()
+                {
+                    open_url(&self.update.release_url);
                 }
                 ui.label(
                     RichText::new(format!("World {}", self.settings.world_port)).color(muted()),
                 );
                 ui.label(RichText::new(format!("Auth {}", self.settings.auth_port)).color(muted()));
+                let (update_label, update_color) = self.update_summary();
+                ui.label(RichText::new(update_label).color(update_color));
             });
         });
     }
 
     fn draw_home(&mut self, ui: &mut Ui) {
+        let (server_action, server_label) = self.server_primary_action();
         ui.vertical_centered_justified(|ui| {
             Frame::new()
                 .fill(Color32::from_rgb(24, 31, 42))
@@ -851,47 +953,16 @@ impl LauncherApp {
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.vertical(|ui| {
-                                let install_text = if self.ports.auth && self.ports.world {
-                                    "RESTART"
-                                } else {
-                                    "INSTALL / START"
-                                };
                                 if ui
                                     .add(primary_button(
                                         self.state == OperationState::Idle,
-                                        install_text,
+                                        server_label,
                                         Vec2::new(220.0, 48.0),
                                     ))
                                     .clicked()
                                 {
-                                    let action = if self.ports.auth && self.ports.world {
-                                        "Restart"
-                                    } else {
-                                        "InstallStart"
-                                    };
-                                    self.run_action(action);
+                                    self.run_action(server_action);
                                 }
-                                ui.add_space(8.0);
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .add(enabled_button(
-                                            self.state == OperationState::Idle,
-                                            "Start",
-                                        ))
-                                        .clicked()
-                                    {
-                                        self.run_action("Start");
-                                    }
-                                    if ui
-                                        .add(enabled_button(
-                                            self.state == OperationState::Idle,
-                                            "Stop",
-                                        ))
-                                        .clicked()
-                                    {
-                                        self.run_action("Stop");
-                                    }
-                                });
                             });
                         });
                     });
@@ -902,11 +973,55 @@ impl LauncherApp {
 
         ui.add_space(18.0);
         ui.columns(2, |columns| {
-            panel(&mut columns[0], "Client", |ui| {
+            panel(&mut columns[0], "Server Health", |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Refresh").clicked() {
+                        self.refresh_overview();
+                    }
+                    ui.label(
+                        RichText::new(format!("Last check: {}", self.health.checked_at))
+                            .color(muted()),
+                    );
+                });
+                ui.add_space(12.0);
+                ui.columns(2, |health_columns| {
+                    health_row(&mut health_columns[0], "WoW client", self.health.client_ok);
+                    health_row(&mut health_columns[0], "DBC and maps", self.health.maps_ok);
+                    health_row(&mut health_columns[0], "VMaps", self.health.vmaps_ok);
+                    health_row(&mut health_columns[0], "MMaps", self.health.mmaps_ok);
+                    health_row(
+                        &mut health_columns[1],
+                        "MariaDB data",
+                        self.health.mariadb_data_ok,
+                    );
+                    health_row(&mut health_columns[1], "MariaDB port", self.ports.db);
+                    health_row(&mut health_columns[1], "Auth port", self.ports.auth);
+                    health_row(&mut health_columns[1], "World port", self.ports.world);
+                    health_row(
+                        &mut health_columns[1],
+                        "Client realmlist",
+                        self.health.realmlist_ok,
+                    );
+                });
+                ui.add_space(12.0);
+                ui.label(
+                    RichText::new(format!("Data: {}", self.health.data_dir.display()))
+                        .color(muted()),
+                );
+                ui.label(
+                    RichText::new(format!("Build: {}", self.health.build_id)).color(muted()),
+                );
+            });
+
+            panel(&mut columns[1], "Client", |ui| {
                 if self.settings.client_dir.trim().is_empty() {
                     ui.label(
-                        RichText::new("No WoW client selected")
+                        RichText::new("No WoW client detected yet")
                             .color(Color32::from_rgb(239, 178, 72)),
+                    );
+                    ui.label(
+                        RichText::new("The launcher checks common WoW 1.12.1 folders automatically. Use Choose Folder if it misses yours.")
+                            .color(muted()),
                     );
                 } else {
                     ui.label(
@@ -919,9 +1034,6 @@ impl LauncherApp {
                     if ui.button("Choose Folder").clicked() {
                         self.open_client_picker();
                     }
-                    if ui.button("Auto-detect").clicked() {
-                        self.auto_detect_client();
-                    }
                     if ui
                         .add(enabled_button(
                             !self.settings.client_dir.trim().is_empty(),
@@ -932,58 +1044,12 @@ impl LauncherApp {
                         self.launch_client();
                     }
                 });
-            });
-
-            panel(&mut columns[1], "Quick Access", |ui| {
+                ui.add_space(16.0);
                 if ui.button("Open Dashboard").clicked() {
                     self.open_dashboard();
                 }
                 if ui.button("Open Launcher Data").clicked() {
                     self.open_app_data();
-                }
-                if ui.button("Show Status").clicked() {
-                    self.run_action("Status");
-                    self.page = Page::Logs;
-                }
-            });
-        });
-    }
-
-    fn draw_setup(&mut self, ui: &mut Ui) {
-        panel(ui, "First Run Setup", |ui| {
-            ui.label(RichText::new("World of Warcraft 1.12.1 client folder").color(muted()));
-            ui.horizontal(|ui| {
-                ui.add(
-                    TextEdit::singleline(&mut self.settings.client_dir)
-                        .desired_width(f32::INFINITY),
-                );
-                if ui.button("Browse").clicked() {
-                    self.open_client_picker();
-                }
-                if ui.button("Auto-detect").clicked() {
-                    self.auto_detect_client();
-                }
-            });
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add(primary_button(
-                        self.state == OperationState::Idle,
-                        "SAVE SETUP",
-                        Vec2::new(160.0, 38.0),
-                    ))
-                    .clicked()
-                {
-                    self.run_action("Configure");
-                }
-                if ui
-                    .add(enabled_button(
-                        self.state == OperationState::Idle,
-                        "Install without starting",
-                    ))
-                    .clicked()
-                {
-                    self.run_action("Install");
                 }
             });
         });
@@ -1020,41 +1086,6 @@ impl LauncherApp {
         });
     }
 
-    fn draw_health(&mut self, ui: &mut Ui) {
-        panel(ui, "Server Health", |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Refresh").clicked() {
-                    self.refresh_status();
-                    self.refresh_health();
-                }
-                ui.label(
-                    RichText::new(format!("Last check: {}", self.health.checked_at)).color(muted()),
-                );
-            });
-            ui.add_space(12.0);
-            ui.columns(2, |columns| {
-                health_row(&mut columns[0], "WoW client", self.health.client_ok);
-                health_row(&mut columns[0], "DBC and maps", self.health.maps_ok);
-                health_row(&mut columns[0], "VMaps", self.health.vmaps_ok);
-                health_row(&mut columns[0], "MMaps", self.health.mmaps_ok);
-                health_row(&mut columns[1], "MariaDB data", self.health.mariadb_data_ok);
-                health_row(&mut columns[1], "MariaDB port", self.ports.db);
-                health_row(&mut columns[1], "Auth port", self.ports.auth);
-                health_row(&mut columns[1], "World port", self.ports.world);
-                health_row(
-                    &mut columns[1],
-                    "Client realmlist",
-                    self.health.realmlist_ok,
-                );
-            });
-            ui.add_space(12.0);
-            ui.label(
-                RichText::new(format!("Data: {}", self.health.data_dir.display())).color(muted()),
-            );
-            ui.label(RichText::new(format!("Build: {}", self.health.build_id)).color(muted()));
-        });
-    }
-
     fn draw_logs(&mut self, ui: &mut Ui) {
         panel(ui, "Logs", |ui| {
             ui.horizontal(|ui| {
@@ -1076,34 +1107,24 @@ impl LauncherApp {
                 }
             });
             ui.add_space(8.0);
-            let rows = 24;
-            if self.selected_log == LogView::Launcher {
-                ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.add(
-                            TextEdit::multiline(&mut self.log)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(rows)
-                                .interactive(false),
-                        );
-                    });
+            let selected_log_text = if self.selected_log == LogView::Launcher {
+                self.log.as_str()
             } else {
-                ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.add(
-                            TextEdit::multiline(&mut self.server_log)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(rows)
-                                .interactive(false),
-                        );
-                    });
-            }
+                self.server_log.as_str()
+            };
+
+            ScrollArea::both()
+                .stick_to_bottom(true)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    // Avoid egui's read-only TextEdit hit-testing path, which can panic
+                    // when the log viewer is hovered during layout edge cases.
+                    ui.add(
+                        Label::new(RichText::new(selected_log_text).monospace())
+                            .wrap_mode(TextWrapMode::Extend)
+                            .selectable(false),
+                    );
+                });
         });
     }
 
@@ -1173,103 +1194,6 @@ impl LauncherApp {
         });
     }
 
-    fn draw_updates(&mut self, ui: &mut Ui) {
-        panel(ui, "Updates", |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(self.update.status_label())
-                        .strong()
-                        .color(self.update.status_color()),
-                );
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .add(enabled_button(
-                            self.state == OperationState::Idle,
-                            "Check Updates",
-                        ))
-                        .clicked()
-                    {
-                        self.run_action("CheckUpdates");
-                    }
-                });
-            });
-            ui.add_space(12.0);
-            ui.columns(2, |columns| {
-                columns[0].label(RichText::new("Installed").color(muted()));
-                columns[0].label(
-                    RichText::new(self.update.local_build.clone())
-                        .strong()
-                        .color(Color32::from_rgb(235, 241, 250)),
-                );
-                columns[1].label(RichText::new("Release").color(muted()));
-                columns[1].label(
-                    RichText::new(if self.update.release_commit.is_empty() {
-                        self.update.release_tag.clone()
-                    } else {
-                        format!(
-                            "{} {}",
-                            self.update.release_tag,
-                            short_commit(&self.update.release_commit)
-                        )
-                    })
-                    .strong()
-                    .color(Color32::from_rgb(235, 241, 250)),
-                );
-            });
-            if !self.update.published_at.is_empty() {
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(format!("Published: {}", self.update.published_at))
-                        .color(muted()),
-                );
-            }
-            if !self.update.last_download.is_empty() {
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(format!("Downloaded: {}", self.update.last_download))
-                        .color(Color32::from_rgb(32, 196, 130)),
-                );
-            }
-            ui.add_space(16.0);
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add(enabled_button(
-                        self.state == OperationState::Idle && !self.update.app_zip_url.is_empty(),
-                        "Download App Zip",
-                    ))
-                    .clicked()
-                {
-                    self.run_action_with_update_asset("DownloadUpdate", Some("AppZip"));
-                }
-                if ui
-                    .add(enabled_button(
-                        self.state == OperationState::Idle && !self.update.setup_url.is_empty(),
-                        "Download Installer",
-                    ))
-                    .clicked()
-                {
-                    self.run_action_with_update_asset("DownloadUpdate", Some("Installer"));
-                }
-                if ui
-                    .add(enabled_button(
-                        !self.update.release_url.is_empty(),
-                        "Open Release",
-                    ))
-                    .clicked()
-                {
-                    open_url(&self.update.release_url);
-                }
-            });
-            ui.add_space(10.0);
-            ui.label(
-                RichText::new(asset_label("App zip", &self.update.app_zip_size)).color(muted()),
-            );
-            ui.label(
-                RichText::new(asset_label("Installer", &self.update.setup_size)).color(muted()),
-            );
-        });
-    }
-
     fn draw_advanced(&mut self, ui: &mut Ui) {
         panel(ui, "Advanced", |ui| {
             ui.horizontal(|ui| {
@@ -1303,6 +1227,11 @@ impl App for LauncherApp {
         if self.last_health_refresh.elapsed() >= Duration::from_secs(5) {
             self.refresh_health();
         }
+        if self.state == OperationState::Idle
+            && self.last_update_check.elapsed() >= Duration::from_secs(3)
+        {
+            self.maybe_check_for_updates(false);
+        }
         if self.page == Page::Logs && self.last_log_file_refresh.elapsed() >= Duration::from_secs(1)
         {
             self.refresh_file_log();
@@ -1335,12 +1264,9 @@ impl App for LauncherApp {
                     .inner_margin(Margin::same(22)),
             )
             .show(ctx, |ui| match self.page {
-                Page::Home => self.draw_home(ui),
-                Page::Setup => self.draw_setup(ui),
-                Page::Health => self.draw_health(ui),
+                Page::Server => self.draw_home(ui),
                 Page::Logs => self.draw_logs(ui),
                 Page::Repair => self.draw_repair(ui),
-                Page::Updates => self.draw_updates(ui),
                 Page::Advanced => self.draw_advanced(ui),
             });
     }
@@ -1479,7 +1405,7 @@ fn progress_total_for_action(action: &str) -> usize {
         "ReimportWorld" => 3,
         "ResetSeededCharacters" => 3,
         "CheckUpdates" => 2,
-        "DownloadUpdate" => 3,
+        "DownloadUpdate" | "ApplyUpdate" => 3,
         _ => 2,
     }
 }
@@ -1501,10 +1427,14 @@ fn progress_index_for_phase(action: &str, phase: &str) -> usize {
         || normalized.contains("seeded")
     {
         4
-    } else if normalized.contains("checking launcher updates") {
+    } else if normalized.contains("checking launcher updates")
+        || normalized.contains("preparing launcher self-update")
+    {
         1
     } else if normalized.contains("downloading launcher update") {
         2
+    } else if normalized.contains("launching launcher self-update") {
+        progress_total_for_action(action)
     } else if normalized.contains("starting") {
         6
     } else if normalized.contains("ready") {
@@ -1532,23 +1462,6 @@ fn port_field(ui: &mut Ui, label: &str, value: &mut u16) {
 
 fn muted() -> Color32 {
     Color32::from_rgb(157, 170, 190)
-}
-
-fn short_commit(commit: &str) -> String {
-    let trimmed = commit.trim();
-    if trimmed.len() >= 8 {
-        trimmed[..8].to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn asset_label(name: &str, size: &str) -> String {
-    if size.trim().is_empty() {
-        format!("{name}: not checked")
-    } else {
-        format!("{name}: {size}")
-    }
 }
 
 fn read_build_id(paths: &LauncherPaths) -> String {

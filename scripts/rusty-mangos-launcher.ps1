@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("InstallStart", "Install", "Configure", "Start", "Stop", "Restart", "Status", "RepairDatabase", "ReextractVMaps", "RebuildMMaps", "ReimportWorld", "ResetSeededCharacters", "CheckUpdates", "DownloadUpdate")]
+    [ValidateSet("InstallStart", "Install", "Configure", "Start", "Stop", "Restart", "Status", "RepairDatabase", "ReextractVMaps", "RebuildMMaps", "ReimportWorld", "ResetSeededCharacters", "CheckUpdates", "DownloadUpdate", "ApplyUpdate")]
     [string]$Action = "InstallStart",
     [ValidateSet("Native", "Docker")]
     [string]$DatabaseMode = "Native",
@@ -20,6 +20,7 @@ param(
     [switch]$NoRealmlistUpdate,
     [switch]$ResetCharacters,
     [switch]$DebugBuild,
+    [int]$LauncherPid = 0,
     [switch]$Help
 )
 
@@ -43,6 +44,7 @@ function Show-Usage {
     Write-Host "  ResetSeededCharacters Reset the seeded RUSTAUTH characters."
     Write-Host "  CheckUpdates   Check the rolling GitHub launcher release."
     Write-Host "  DownloadUpdate Download the selected launcher update asset."
+    Write-Host "  ApplyUpdate    Download and apply the packaged launcher update."
     Write-Host ""
     Write-Host "Options:"
     Write-Host "  -ClientDir <path>          WoW 1.12.1 client folder. Prompts when omitted."
@@ -1310,6 +1312,85 @@ function Save-LauncherUpdateAsset {
 
     Write-Host "UPDATE_DOWNLOAD_PATH=$destination"
     Write-Host "Downloaded $assetName to $destination"
+    return $destination
+}
+
+function Start-LauncherSelfUpdate {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$LauncherDir,
+        [Parameter(Mandatory = $true)][int]$LauncherPid
+    )
+
+    if ($LauncherPid -le 0) {
+        throw "ApplyUpdate requires a running launcher pid."
+    }
+
+    Write-Step "Preparing launcher self-update"
+    $zipPath = Save-LauncherUpdateAsset $RepoRoot $LauncherDir "AppZip"
+    if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+        throw "Downloaded launcher update was not found at $zipPath"
+    }
+
+    $applyRoot = Join-Path $LauncherDir "updates\apply"
+    $stagingRoot = Join-Path $applyRoot "staging"
+    Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
+    Expand-Archive -LiteralPath $zipPath -DestinationPath $stagingRoot -Force
+
+    $launcherExe = Join-Path $RepoRoot "RustyMangosLauncher.exe"
+    if (-not (Test-Path -LiteralPath $launcherExe -PathType Leaf)) {
+        throw "Self-update is only supported for packaged launcher installs."
+    }
+
+    $helperPath = Join-Path $applyRoot "apply-update.ps1"
+    $helperContent = @'
+param(
+    [Parameter(Mandatory = $true)][int]$LauncherPid,
+    [Parameter(Mandatory = $true)][string]$AppRoot,
+    [Parameter(Mandatory = $true)][string]$StageRoot
+)
+
+$ErrorActionPreference = "Stop"
+
+$deadline = (Get-Date).AddMinutes(2)
+while (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) {
+    Start-Sleep -Milliseconds 500
+    if ((Get-Date) -gt $deadline) {
+        break
+    }
+}
+
+$launcherScript = Join-Path $AppRoot "scripts\rusty-mangos-launcher.ps1"
+if (Test-Path -LiteralPath $launcherScript -PathType Leaf) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launcherScript Stop | Out-Null
+}
+
+Get-ChildItem -LiteralPath $StageRoot -Force | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $AppRoot $_.Name) -Recurse -Force
+}
+
+Start-Sleep -Seconds 1
+Start-Process -FilePath (Join-Path $AppRoot "RustyMangosLauncher.exe") -WorkingDirectory $AppRoot -WindowStyle Hidden
+'@
+    Set-Content -LiteralPath $helperPath -Value $helperContent -Encoding ASCII
+
+    Write-Step "Launching launcher self-update"
+    Start-Process -FilePath "powershell.exe" -ArgumentList @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        $helperPath,
+        "-LauncherPid",
+        $LauncherPid,
+        "-AppRoot",
+        $RepoRoot,
+        "-StageRoot",
+        $stagingRoot
+    ) -WindowStyle Hidden | Out-Null
+
+    Write-Host "Launcher update is staged and will finish after the launcher closes."
 }
 
 function Seed-PlayAccount {
@@ -1630,6 +1711,11 @@ if ($Action -eq "CheckUpdates") {
 
 if ($Action -eq "DownloadUpdate") {
     Save-LauncherUpdateAsset $repoRoot $launcherDir $UpdateAsset
+    exit 0
+}
+
+if ($Action -eq "ApplyUpdate") {
+    Start-LauncherSelfUpdate $repoRoot $launcherDir $LauncherPid
     exit 0
 }
 

@@ -431,6 +431,12 @@ pub(in crate::world) async fn player_db_creature_spell_target_outcome(
     let Some(target_creature) = shared_world.maps.db_creature_snapshot(map_id, target).await else {
         return Ok(None);
     };
+    if target_creature.is_evading_home() {
+        return Ok(Some(PlayerSpellTargetOutcome {
+            target,
+            miss_info: Some(SPELL_MISS_EVADE),
+        }));
+    }
     let combat_stats = shared_world
         .maps
         .player_combat_stats(map_id, character_guid)

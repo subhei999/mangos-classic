@@ -298,9 +298,6 @@ impl MapRuntime {
                     now,
                 )?);
                 self.add_db_creature_threat(target, dynamic_object.caster, tick.threat);
-                if self.active_creature_combats.contains_key(&target.raw()) {
-                    self.refresh_db_creature_combat_leash(target, now);
-                }
             } else {
                 packets.extend(self.clear_player_melee_state_for_dead_target(target, None)?);
                 packets.extend(self.interrupt_player_spell_work_targeting_unit(target)?);
@@ -473,60 +470,20 @@ impl MapRuntime {
         target: ObjectGuid,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        if self.active_creature_combats.contains_key(&target.raw())
-            || self
-                .begin_db_creature_combat(target, dynamic_object.caster, now)
-                .is_none()
-        {
-            return Ok(Vec::new());
-        }
-        let Some(caster_player) = self.players.get(&dynamic_object.caster_character_guid) else {
+        let Some(caster_session_id) = self
+            .players
+            .get(&dynamic_object.caster_character_guid)
+            .and_then(PlayerRuntime::client_session_id)
+        else {
             return Ok(Vec::new());
         };
-        let Some(caster_session_id) = caster_player.client_session_id() else {
-            return Ok(Vec::new());
-        };
-        let caster_position = caster_player.position;
-        let Some(target_creature) = self.creatures.get(&target.raw()) else {
-            return Ok(Vec::new());
-        };
-        let creature_flags = db_creature_unit_flags(target_creature, true);
-        let attack_start = OutboundWorldPacket {
-            opcode: WorldOpcode::SmsgAttackStart as u16,
-            body: build_attack_start_body(target, dynamic_object.caster),
-        };
-        let player_flags = OutboundWorldPacket {
-            opcode: WorldOpcode::SmsgUpdateObject as u16,
-            body: build_unit_flags_update_body(dynamic_object.caster, player_unit_flags(true))?,
-        };
-        let creature_flags = OutboundWorldPacket {
-            opcode: WorldOpcode::SmsgUpdateObject as u16,
-            body: build_unit_flags_update_body(target, creature_flags)?,
-        };
-        let mut packets = vec![
-            (caster_session_id, attack_start.clone()),
-            (caster_session_id, player_flags.clone()),
-            (caster_session_id, creature_flags.clone()),
-        ];
-        packets.extend(self.broadcast_packet_near_position(
-            target_creature.current_position,
-            CREATURE_SPAWN_RADIUS_YARDS,
-            Some(dynamic_object.caster_character_guid),
-            attack_start,
-        ));
-        packets.extend(self.broadcast_packet_near_position(
-            caster_position,
-            PLAYER_VISIBILITY_RADIUS_YARDS,
-            Some(dynamic_object.caster_character_guid),
-            player_flags,
-        ));
-        packets.extend(self.broadcast_packet_near_position(
-            target_creature.current_position,
-            CREATURE_SPAWN_RADIUS_YARDS,
-            Some(dynamic_object.caster_character_guid),
-            creature_flags,
-        ));
-        Ok(packets)
+        self.begin_db_creature_combat_packets_with_assistance(
+            target,
+            dynamic_object.caster,
+            dynamic_object.caster_character_guid,
+            caster_session_id,
+            now,
+        )
     }
 
     fn destroy_dynamic_object_packets(

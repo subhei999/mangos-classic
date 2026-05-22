@@ -2369,6 +2369,31 @@ fn assert_spell_go_single_resist_miss_with_source(
     caster_guid: ObjectGuid,
     target: ObjectGuid,
 ) {
+    assert_spell_go_single_miss_with_source(
+        spell_go,
+        source_guid,
+        caster_guid,
+        target,
+        SPELL_MISS_RESIST,
+    );
+}
+
+fn assert_spell_go_single_miss(
+    spell_go: &OutboundWorldPacket,
+    caster_guid: ObjectGuid,
+    target: ObjectGuid,
+    miss_info: u8,
+) {
+    assert_spell_go_single_miss_with_source(spell_go, caster_guid, caster_guid, target, miss_info);
+}
+
+fn assert_spell_go_single_miss_with_source(
+    spell_go: &OutboundWorldPacket,
+    source_guid: ObjectGuid,
+    caster_guid: ObjectGuid,
+    target: ObjectGuid,
+    miss_info: u8,
+) {
     let mut cursor =
         PackedGuid::packed_size(source_guid) + PackedGuid::packed_size(caster_guid) + 4;
     assert_eq!(
@@ -2389,7 +2414,7 @@ fn assert_spell_go_single_resist_miss_with_source(
         target.raw()
     );
     cursor += 8;
-    assert_eq!(spell_go.body[cursor], SPELL_MISS_RESIST);
+    assert_eq!(spell_go.body[cursor], miss_info);
 }
 
 #[tokio::test]
@@ -6577,6 +6602,134 @@ async fn fireball_with_periodic_aura_applies_direct_damage_and_dot() {
                 .windows(4)
                 .any(|window| window == 133u32.to_le_bytes().as_slice())
     ));
+}
+
+#[tokio::test]
+async fn fireball_against_evading_creature_casts_then_reports_evade_miss() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager {
+        spell_cast_times: HashMap::new(),
+        spell_durations: HashMap::from([(
+            9,
+            SpellDurationEntry {
+                duration_millis: 4_000,
+                duration_per_level_millis: 0,
+                max_duration_millis: 4_000,
+            },
+        )]),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let mut fireball = fireball_with_dot_spell_template();
+    fireball.attributes_ex2 = TEST_SPELL_ATTR_EX2_CANT_CRIT;
+    fireball.attributes_ex3 = TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
+    object_mgr
+        .prime_spell_template_for_test(133, Some(fireball))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), player_position);
+    player.power1 = 100;
+    player.max_power1 = 100;
+    maps.add_player(player).await.unwrap();
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 46;
+    kobold.position_x = 20.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.npc_flags = 0;
+    let target = creature_spawn_guid(&kobold);
+    let mut runtime = DbCreatureRuntime::new(kobold);
+    runtime.motion = CreatureMotionState::ReturnHome(CreatureReturnHomeMotion {
+        start: runtime.current_position,
+        destination: runtime.home_position,
+        path: vec![runtime.current_position, runtime.home_position],
+        started_at: Instant::now(),
+        duration: Duration::from_secs(1),
+    });
+    maps.share_db_creature_snapshots(0, vec![runtime]).await;
+    let mut body = Vec::new();
+    body.extend_from_slice(&133u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(133);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 4,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(creature.health, 120);
+    assert!(
+        creature.active_auras.is_empty(),
+        "CMaNGOS SpellHitResult evade prevents both damage and the follow-up DoT"
+    );
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16));
+    assert!(!packets
+        .iter()
+        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16));
+    assert!(!packets
+        .iter()
+        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+    let spell_go = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+        .expect("evading target should still receive SMSG_SPELL_GO with miss data");
+    assert_spell_go_single_miss(
+        spell_go,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        target,
+        SPELL_MISS_EVADE,
+    );
 }
 
 #[tokio::test]

@@ -1028,6 +1028,7 @@ pub(in crate::world) async fn finalize_map_owned_player_death_if_needed(
         session.death.player_death_state == PlayerDeathState::JustDied;
     session.death.player_corpse = None;
     session.character.player_health = 0;
+    session.character.player_rage = 0;
     session.auras.active_auras.clear();
     session.combat.player_in_combat = false;
     mirror_session_player_auto_attack(session, None, None);
@@ -1035,6 +1036,10 @@ pub(in crate::world) async fn finalize_map_owned_player_death_if_needed(
     shared_world
         .maps
         .set_player_auto_attack(map_id, character_guid, None, None)
+        .await;
+    shared_world
+        .maps
+        .set_player_power2(map_id, character_guid, 0)
         .await;
     persist_player_death_state(character_db_pool, account_id, session).await?;
     Ok(session.death.player_death_state == PlayerDeathState::Corpse)

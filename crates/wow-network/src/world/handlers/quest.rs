@@ -861,9 +861,57 @@ pub(in crate::world) async fn handle_questgiver_choose_reward(
         stream,
         WorldOpcode::SmsgQuestgiverQuestComplete as u16,
         &build_questgiver_quest_complete_body_with_xp(&quest, reward_xp, reward_money),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_next_chain_quest_details_after_reward(
+        stream,
+        object_mgr,
+        world_db_pool,
+        request.guid,
+        &quest,
+        session,
+        header_crypto,
+    )
+    .await?;
+    Ok(())
+}
+
+pub(in crate::world) async fn send_next_chain_quest_details_after_reward(
+    stream: &mut WorldPacketSink,
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    questgiver: ObjectGuid,
+    rewarded_quest: &QuestTemplateQuery,
+    session: &WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    let next_quest_id = rewarded_quest.next_quest_in_chain;
+    if next_quest_id == 0 {
+        return Ok(false);
+    }
+    if !questgiver_starts_quest(object_mgr, world_db_pool, questgiver, next_quest_id).await? {
+        return Ok(false);
+    }
+    let Some(next_quest) = object_mgr
+        .quest_template(world_db_pool, next_quest_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if !can_take_start_quest(object_mgr, world_db_pool, &next_quest, session).await? {
+        return Ok(false);
+    }
+
+    let displays = quest_reward_item_displays(world_db_pool, &next_quest).await?;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgQuestgiverQuestDetails as u16,
+        &build_quest_details_body(questgiver, &next_quest, &displays),
         Some(header_crypto),
     )
-    .await
+    .await?;
+    Ok(true)
 }
 
 pub(in crate::world) async fn send_quest_reputation_updates(

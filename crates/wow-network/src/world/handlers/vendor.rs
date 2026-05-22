@@ -357,7 +357,7 @@ pub(in crate::world) fn vendor_buyback_slot_index(slot: u8) -> Option<usize> {
         .then_some((slot - BUYBACK_SLOT_START) as usize)
 }
 
-pub(in crate::world) fn next_buyback_slot(session: &WorldSessionState) -> u8 {
+fn normalized_buyback_cursor(session: &WorldSessionState) -> u8 {
     if (BUYBACK_SLOT_START..BUYBACK_SLOT_END).contains(&session.inventory.next_buyback_slot) {
         session.inventory.next_buyback_slot
     } else {
@@ -365,12 +365,71 @@ pub(in crate::world) fn next_buyback_slot(session: &WorldSessionState) -> u8 {
     }
 }
 
+fn buyback_slot_occupied(session: &WorldSessionState, slot: u8) -> bool {
+    session
+        .inventory
+        .buyback_items
+        .iter()
+        .any(|entry| entry.slot == slot)
+}
+
+pub(in crate::world) fn next_buyback_slot(session: &WorldSessionState) -> u8 {
+    let cursor = normalized_buyback_cursor(session);
+    if !buyback_slot_occupied(session, cursor) {
+        return cursor;
+    }
+
+    for slot in BUYBACK_SLOT_START..BUYBACK_SLOT_END {
+        if !buyback_slot_occupied(session, slot) {
+            return slot;
+        }
+    }
+
+    session
+        .inventory
+        .buyback_items
+        .iter()
+        .min_by_key(|entry| entry.timestamp)
+        .map(|entry| entry.slot)
+        .unwrap_or(BUYBACK_SLOT_START)
+}
+
 pub(in crate::world) fn advance_buyback_slot(session: &mut WorldSessionState, used_slot: u8) {
     session.inventory.next_buyback_slot = if used_slot < BUYBACK_SLOT_END - 1 {
         used_slot + 1
     } else {
-        BUYBACK_SLOT_START
+        BUYBACK_SLOT_END - 1
     };
+}
+
+fn refresh_buyback_cursor_after_slot_cleared(session: &mut WorldSessionState, slot: u8) {
+    let cursor = normalized_buyback_cursor(session);
+    if buyback_slot_occupied(session, cursor) {
+        session.inventory.next_buyback_slot = slot;
+    }
+}
+
+pub(in crate::world) fn remove_buyback_entry_from_session(
+    session: &mut WorldSessionState,
+    slot: u8,
+) {
+    session
+        .inventory
+        .buyback_items
+        .retain(|entry| entry.slot != slot);
+    refresh_buyback_cursor_after_slot_cleared(session, slot);
+}
+
+fn next_buyback_timestamp(session: &WorldSessionState) -> u32 {
+    const BUYBACK_DURATION_SECS: u32 = 30 * 3600;
+    session
+        .inventory
+        .buyback_items
+        .iter()
+        .map(|entry| entry.timestamp)
+        .max()
+        .map(|timestamp| timestamp.saturating_add(1))
+        .unwrap_or(BUYBACK_DURATION_SECS)
 }
 
 pub(in crate::world) fn build_buyback_slot_update_body(
@@ -427,10 +486,7 @@ pub(in crate::world) async fn remove_existing_buyback_slot(
         0,
     )
     .await?;
-    session
-        .inventory
-        .buyback_items
-        .retain(|entry| entry.slot != slot);
+    remove_buyback_entry_from_session(session, slot);
     Ok(())
 }
 
@@ -440,7 +496,7 @@ pub(in crate::world) fn push_buyback_entry(
     item: u32,
     price: u32,
 ) -> BuybackItem {
-    let timestamp = 30 * 3600;
+    let timestamp = next_buyback_timestamp(session);
     session
         .inventory
         .buyback_items
@@ -726,7 +782,7 @@ pub(in crate::world) async fn handle_buyback_item(
         })
         .cloned()
     else {
-        session.inventory.buyback_items.remove(entry_index);
+        remove_buyback_entry_from_session(session, request.slot);
         return send_packet(
             stream,
             WorldOpcode::SmsgBuyFailed as u16,
@@ -819,7 +875,7 @@ pub(in crate::world) async fn handle_buyback_item(
             .await?;
         }
     }
-    session.inventory.buyback_items.remove(entry_index);
+    remove_buyback_entry_from_session(session, request.slot);
     session.inventory.items =
         wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
 

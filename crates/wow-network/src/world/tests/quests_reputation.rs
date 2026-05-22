@@ -1525,6 +1525,98 @@ fn quest_reward_packets_use_item_display_ids() {
     assert_eq!(read_u32(&body, &mut cursor).unwrap(), 2002);
 }
 
+#[tokio::test]
+async fn rewarded_chain_quest_opens_next_quest_details_from_same_questgiver() {
+    let object_mgr = ObjectMgr::default();
+    let pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world")
+        .expect("lazy mysql pool should not connect");
+    let giver = ObjectGuid::new(HighGuid::Unit, 197, 1);
+    let mut rewarded = test_quest_template(783);
+    rewarded.title = "A Threat Within".to_string();
+    rewarded.next_quest_in_chain = 7;
+    let mut next = test_quest_template(7);
+    next.title = "Kobold Camp Cleanup".to_string();
+    next.prev_quest_id = rewarded.entry as i32;
+    object_mgr
+        .prime_creature_start_quest_ids_for_test(giver.entry(), vec![7])
+        .await;
+    object_mgr
+        .prime_quest_template_for_test(rewarded.entry, Some(rewarded.clone()))
+        .await;
+    object_mgr
+        .prime_quest_template_for_test(next.entry, Some(next.clone()))
+        .await;
+    object_mgr
+        .prime_quest_prev_quests_for_test(next.entry, vec![rewarded.entry as i32])
+        .await;
+    object_mgr
+        .prime_quest_prev_chain_quests_for_test(next.entry, vec![rewarded.entry])
+        .await;
+    object_mgr
+        .prime_exclusive_group_quests_for_test(0, Vec::new())
+        .await;
+    let session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 11,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        quests: QuestSessionState {
+            quest_statuses: HashMap::from([(
+                rewarded.entry,
+                CharacterQuestStatus {
+                    quest: rewarded.entry,
+                    status: QUEST_STATUS_COMPLETE,
+                    rewarded: 1,
+                    mobcount1: 0,
+                    mobcount2: 0,
+                    mobcount3: 0,
+                    mobcount4: 0,
+                },
+            )]),
+            ..QuestSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(outbound_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    assert!(
+        send_next_chain_quest_details_after_reward(
+            &mut sink,
+            &object_mgr,
+            &pool,
+            giver,
+            &rewarded,
+            &session,
+            &mut header_crypto,
+        )
+        .await
+        .unwrap()
+    );
+
+    let packet = outbound_rx.try_recv().unwrap();
+    assert_eq!(packet.opcode, WorldOpcode::SmsgQuestgiverQuestDetails as u16);
+    let mut cursor = 8;
+    assert_eq!(read_u32(&packet.body, &mut cursor).unwrap(), next.entry);
+    assert!(packet.body.windows(next.title.len()).any(|window| {
+        window == next.title.as_bytes()
+    }));
+    assert!(outbound_rx.try_recv().is_err());
+}
+
 #[test]
 fn quest_request_items_packet_includes_required_items_and_complete_flags() {
     let guid = ObjectGuid::new(HighGuid::Unit, 197, 1);

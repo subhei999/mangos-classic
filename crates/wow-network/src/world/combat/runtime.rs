@@ -29,6 +29,7 @@ impl DbCreatureRuntime {
             waypoint_forward: true,
             waypoint_resume_position: None,
             already_called_assistance: false,
+            check_for_help_enabled_at: None,
             next_spline_id: 0,
             move_speeds,
             default_movement_run: false,
@@ -62,6 +63,7 @@ impl DbCreatureRuntime {
             triggered_event_ai_scripts: HashSet::new(),
             event_ai_cooldowns_until: HashMap::new(),
             event_ai_update_accum: Duration::ZERO,
+            next_event_ai_update_at: None,
             native_display,
             display_id_override: None,
             aura_display_id_override: None,
@@ -130,6 +132,7 @@ impl DbCreatureRuntime {
                 creature.triggered_event_ai_scripts.clear();
                 creature.event_ai_cooldowns_until.clear();
                 creature.event_ai_update_accum = Duration::ZERO;
+                creature.next_event_ai_update_at = None;
                 creature.motion = CreatureMotionState::Idle;
                 creature.next_random_move_at = None;
                 creature.next_confused_move_at = None;
@@ -400,6 +403,7 @@ impl DbCreatureRuntime {
         self.triggered_event_ai_scripts.clear();
         self.event_ai_cooldowns_until.clear();
         self.event_ai_update_accum = Duration::ZERO;
+        self.next_event_ai_update_at = None;
         self.refresh_move_speeds();
         self.corpse_expires_at =
             Some(now + db_creature_corpse_decay_duration(&self.spawn.template, respawn_delay));
@@ -425,6 +429,7 @@ impl DbCreatureRuntime {
         self.confused_origin = None;
         self.waypoint_resume_position = None;
         self.already_called_assistance = false;
+        self.check_for_help_enabled_at = None;
     }
 
     pub(in crate::world) fn reduce_corpse_decay_after_loot(&mut self, now: Instant) {
@@ -474,6 +479,7 @@ impl DbCreatureRuntime {
         self.triggered_event_ai_scripts.clear();
         self.event_ai_cooldowns_until.clear();
         self.event_ai_update_accum = Duration::ZERO;
+        self.next_event_ai_update_at = None;
         self.refresh_move_speeds();
         self.corpse_expires_at = None;
         self.health = 0;
@@ -505,6 +511,7 @@ impl DbCreatureRuntime {
         self.waypoint_forward = true;
         self.waypoint_resume_position = None;
         self.already_called_assistance = false;
+        self.check_for_help_enabled_at = None;
     }
 
     pub(in crate::world) fn is_ready_to_respawn(&self, now: Instant) -> bool {
@@ -525,6 +532,7 @@ impl DbCreatureRuntime {
         self.triggered_event_ai_scripts.clear();
         self.event_ai_cooldowns_until.clear();
         self.event_ai_update_accum = Duration::ZERO;
+        self.next_event_ai_update_at = None;
         self.aura_display_id_override = None;
         self.refresh_move_speeds();
         self.corpse_expires_at = None;
@@ -554,6 +562,7 @@ impl DbCreatureRuntime {
         self.waypoint_forward = true;
         self.waypoint_resume_position = None;
         self.already_called_assistance = false;
+        self.check_for_help_enabled_at = None;
     }
 
     pub(in crate::world) fn can_aggro_player(

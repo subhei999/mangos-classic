@@ -159,6 +159,7 @@ pub(in crate::world) fn advance_db_creature_motion_runtime(
                 creature.current_position = return_home.destination;
                 creature.motion = CreatureMotionState::Idle;
                 creature.already_called_assistance = false;
+                creature.check_for_help_enabled_at = None;
                 creature.waypoint_resume_position = None;
                 if creature.has_waypoint_movement() {
                     creature.next_random_move_at = None;
@@ -590,6 +591,11 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
     };
     let path = path_result.points;
     let destination = *path.last()?;
+    if path_result.flags.contains(DbCreaturePathFlags::INCOMPLETE)
+        && !db_creature_chase_endpoint_reaches_target(creature, destination, target_position)
+    {
+        return None;
+    }
     if let CreatureMotionState::Chase(chase) = &creature.motion {
         if chase.target == target {
             if now < chase.recheck_at {
@@ -631,6 +637,18 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
         duration,
         run,
     })
+}
+
+pub(in crate::world) fn db_creature_chase_endpoint_reaches_target(
+    creature: &DbCreatureRuntime,
+    endpoint: WorldPosition,
+    target_position: WorldPosition,
+) -> bool {
+    if endpoint.map_id != target_position.map_id {
+        return false;
+    }
+    let reach = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
+    distance_2d(endpoint.x, endpoint.y, target_position.x, target_position.y) <= reach
 }
 
 #[cfg(test)]
@@ -1174,6 +1192,56 @@ pub(in crate::world) fn db_creature_chase_near_point(
         target_position.z,
         normalize_orientation(angle + std::f32::consts::PI),
     )
+}
+
+pub(in crate::world) fn db_creature_chase_near_point_with_cmangos_los_selector(
+    target_position: WorldPosition,
+    distance: f32,
+    base_angle: f32,
+    searcher_bounding_radius: f32,
+    mut candidate_is_valid: impl FnMut(WorldPosition) -> bool,
+) -> WorldPosition {
+    let primary = db_creature_chase_near_point(target_position, distance, base_angle);
+    if candidate_is_valid(primary) {
+        return primary;
+    }
+
+    // CMaNGOS WorldObject::GetNearPointAt retries nearby angles when the
+    // original target-ring point has LOS/collision trouble. Used-position
+    // occupancy is intentionally not modeled yet, matching CMaNGOS' disabled
+    // NearUsedPosDo block for normal GetNearPointAt calls.
+    let searched_for_size = searcher_bounding_radius.max(DEFAULT_WORLD_OBJECT_SIZE);
+    let searcher_dist = distance.max(DEFAULT_WORLD_OBJECT_SIZE);
+    let half_angle = (1.8 * searched_for_size / searcher_dist).atan();
+    let mut plus_angle = 0.0;
+    let mut minus_angle = 0.0;
+    loop {
+        let choose_plus = plus_angle < std::f32::consts::PI && plus_angle <= minus_angle;
+        let choose_minus = !choose_plus && minus_angle < std::f32::consts::PI;
+        if !choose_plus && !choose_minus {
+            break;
+        }
+        let offset = if choose_plus {
+            plus_angle += half_angle + 0.01;
+            plus_angle
+        } else {
+            minus_angle += half_angle + 0.01;
+            -minus_angle
+        };
+        if offset.abs() > std::f32::consts::PI {
+            continue;
+        }
+        let candidate = db_creature_chase_near_point(
+            target_position,
+            distance,
+            normalize_orientation(base_angle + offset),
+        );
+        if candidate_is_valid(candidate) {
+            return candidate;
+        }
+    }
+
+    primary
 }
 
 pub(in crate::world) fn db_creature_can_use_straight_chase_path(

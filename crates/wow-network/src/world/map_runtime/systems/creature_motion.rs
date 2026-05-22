@@ -73,6 +73,7 @@ impl MapRuntime {
         let due_advancements = self.db_creature_idle_motion_advancement_guids(now);
         let advancement_queue_pop_time = advancement_queue_started_at.elapsed();
         let due_creature_count = due_advancements.guids.len();
+        let mut packets = Vec::new();
         let mut motion_advance_time = Duration::ZERO;
         let mut spatial_update_time = Duration::ZERO;
         let mut motion_script_schedule_time = Duration::ZERO;
@@ -88,11 +89,15 @@ impl MapRuntime {
                     self.schedule_db_creature_movement_script(creature.guid(), script_id, now);
                     motion_script_schedule_time += script_schedule_started_at.elapsed();
                 }
+                packets.extend(self.db_creature_check_for_help_packets_on_relocation(
+                    ObjectGuid::from_raw(guid),
+                    navigation,
+                    now,
+                )?);
                 creatures.push(creature);
             }
         }
 
-        let mut packets = Vec::new();
         let pending_script_started_at = Instant::now();
         packets.extend(self.advance_pending_db_scripts(now)?);
         let pending_script_execution_time = pending_script_started_at.elapsed();
@@ -143,6 +148,11 @@ impl MapRuntime {
                     )?);
                     motion_start_broadcast_time += broadcast_started_at.elapsed();
                 }
+                packets.extend(self.db_creature_check_for_help_packets_on_relocation(
+                    creature_guid,
+                    navigation,
+                    now,
+                )?);
                 started_creatures += 1;
                 creatures.push(creature);
             }
@@ -180,6 +190,11 @@ impl MapRuntime {
                     )?);
                     motion_start_broadcast_time += broadcast_started_at.elapsed();
                 }
+                packets.extend(self.db_creature_check_for_help_packets_on_relocation(
+                    creature_guid,
+                    navigation,
+                    now,
+                )?);
                 started_creatures += 1;
                 creatures.push(creature);
             }
@@ -799,8 +814,12 @@ impl MapRuntime {
         now: Instant,
     ) -> Option<(DbCreatureRuntime, StartedCreatureMotion)> {
         let geometry = self.geometry.clone();
-        let chase_destination =
-            self.db_creature_chase_slot_destination(creature_guid, target, target_position);
+        let chase_destination = self.db_creature_chase_slot_destination(
+            navigation,
+            creature_guid,
+            target,
+            target_position,
+        );
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
         if !creature.is_alive() {
             return None;
@@ -930,6 +949,7 @@ impl MapRuntime {
             creature.triggered_event_ai_scripts.clear();
             creature.event_ai_cooldowns_until.clear();
             creature.event_ai_update_accum = Duration::ZERO;
+            creature.next_event_ai_update_at = None;
             creature.clear_confused_motion();
             if matches!(creature.motion, CreatureMotionState::Confused(_)) {
                 creature.motion = CreatureMotionState::Idle;
@@ -1385,6 +1405,7 @@ impl MapRuntime {
 
     pub(in crate::world) fn db_creature_chase_slot_destination(
         &self,
+        navigation: &DbCreatureNavigationGuardrail,
         creature_guid: ObjectGuid,
         target: ObjectGuid,
         target_position: WorldPosition,
@@ -1400,10 +1421,18 @@ impl MapRuntime {
             stop_distance,
             base_angle,
         );
-        Some(db_creature_chase_near_point(
+        let geometry = self.geometry.clone();
+        let searcher_bounding_radius = creature_bounding_radius(&creature.spawn.template);
+        Some(db_creature_chase_near_point_with_cmangos_los_selector(
             target_position,
             stop_distance,
             fan_angle,
+            searcher_bounding_radius,
+            |candidate| {
+                let candidate =
+                    db_creature_ground_destination(Some(&geometry), candidate).unwrap_or(candidate);
+                db_creature_has_line_of_sight(navigation, target_position, candidate)
+            },
         ))
     }
 

@@ -879,22 +879,30 @@ async fn seed_northshire_fixture(world_pool: &MySqlPool) -> anyhow::Result<()> {
 
     seed_quest_template(
         world_pool,
-        A_THREAT_WITHIN_QUEST,
-        "Rust A Threat Within",
-        0,
-        0,
-        0,
-        0,
+        QuestTemplateSeed {
+            entry: A_THREAT_WITHIN_QUEST,
+            title: "Rust A Threat Within",
+            prev_quest_id: 0,
+            next_quest_in_chain: KOBOLD_CAMP_CLEANUP_QUEST,
+            req_creature: 0,
+            req_count: 0,
+            req_item: 0,
+            req_item_count: 0,
+        },
     )
     .await?;
     seed_quest_template(
         world_pool,
-        KOBOLD_CAMP_CLEANUP_QUEST,
-        "Rust Kobold Camp Cleanup",
-        KOBOLD_VERMIN_ENTRY as i32,
-        5,
-        0,
-        0,
+        QuestTemplateSeed {
+            entry: KOBOLD_CAMP_CLEANUP_QUEST,
+            title: "Rust Kobold Camp Cleanup",
+            prev_quest_id: A_THREAT_WITHIN_QUEST as i32,
+            next_quest_in_chain: 0,
+            req_creature: KOBOLD_VERMIN_ENTRY as i32,
+            req_count: 5,
+            req_item: 0,
+            req_item_count: 0,
+        },
     )
     .await?;
     sqlx::query("INSERT INTO creature_questrelation (id, quest) VALUES (?, ?), (?, ?)")
@@ -1090,35 +1098,44 @@ async fn seed_creature_spawn(
     Ok(())
 }
 
-async fn seed_quest_template(
-    world_pool: &MySqlPool,
+struct QuestTemplateSeed {
     entry: u32,
-    title: &str,
+    title: &'static str,
+    prev_quest_id: i32,
+    next_quest_in_chain: u32,
     req_creature: i32,
     req_count: u16,
     req_item: u32,
     req_item_count: u16,
+}
+
+async fn seed_quest_template(
+    world_pool: &MySqlPool,
+    seed: QuestTemplateSeed,
 ) -> anyhow::Result<()> {
     sqlx::query(
         "INSERT INTO quest_template \
          (entry, Method, ZoneOrSort, MinLevel, QuestLevel, RequiredRaces, \
+          PrevQuestId, NextQuestInChain, \
           Title, Details, Objectives, OfferRewardText, RequestItemsText, \
           ReqCreatureOrGOId1, ReqCreatureOrGOCount1, ReqItemId1, ReqItemCount1, \
           RewMoneyMaxLevel, RewOrReqMoney) \
-         VALUES (?, 2, ?, 1, 1, 1, ?, \
+         VALUES (?, 2, ?, 1, 1, 1, ?, ?, ?, \
                  'Rust fixture quest detail for the Northshire starter-zone harness.', \
                  'Prove the Northshire quest data boundary exists.', \
                  'Good. Keep the fixture narrow until quest v1 lands.', \
                  'The Rust fixture is ready for the next quest slice.', \
                  ?, ?, ?, ?, 210, 25)",
     )
-    .bind(entry)
+    .bind(seed.entry)
     .bind(NORTHSHIRE_ZONE as i16)
-    .bind(title)
-    .bind(req_creature)
-    .bind(req_count)
-    .bind(req_item)
-    .bind(req_item_count)
+    .bind(seed.prev_quest_id)
+    .bind(seed.next_quest_in_chain)
+    .bind(seed.title)
+    .bind(seed.req_creature)
+    .bind(seed.req_count)
+    .bind(seed.req_item)
+    .bind(seed.req_item_count)
     .execute(world_pool)
     .await?;
     Ok(())
@@ -2663,6 +2680,13 @@ impl WorldClient {
         ensure!(
             u32::from_le_bytes(complete[0..4].try_into()?) == REAL_A_THREAT_WITHIN_QUEST,
             "A Threat Within completion packet used wrong quest id"
+        );
+        let next_details = self.read_until(SMSG_QUESTGIVER_QUEST_DETAILS, 32)?;
+        ensure!(
+            next_details
+                .windows(4)
+                .any(|window| window == content.kobold_quest.to_le_bytes()),
+            "A Threat Within reward did not advance to Kobold Camp Cleanup details"
         );
         Ok(())
     }

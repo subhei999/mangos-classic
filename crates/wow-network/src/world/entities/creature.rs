@@ -4,6 +4,7 @@ use super::*;
 pub(in crate::world) struct CreatureCombatState {
     pub(in crate::world) attacker: ObjectGuid,
     pub(in crate::world) victim: ObjectGuid,
+    pub(in crate::world) started_at: Instant,
     pub(in crate::world) next_swing_at: Instant,
 }
 
@@ -27,6 +28,7 @@ pub(in crate::world) struct Creature {
     pub(in crate::world) waypoint_forward: bool,
     pub(in crate::world) waypoint_resume_position: Option<WorldPosition>,
     pub(in crate::world) already_called_assistance: bool,
+    pub(in crate::world) check_for_help_enabled_at: Option<Instant>,
     pub(in crate::world) next_spline_id: u32,
     pub(in crate::world) move_speeds: UnitMoveSpeeds,
     pub(in crate::world) default_movement_run: bool,
@@ -60,6 +62,7 @@ pub(in crate::world) struct Creature {
     pub(in crate::world) triggered_event_ai_scripts: HashSet<i32>,
     pub(in crate::world) event_ai_cooldowns_until: HashMap<i32, Instant>,
     pub(in crate::world) event_ai_update_accum: Duration,
+    pub(in crate::world) next_event_ai_update_at: Option<Instant>,
     pub(in crate::world) native_display: CreatureDisplaySelection,
     pub(in crate::world) display_id_override: Option<u32>,
     pub(in crate::world) aura_display_id_override: Option<u32>,

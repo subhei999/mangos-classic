@@ -4,6 +4,9 @@ use std::ffi::CStr;
 use std::time::Duration;
 
 pub(in crate::world) const MAX_NATIVE_MMAP_PATH_POINTS: usize = 74;
+pub(in crate::world) const NATIVE_PATHFIND_NORMAL: i32 = 0x0001;
+pub(in crate::world) const NATIVE_PATHFIND_INCOMPLETE: i32 = 0x0004;
+pub(in crate::world) const NATIVE_PATHFIND_NOPATH: i32 = 0x0008;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::world) enum NativeMmapPathStatus {
@@ -57,6 +60,7 @@ extern "C" {
         exclude_flags: u16,
         out_points: *mut NativeMmapPathPoint,
         max_points: i32,
+        out_path_status: *mut i32,
         out_timings: *mut NativeMmapCallTimings,
     ) -> i32;
 
@@ -78,6 +82,7 @@ extern "C" {
         exclude_flags: u16,
         out_points: *mut NativeMmapPathPoint,
         max_points: i32,
+        out_path_status: *mut i32,
         out_timings: *mut NativeMmapCallTimings,
     ) -> i32;
 }
@@ -131,6 +136,7 @@ pub(in crate::world) fn native_mmap_find_path(
         z: 0.0,
     }; MAX_NATIVE_MMAP_PATH_POINTS];
     let mut timings = NativeMmapCallTimings::default();
+    let mut path_status = NATIVE_PATHFIND_NOPATH;
 
     // SAFETY: this is the only Rust call into the Detour mmap bridge. The C
     // string comes from `CString`, positions and tile ids are range-checked
@@ -155,6 +161,7 @@ pub(in crate::world) fn native_mmap_find_path(
             filter.exclude_flags,
             points.as_mut_ptr(),
             MAX_NATIVE_MMAP_PATH_POINTS as i32,
+            &mut path_status,
             &mut timings,
         )
     };
@@ -164,7 +171,7 @@ pub(in crate::world) fn native_mmap_find_path(
         native_mmap_query_timings(timings),
     );
 
-    native_mmap_path_from_count(start.map_id, count, &points)
+    native_mmap_path_from_count(start.map_id, count, path_status, &points)
 }
 
 pub(in crate::world) struct NativeMmapRandomPathRequest {
@@ -202,6 +209,7 @@ pub(in crate::world) fn native_mmap_find_random_path(
         z: 0.0,
     }; MAX_NATIVE_MMAP_PATH_POINTS];
     let mut timings = NativeMmapCallTimings::default();
+    let mut path_status = NATIVE_PATHFIND_NOPATH;
 
     // SAFETY: the C string comes from `CString`, the start position and tile are
     // validated above, and the output buffer length matches `max_points`.
@@ -224,6 +232,7 @@ pub(in crate::world) fn native_mmap_find_random_path(
             request.filter.exclude_flags,
             points.as_mut_ptr(),
             MAX_NATIVE_MMAP_PATH_POINTS as i32,
+            &mut path_status,
             &mut timings,
         )
     };
@@ -233,7 +242,7 @@ pub(in crate::world) fn native_mmap_find_random_path(
         native_mmap_query_timings(timings),
     );
 
-    native_mmap_path_from_count(request.start.map_id, count, &points)
+    native_mmap_path_from_count(request.start.map_id, count, path_status, &points)
 }
 
 fn native_mmap_query_timings(
@@ -251,6 +260,7 @@ fn native_mmap_query_timings(
 pub(in crate::world) fn native_mmap_path_from_count(
     map_id: u32,
     count: i32,
+    path_status: i32,
     points: &[NativeMmapPathPoint],
 ) -> NativeMmapPath {
     if count < 0 {
@@ -283,7 +293,13 @@ pub(in crate::world) fn native_mmap_path_from_count(
         path.push(WorldPosition::new(map_id, point.x, point.y, point.z, 0.0));
     }
     NativeMmapPath {
-        status: if count as usize == MAX_NATIVE_MMAP_PATH_POINTS {
+        status: if path_status & NATIVE_PATHFIND_NOPATH != 0 {
+            NativeMmapPathStatus::NoPath
+        } else if path_status & NATIVE_PATHFIND_INCOMPLETE != 0 {
+            NativeMmapPathStatus::Incomplete
+        } else if path_status & NATIVE_PATHFIND_NORMAL != 0 {
+            NativeMmapPathStatus::Normal
+        } else if count as usize == MAX_NATIVE_MMAP_PATH_POINTS {
             NativeMmapPathStatus::Incomplete
         } else {
             NativeMmapPathStatus::Normal

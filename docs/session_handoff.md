@@ -2,1870 +2,504 @@
 
 Short operating brief for the next Rust migration session. Durable roadmap
 history belongs in `docs/rust_migration_plan.md`, gate status in
-`docs/playable_gate_board.md`, and benchmark chronology in
-`docs/performance_movement_benchmark.md`.
+`docs/playable_gate_board.md`, and focused feature plans in their own docs.
 
 ## Current Branch And State
 
 - Branch: `codex/rusty-mangos`
 - Workspace: `C:\Users\subhe\Documents\New project`
-- Creature corpse/respawn timing RCA is in progress: CMaNGOS old static spawn
-  handling really does cap corpse decay to `90%` of the respawn timer on load,
-  so short-respawn DB creatures such as Northshire `Young Wolf` (`entry 299`,
-  `spawntimesecsmin=max=15`) can despawn their corpse in roughly `13s` if
-  nobody opens loot. Active looting was the real Rust mismatch: opening loot
-  did not extend `corpse_expires_at` or requeue the lifecycle deadline the way
-  CMaNGOS `InspectingLoot()` does. Rust now extends an opened corpse to at
-  least the CMaNGOS `2 minute` minimum looting window and reschedules the
-  lifecycle queue so the old short despawn deadline cannot still fire under an
-  open loot window.
-- Current gameplay-test priority moved through P1 into P2 inventory/equipment
-  integrity. P1 combat cleanup is implemented locally: direct spell, channeled
-  spell, dynamic-object periodic, and DB-creature aura/DoT deaths now clear
-  creature combat through the shared map-owned helper and emit player
-  out-of-combat `UNIT_FIELD_FLAGS` packets. P2 inventory cleanup is also
-  implemented locally: swaps now validate both items before DB mutation, armor
-  and ordinary bags follow CMaNGOS in-combat equip/unequip restrictions,
-  post-swap map inventory state refreshes immediately, legal in-combat
-  main-hand/offhand/ranged slot swaps interrupt active casts/channels,
-  main-hand slot changes reset the tracked swing timer, and queued Heroic
-  Strike-style swings recheck main-hand weapon requirements before firing.
-  The Night Elf `+10 Nature Resistance` stat-panel regression was a broader
-  equipment/ammo stat-refresh ownership bug: inventory direct self packets were
-  built from raw base combat stats while the map owner applied active aura
-  modifiers. Inventory/ammo recomputes now split base stats for the map from
-  aura-effective stats for the client packet. The HP potion snap-back was the
-  same owner-boundary class for live resources: direct item heals updated only
-  the session/client while map-owned player health stayed stale. Item heals now
-  use the map-owned player-heal event, and item mana energize effects write
-  through a new map-owned `Power1` update before later gameplay sync can refresh
-  the session cache. A CMaNGOS-style GM smoke helper is also implemented
-  locally: `.additem #itemid [#count]` grants items into normal inventory using
-  the shared store planner, DB persistence, item push/update packets, and
-  map-owned inventory refresh. Consumable cooldown follow-up is implemented
-  locally and has been corrected back toward CMaNGOS parity after live smoke:
-  item-use cooldowns prefer CMaNGOS item-template cooldown/category overrides
-  over spell-template defaults, item-use immediately refreshes the session
-  cooldown cache from map-owned runtime state so logout persistence cannot race
-  stale session state, and item acquisition paths no longer send Rust-only
-  cooldown refresh packets. Like CMaNGOS, new item visibility relies on item
-  query data plus the already-owned spell/category cooldown state; Rust now
-  keeps spell recovery and item category recovery as separate cooldown record
-  fields instead of folding category time into the spell cooldown, including
-  category-only cooldown records for initial-spells/logout parity. Rust item
-  query packets now use the CMaNGOS invalid spell-slot shape and preserve item
-  spell cooldown/category fallback data. Follow-up live smoke showed existing
-  multiple potion stacks now display the shared cooldown correctly, but a newly
-  granted stack still did not. Static CMaNGOS comparison found no acquisition
-  cooldown packet; the concrete mismatch was item-push classification flags.
-  Rust now marks GM self `.additem` grants as `received=false, created=true`,
-  loot acquisitions as `received=false, created=false`, and vendor purchases as
-  `received=true, created=false`, matching `Player::SendNewItem()` call sites.
-  Quest reward and create-item spell push flags remain distinct. Quest UI
-  transition cleanup is implemented locally:
-  Rust now parses `CMSG_QUESTGIVER_CANCEL` and answers it with CMaNGOS'
-  `SMSG_GOSSIP_COMPLETE` close packet, closes the quest pane after successful
-  accepts, and splits `CMSG_QUESTGIVER_COMPLETE_QUEST` from
-  `CMSG_QUESTGIVER_REQUEST_REWARD` so complete opens the request-items/continue
-  screen while request-reward owns the completion mutation and offer-reward
-  packet like CMaNGOS. Completed single-quest hello now goes through the
-  request-items helper with `CloseOnCancel=true` instead of always jumping
-  straight to offer-reward, letting CMaNGOS' request-items-vs-offer decision and
-  cancel semantics drive the UI. Evade melee parity follow-up is implemented
-  locally:
-  player melee validation now checks CMaNGOS-shaped reach, navigation, and
-  facing before treating a returning-home creature as an evade target, so a
-  far-away swing on an evading mob sends the normal not-in-range retry instead
-  of a fake `SMSG_ATTACKERSTATEUPDATE` evade result. Target portrait aura timer
-  follow-up is corrected back toward CMaNGOS parity after deeper source
-  comparison: `SpellAuraHolder::UpdateAuraDuration()` only sends
-  `SMSG_UPDATE_AURA_DURATION` when the aura target itself is a player, not for
-  creature targets, and `HandleSetSelectionOpcode` only sets selection/mover
-  selection plus reputation visibility. Rust no longer sends caster-directed
-  creature aura duration packets or a target-selection aura refresh. Creature
-  debuffs remain exposed through public unit aura fields; hostile spell target
-  serialization now preserves `TARGET_FLAG_UNIT_ENEMY` alongside
-  `TARGET_FLAG_UNIT`, matching CMaNGOS' outbound target-mask shape.
-- Current launcher/updater slice is uncommitted: the flaky global
-  `prometheus_render_includes_histogram_and_opcode_labels` test was made
-  parallel-safe by checking rendered shared metrics through presence/max bounds,
-  and the Rusty MaNGOS launcher now has an Updates page backed by
-  `CheckUpdates` / `DownloadUpdate` PowerShell actions. The update check reads
-  the local `BUILD_INFO.txt`, resolves the rolling `launcher-nightly` GitHub
-  release, falls back to authenticated `gh` for private release access, compares
-  commit ids, and downloads the app zip or installer into
-  `target\launcher\updates`.
-- Latest local integration state includes the pushed active-spell teleport
-  cleanup checkpoint `02388436c` on `codex/rusty-mangos` and the latest
-  aura/target invalidation spell slice.
-- Local multiplayer teleport RCA/fix is uncommitted: same-map teleport paths
-  (`set_player_position` callers such as near-teleport/hearth-style movement)
-  were refreshing environment flags but not immediately rebuilding
-  player-player visibility. That could leave stale observer sets and stale
-  nearby-player create/destroy state until relog. `MapRuntime::set_player_position`
-  now runs the player visibility diff immediately, reuses the same enter/leave
-  create/destroy flow as the batched visibility-refresh phase, and has focused
-  regression coverage that proves old observers get destroy packets, new
-  observers get create packets at the teleported position, and no pending
-  player-visibility refresh remains after the teleport reposition.
-- Local GM `.go` teleport RCA/fix is uncommitted: the GM path was still routing
-  same-map teleports through `update_player_position(..., MSG_MOVE_HEARTBEAT, ...)`
-  before sending `MSG_MOVE_TELEPORT_ACK`, unlike CMaNGOS' near-teleport flow.
-  That meant `.go` behaved like spoofed movement instead of an instant
-  relocation. `.go` now uses the same `set_player_position` relocation path as
-  the rest of Rust's same-map teleports, which clears active spell runtime,
-  refreshes environment state, and rebuilds immediate player visibility without
-  fabricating a heartbeat movement update first.
-- Local multiplayer right-click-turn RCA/fix is uncommitted: the movement actor
-  was coalescing batched movement updates by player GUID only, so a same-batch
-  `MSG_MOVE_SET_FACING` could supersede a heartbeat for that player. That fit
-  the live symptom where remote players briefly snapped to a nearby offset with
-  a slightly different facing only while holding right-click turn. The actor
-  now keeps the latest movement packet per `(player, opcode)` and preserves the
-  original order of the last surviving packets, so facing updates no longer
-  erase same-batch positional movement.
-- Local multiplayer movement-timestamp RCA/fix is uncommitted: the earlier
-  assumption about CMaNGOS was wrong. CMaNGOS `MovementInfo::Write()` serializes
-  synchronized `stime`, not raw `ctime`, for observer movement packets and
-  living create blocks. Rust now writes synchronized movement `server_time` in
-  `MSG_MOVE_*` observer broadcasts and in `build_other_player_create_block`,
-  matching the actual CMaNGOS relay shape.
-- Local multiplayer session-loop coalescing RCA/fix is uncommitted: the world
-  session loop still buffered only one pending movement packet for the `10 ms`
-  coalesce window and replaced older movement packets wholesale before
-  dispatch. That meant a right-click `MSG_MOVE_SET_FACING` could still erase a
-  heartbeat before the movement actor saw either packet. Rust now keeps an
-  ordered short batch of pending movement packets through the session coalesce
-  window instead of replacing the older one.
-- Local multiplayer movement RCA/fix is uncommitted: live packet captures and
-  direct CMaNGOS contrast resolved the remaining right-click-turn glitch. Rust
-  now matches the key CMaNGOS movement shape more closely: synchronized
-  movement time is used for observer movement/create packets,
-  `MSG_MOVE_SET_FACING` carries its packet position through map-owned
-  apply/broadcast again, and the movement actor no longer drops intermediate
-  movement packets inside a batch.
-- Startup fix after the dialogue merge: `wow-db` now treats missing optional
-  local-starter DB tables `unit_condition`, `combat_condition`, and
-  `broadcast_text` as empty instead of failing world runtime initialization.
-  Full CMaNGOS world DB imports still use the real table data when present.
-- Local stack account fix: `scripts/run-client-stack-18085.ps1` now seeds the
-  documented `RUSTAUTH` / `RUSTPASS` account before seeding/preserving starter
-  characters. The live DB was repaired; `RUSTAUTH` currently has `Rustone` and
-  user-created `Twtowto`.
-- Live local `mangos` DB was re-imported from ClassicDB using
-  `scripts/import-classic-db-world.ps1` after the user saw an empty world. The
-  previous local DB had schema only (`creature=0`, `gameobject=0`,
-  `quest_template=0`). Fresh worldserver startup now reports
-  `static_creature_spawns=59640`, `static_gameobject_spawns=33372`, and the
-  Northshire query window has 108 creatures / 26 gameobjects.
-- `RUSTAUTH` has GM privileges (`realmd.account.gmlevel=3`) in the live DB, and
-  `scripts/run-client-stack-18085.ps1` now preserves/seeds it that way.
-- Dialogue regression follow-up: `wow-db::get_vendor_items` and
-  `wow-db::get_trainer_spells` now merge CMaNGOS template-backed service rows
-  (`npc_vendor_template` via `VendorTemplateId`, `npc_trainer_template` via
-  `TrainerTemplateId`) with direct rows. This should restore merchants/trainers
-  whose gossip flags were visible but whose service backing looked empty in
-  Rust. The release stack was restarted after the fix.
-- Trainer gossip live RCA: the mage attempt against Khelden Bremen reached
-  Rust as `CMSG_GOSSIP_HELLO` and Rust sent a two-option menu, but the client
-  never sent `CMSG_GOSSIP_SELECT_OPTION`. The data was not missing:
-  Khelden's text ids `538/539` live in CMaNGOS' `npc_text_broadcast_text`
-  overlay and point to `broadcast_text` rows `2502/2503`. Rust now recognizes
-  `npc_text_broadcast_text` as valid gossip text backing and resolves primary
-  text through `broadcast_text`; missing `CMSG_NPC_TEXT_QUERY` ids still use
-  CMaNGOS' `"Greetings $N"` fallback. Release stack was restarted; the next
-  real-client mage trainer click is the live proof.
-- Existing GitHub issue #75 still tracks remaining non-merchant service actions:
-  taxi, innkeeper, bank, auction, stable, tabard, talent reset, POI, gossip
-  scripts/locales, and full npc_text parity.
-- Bank integration: `codex/banking-parity` was preserved as commit
-  `bec18507b` and merged into `codex/rusty-mangos`. The slice adds banker
-  activation, bank-slot purchase backed by `BankBagSlotPrices.dbc`, bank item
-  storage slots and bank bag slots, autobank/autostore bank packets, persistent
-  `playerBytes2` bank-slot count updates, and gossip `GOSSIP_OPTION_BANKER`
-  dispatch into the bank opener. The stack still needs a real-client banker
-  smoke.
-- Live vendor RCA: Brog Hamfist's ClassicDB data is correct (`VendorTemplateId`
-  `1100` includes `Small Brown Pouch` and `Brown Leather Satchel`), but Rust
-  was filtering `item_template.ContainerSlots != 0` out of
-  `wow_db::get_vendor_items`, hiding all bags from vendor lists. That filter is
-  removed locally and the release stack was restarted; Brog in Goldshire should
-  now list bags.
-- Local GM convenience command is uncommitted: `.modify money #copper` adds
-  copper to the active character, persists `characters.money`, and sends a live
-  `PLAYER_FIELD_COINAGE` update. It requires GM security 3 and `.gm on`.
-- Live bank-bag drag RCA/fix is uncommitted: dropping an item onto a bank bag
-  icon can arrive as `CMSG_AUTOSTORE_BAG_ITEM` with a bank bag destination, or
-  as a `CMSG_SWAP_ITEM` targeting `bag0/slot63..68`. Rust only resolved normal
-  inventory bag icons, so bank-bag icon drops could no-op and leave the client
-  item gray. Rust now resolves bank bag icons through the CMaNGOS-shaped
-  `CanBankItem(bag, NULL_SLOT, ...)` behavior into the first valid contained
-  bank-bag slot, and sends an equip failure when autostore has no destination.
-  Release stack was restarted; needs live client retry.
-- Mail integration: `codex/mail-system-parity` was preserved as commit
-  `42e985da2` and merged into `codex/rusty-mangos`. The slice adds mail
-  opcodes/packet parsing, mailbox proximity checks, send mail, list mail,
-  take money, take item, mark read, return/delete, item text query/copy, COD
-  handling, recipient/team/self/cap validation, attachment validation, and DB
-  helpers for `mail`, `mail_items`, `item_text`, `item_instance`, and character
-  money/inventory state. Follow-up hotfix: money-only player mail now delivers
-  immediately (`deliver_time = now`) while item/COD/other player mail continues
-  using the default one-hour delay. The next live proof is sending money from
-  one `RUSTAUTH` character to another through a mailbox, then logging into the
-  recipient and taking the money without manually fast-forwarding the DB row.
-  Live mailbox-open disconnect RCA found `mail.stationery` is signed
-  `tinyint(3)` in `sql/base/characters.sql`; Rust now decodes that column as
-  signed and converts it for packet output instead of ending the session.
-- Current protocol cleanup is uncommitted: `wow-proto` is now the single owner
-  for world opcode numeric values via `wow_proto::world::WorldOpcode`.
-  `wow-network` no longer has `world/opcodes.rs` or parallel `CMSG_`/`SMSG_`/
-  `MSG_` constants; the old file was renamed to `world/constants.rs` because it
-  now only carries non-opcode constants. Do not reintroduce network-owned
-  opcode numbers when resolving older branch conflicts.
-- Local world layout cleanup is uncommitted: `map_runtime/map.rs` was renamed
-  to `map_runtime/state.rs`, and the nested `map_runtime/map/*` extension
-  modules were renamed to `map_runtime/systems/*`. `world/README.md` now
-  distinguishes live runtime areas from CMaNGOS parity scaffolds. The same
-  cleanup removed the legacy synthetic `Rust Guide` NPC fixture path and old
-  session-owned DB-creature combat/spell shims; DB creature queries, gossip,
-  vendor inventory, and creature combat now rely on DB/map-owned paths only.
-- The worktree is intentionally dirty with the opcode-ownership cleanup plus
-  untracked `logs/` RCA captures until that cleanup is reviewed/landed.
-- Local playerbots remain disabled in `config/worldserver.local.toml`.
-- OOC EventAI is enabled again in
-  `crates/wow-network/src/world/server/map_update.rs`; future RCA controls
-  should include its map-owned tick cost.
+- Latest pushed checkpoint before this task: `042fe910c Fix gameplay parity issues from playtest`
+- Current uncommitted state includes the live-proven quest reward UI
+  chain-advance fix plus the next playtest parity slice for death/rage,
+  combat-cast swing suppression, consumable regen refresh, and evading-target
+  spell miss parity, CMaNGOS-shaped near-barrier/tree chase pathing fixes, and
+  the vendor buyback cursor/timestamp parity fix:
+  - `crates/wow-network/src/world/handlers/quest.rs`
+  - `crates/wow-network/src/world/tests/quests_reputation.rs`
+  - `bins/starter-zone-flow-test/src/main.rs`
+  - `crates/wow-network/native/mmap_path.cpp`
+  - `crates/wow-network/src/world/combat/melee.rs`
+  - `crates/wow-network/src/world/combat/motion.rs`
+  - `crates/wow-network/src/world/handlers/death.rs`
+  - `crates/wow-network/src/world/map_runtime/systems/creature_combat.rs`
+  - `crates/wow-network/src/world/map_runtime/systems/creature_motion.rs`
+  - `crates/wow-network/src/world/map_runtime/systems/damage.rs`
+  - `crates/wow-network/src/world/map_runtime/systems/players.rs`
+  - `crates/wow-network/src/world/spells.rs`
+  - `crates/wow-network/src/world/spells/casting.rs`
+  - `crates/wow-network/src/world/handlers/vendor.rs`
+  - `crates/wow-network/src/world/packet_builders/death.rs`
+  - `crates/wow-network/src/world/tests/death_aggro.rs`
+  - `crates/wow-network/src/world/tests/character_inventory_social.rs`
+  - `crates/wow-network/src/world/tests/map_runtime_grids_playerbots.rs`
+  - `crates/wow-network/src/world/tests/navigation_motion.rs`
+  - `crates/wow-network/src/world/tests/player_runtime_auras.rs`
+  - `crates/wow-network/src/world/tests/spells.rs`
+  - `docs/session_handoff.md`
+- Untracked `logs/` still exists locally and should not be committed unless the
+  user explicitly asks after a size review.
 
 ## Current Goal
 
-Immediate user-directed priority in the current thread is P2
-inventory/equipment integrity from gameplay testing. P0 corpse-looting despawn
-is considered done by user smoke, and P1 general combat lifecycle cleanup is
-implemented locally. The P2 local slice fixes the shared inventory move owner:
-swaps validate the displaced item against the vacated equipment/bag slot,
-CMaNGOS in-combat equip-state rules block armor/ordinary bag changes while
-allowing weapons/shields/offhands/projectiles/relics, map-owned player
-inventory snapshots update immediately after a successful swap, and queued
-next-melee spells with the main-hand requirement fail instead of firing after
-the weapon is removed.
+Latest user-directed priority in progress/completed this session: creature AI
+spell scheduling parity. Gameplay testing reported creatures casting spells too
+immediately on combat start and sometimes appearing to cast twice, with Webwood
+Silkspinner as the useful hint. Follow-up smoke found Defias Cutpurse spamming
+Backstab. CMaNGOS comparison found the relevant owner split:
 
-Immediate user-directed priority is multiplayer visual parity around same-map
-teleport plus right-click-turn observation in Northshire. The latest local fixes
-make teleport/set-position rebuild player visibility immediately instead of
-waiting for relog or later movement, route GM `.go` through the real relocation
-path, and keep `MSG_MOVE_SET_FACING` from erasing same-batch heartbeat
-movement. The next local release stack restart already includes the additional
-  movement-timestamp fix that now preserves CMaNGOS-shaped synchronized
-  movement `server_time` in observer broadcasts and late create blocks. The
-  currently restarted local release stack also includes
-the session-loop pending-movement batch fix so heartbeat plus facing packets now
-survive both coalescing layers, plus the new map-owned `MSG_MOVE_SET_FACING`
-position clamp so right-click-turn packets rotate without dragging observers
-through the packet's tiny client-side XY drift. Next proof should be a
-two-client real-client smoke:
+- `src/game/AI/BaseAI/UnitAI.cpp` runs generic creature spell lists every 1200ms
+  through `GENERIC_ACTION_SPELL_LIST` and seeds initial spell cooldowns on
+  `EnterCombat`.
+- `src/game/AI/EventAI/CreatureEventAI.cpp` runs EventAI timer-executed events
+  only on `EVENT_UPDATE_TIME = 500ms` pulses. `EnterCombat` schedules the first
+  EventAI update and anchors timer-in-combat initial delays from the combat
+  start, not from an arbitrary later spell check.
+- EventAI chance failures call `ResetEvent`, so timer-executed events retry on
+  their repeat timer instead of rolling again every server tick.
+- Legacy `creature_template_spells` are loaded into a disabled compatibility
+  spell list (`LoadCreatureTemplateSpells` sets `Disabled = true`) and do not
+  drive generic `UnitAI::UpdateSpellLists()` autocasts. Defias Cutpurse entry
+  `94` has no modern `creature_spell_list` rows for `9400`; it only has legacy
+  `creature_template_spells` Backstab `53`, so Rust must not autocast it from
+  the active spell-list path.
 
-- teleport one player into Northshire near another player and confirm the
-  observer immediately gets correct create/destroy behavior;
-- turn in place on both clients and confirm remote players rotate around their
-  correct position without the old pivot/offset symptom;
-- hold right-click turn while moving and while stationary, then confirm the
-  observer no longer sees the remote player snap to a nearby offset/facing and
-  back;
-- relog only if needed to compare the old broken state against the fixed one.
+Rust now mirrors that shape for map-owned creature EventAI:
 
-After that, resume the prior trainer-gossip verification and spell-system
-parity work, starting with Polymorph and generic hard-control aura behavior.
+- DB creature combat state records `started_at`.
+- Runtime creatures track `next_event_ai_update_at`.
+- In-combat timer/range/facing/missing-aura EventAI casts are gated by the
+  CMaNGOS 500ms update pulse, while aggro casts still bypass that pulse.
+- Timer-in-combat initial delays are anchored to combat start.
+- Failed EventAI chance rolls reset the event repeat cooldown.
+- Active Rust creature spell-list loading now only returns modern
+  `creature_spell_list` rows. The previous fallback to
+  `creature_template_spells` was removed from `wow-db::get_creature_spell_list`
+  because CMaNGOS marks those legacy rows disabled for generic AI. This should
+  stop Defias Cutpurse from spamming Backstab without inventing an energy or
+  cooldown bandaid.
 
-- Polymorph already has transform display, damage break, single-target
-  replacement, helper regen, diminishing metadata, combat preservation, and
-  confused-motion coverage.
-- CMaNGOS check for the real-client Polymorph smoke issues:
-  `Aura::HandleModConfuse` calls `SetConfused(...)` and
-  `HostileRefManager::HandleSuppressed(...)`; it does not call `CombatStop` or
-  erase threat. The Rust slice now follows that: hostile aura application still
-  starts/keeps combat, while confuse/fear/damage-break stun suppress sight aggro,
-  normal/chase movement starts, and creature reaction until control ends.
-- Root/stun movement blocking must still win over confuse motion. A rooted
-  Polymorph target keeps the pending confused-wander due time but does not start
-  or advance confused splines until the movement-blocking aura ends.
-- The current dirty implementation slice makes natural aura expiration follow the
-  same map-owned control cleanup expectations as damage-break/manual removal:
-  expired Polymorph leaves confused motion, clears transform display, reconciles
-  single-target aura trackers, and retires active diminishing aura bookkeeping.
-- The same slice now adds CMaNGOS-shaped hard-control action gates:
-  player spell-cast failure returns stun/confuse/fear/silence/pacify results,
-  player auto attacks pause under hard control, creature spell-list/EventAI
-  casts do not schedule while controlled, and in-flight creature casts
-  interrupt if hard control lands before completion.
-- Latest Polymorph smoke fix:
-  CMaNGOS `EnterEvadeMode` removes normal negative auras through
-  `RemoveAllAurasOnEvade`, so Rust evade now clears DB-creature active auras,
-  sheep display override, active confused motion, single-target aura trackers,
-  and active diminishing bookkeeping before return-home motion starts. The
-  evade sender also immediately broadcasts aura/display updates so a client
-  cannot keep rendering the mob as sheep after the map owner cleared it.
-- CMaNGOS classifies Polymorph as `DRTYPE_PLAYER`; ordinary PvE DB creatures do
-  not get player-style Polymorph diminishing levels. Rust now uses no
-  DB-creature PvE diminishing group for Polymorph, which also removes the
-  "re-sheep after evade is still DR immune" symptom for normal mobs.
-- Hostile aura casts that fail due aura rank/bounce now still begin
-  DB-creature retaliation before sending the spell failure. This covers failed
-  sheep-style hostile aura applications instead of only successful applications.
-- Confirmed CMaNGOS expectation: Polymorph can be resisted as a hostile magic
-  spell. Rust now resolves hostile DB-creature aura-only miss/resist before
-  building `SMSG_SPELL_GO`; resisted Polymorph-style casts encode the miss
-  target in `SMSG_SPELL_GO`, do not send an extra `SMSG_SPELLLOGMISS`, do not
-  apply the aura, and still start creature retaliation.
-- Target outcome resolution has started moving toward the CMaNGOS
-  `Spell::AddUnitTarget` / `TargetInfo::missCondition` shape. Player-cast
-  hostile DB-creature unit-target school damage and hostile aura spells now
-  resolve one pre-GO `PlayerSpellTargetOutcome`; `SMSG_SPELL_GO` consumes that
-  miss list, missed targets skip all damage/aura effects, and delayed pending
-  spell impacts carry the resolved hit outcome so impact code does not reroll a
-  second full resist.
-- Latest target-outcome extension: item-cast hostile DB-creature unit-target
-  school damage now uses the same CMaNGOS-shaped pre-GO outcome. On-use hostile
-  school-damage spells prepare as item casts; resisted item casts encode the
-  miss target in `SMSG_SPELL_GO`, do not send an extra `SMSG_SPELLLOGMISS`, do
-  not apply damage, and still begin DB-creature retaliation. Hit item casts use
-  the normal player spell impact path with the item GUID preserved as the packet
-  source.
-- The "damage log appears but floating damage over the head does not" report is
-  still unproven. Rust uses `SMSG_SPELLNONMELEEDAMAGELOG` for spell damage,
-  which matches the existing CMaNGOS-shaped packet path; next step is a packet
-  capture/settings comparison before adding `SMSG_ATTACKERSTATEUPDATE` for
-  spell damage.
-- Tentative spell parity roadmap:
-  1. active cast interrupt/cancel parity
-  2. target outcome generalization for immune/evade/reflect/player/PvP/AoE
-     target lists
-  3. Polymorph edge polish from real-client smoke and CMaNGOS packet comparison
-  4. triggered spell source/outcome/proc architecture
-  5. aura interrupt/proc behavior
-  6. class spell parity slices for Mage, Warrior, and creature/EventAI spells
-- Current next spell slice: active cast interrupt/cancel parity. We are not
-  starting from zero: movement opcodes already cancel active player casts,
-  explicit cancel opcodes share the same helper, map-owned active casts already
-  support damage pushback, channels support damage interrupt/pushback, and
-  opening casts have their own cancel path. The first parity gap is that Rust
-  currently cancels on movement opcodes without consulting the active spell's
-  `SPELL_INTERRUPT_FLAG_MOVEMENT`; CMaNGOS cancels normal non-triggered
-  non-auto-repeat casts on movement only when that interrupt flag is present,
-  and cancels channels through `ChannelInterruptFlags & AURA_INTERRUPT_FLAG_MOVING`.
-- First active-cast interrupt/cancel parity slice is now implemented locally:
-  movement-triggered cancellation uses a dedicated helper instead of the
-  explicit cancel helper. Active player casts only cancel on movement when their
-  `interrupt_flags` include `SPELL_INTERRUPT_FLAG_MOVEMENT`, while player
-  channels and dynamic-object channels only cancel on movement when their
-  channel interrupt flags include `AURA_INTERRUPT_FLAG_MOVING`. Explicit cancel
-  opcodes still use the unconditional cancel path.
-- Damage interrupt/pushback parity slice is now implemented locally for the
-  player damage paths Rust currently wires: direct creature damage first
-  interrupts active player casts with `SPELL_INTERRUPT_FLAG_DAMAGE_CANCELS`;
-  otherwise it applies CMaNGOS-style cast delay only when
-  `SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK` is present. Channel damage handling
-  still uses channel interrupt flags: `AURA_INTERRUPT_FLAG_DAMAGE` cancels and
-  `AURA_INTERRUPT_FLAG_DAMAGE_CHANNEL_DURATION` shortens channel duration.
-- Hard-control active-cast invalidation is now implemented locally for player
-  aura application. Applying stun/confuse/fear follows CMaNGOS `CastStop` shape
-  and interrupts active player casts; applying silence interrupts only
-  silence-prevented active casts; pacify blocks new melee-prevented casts but
-  does not retroactively interrupt an existing cast, matching
-  `HandleAuraModPacify`.
-- Latest active-cast lifecycle slice: map-owned player death, logout/removal,
-  and combat-disconnect linger now clear the full active player spell runtime,
-  not only cast timers. Cleanup removes active casts, pending spell events,
-  active player channels, queued channel impacts, and caster-owned dynamic
-  objects, while sending channel/dynamic-object clear packets to observers when
-  the caster leaves the map or dies.
-- Latest teleport invalidation slice: near-teleport/set-position now clears
-  the same map-owned active player spell runtime while ordinary movement still
-  preserves non-movement-interrupt casts. GM `.go` now also invokes the
-  explicit active-spell cleanup before applying its movement update.
-- Latest aura/target invalidation slice: external removal of a DB-creature
-  channeled aura now interrupts the matching player channel, clears queued
-  channel impacts, and sends channel-clear packets to the caster/observers.
-  DB-creature target death or runtime deletion now interrupts active and
-  delayed player spell work targeting that unit, mirroring CMaNGOS'
-  channeled-aura removal and lost/dead unit target cancellation paths.
+Previously completed: vendor buyback slot parity. Gameplay test reports said
+buyback items were confusing, did not behave like a normal 12-slot list, and the
+final slot could appear unusable. CMaNGOS comparison found
+the relevant owner in `src/game/Entities/Player.cpp`:
 
-Recent RCA/perf work is committed at `b58c6ca81` and pushed to
-`origin/codex/rusty-mangos`; keep the detailed benchmark chronology below as
-reference, but feature work is now back on spells.
+- `BUYBACK_SLOT_START = 69`, `BUYBACK_SLOT_END = 81`; slots `69..80` are the
+  12 buyback slots.
+- `Player::AddItemToBuyBackSlot` leaves `m_currentBuybackSlot` parked on slot
+  `80` after the list reaches the final slot. It does not wrap the cursor back
+  to `69`; once full, replacement is driven by free/oldest slot selection.
+- `Player::RemoveItemFromBuyBackSlot` retargets the cursor to a cleared slot
+  only when the current cursor slot is occupied, which is what lets slot `80`
+  be reused if it is bought back/cleared from a full list.
+- Buyback timestamps are increasing session-relative values, so "oldest slot"
+  replacement has stable ordering.
 
-Latest measurement caveat/fix:
+Rust now mirrors that shape in `crates/wow-network/src/world/handlers/vendor.rs`:
 
-- A 10-second live WPA capture during the `500` same-grid real-client playtest
-  found the observability endpoint itself hot:
-  `run_metrics_endpoint -> render_prometheus -> Histogram::rolling_stats`.
-- `Histogram::rolling_stats` now reads maintained one-second rolling buckets
-  instead of scanning the full five-minute sample deque on every scrape.
-- `/metrics` now serves a cached Prometheus render for `5s`, and the embedded
-  dashboard refresh interval is also `5s`, so the dashboard should no longer
-  meaningfully perturb the load test.
+- The buyback cursor no longer wraps after slot `80`.
+- `next_buyback_slot` prefers the cursor when free, then a free slot, then the
+  oldest timestamp when the list is full.
+- Clearing a buyback slot updates the cursor when the cursor still points at an
+  occupied slot.
+- Buyback entries now receive monotonic session-local timestamps instead of all
+  entries using the same `30h` value.
 
-Latest load-harness change:
+Previously completed: enemy cry-for-help / family assistance on combat
+initiation and while creatures move through an existing fight.
+CMaNGOS source comparison found two separate ownership points:
 
-- `bins/world-load-test` now supports `--stream-clients`, exposed through
-  `scripts/start-thin-client-load.ps1 -StreamClients`.
-- In streaming mode, the harness seeds one account/character and immediately
-  starts that client thread before seeding the next one. This avoids the old
-  behavior where the first visible client had to wait for every load-test
-  account to be prepared first.
-- Streaming mode also bypasses the all-clients movement start gate by using a
-  per-client-open gate, so early clients do not time out waiting for a large
-  `2000`-client ramp to finish.
-- First use was a live `2000` `creature_grid_scatter` map-0 run with
-  `50 ms` movement, `5` stationary mage sentinels, `512 KiB` client thread
-  stacks, and `1800s` hold:
-  `logs/perf-rca/20260519-101331-2000-creature-grid-scatter-50ms-stream-clients-full-load.summary.prom`.
-  At full ramp it reached `2001` connected/active players including the real
-  client, `22141` active creatures, `2129` tracked idle-motion creatures, map
-  tick avg/max `181.591/256.183 ms`, tick lag avg/max `132.652/253.714 ms`,
-  idle-motion avg/max `34.159/90.344 ms`, movement actor queue age avg/max
-  `10.014/88.331 ms`, and `CMSG_CAST_SPELL` dispatch max stayed below
-  `100 ms` in the captured summary.
-- A laggy 10-second WPR/WPA capture from that same live run is:
-  `logs/perf-rca/20260519-101815-2000-creature-grid-scatter-50ms-stream-clients-laggy-quick10-wpa.etl`.
-  The next hot branch pasted from WPA was:
-  `MapRuntime::db_creature_snapshots -> Vec::from_iter -> Creature::clone`.
-- The confirmed cause was session combat tick polling for return-home creature
-  motions by cloning full visible `DbCreatureRuntime` snapshots only to filter
-  `CreatureMotionState::ReturnHome`.
-- The local fix adds a map-owned `db_creature_return_home_guids(...)` query and
-  makes `advance_db_creature_return_home_motions(...)` fetch only matching
-  GUIDs, avoiding the full creature clone path in this hot loop.
-- Follow-up WPA expansion on the same `2000` spread run showed no single new
-  giant offender. The largest named app work in the top Tokio task was
-  `sync_player_gameplay_state`, `expire_disconnected_players`,
-  `select_db_creature_sight_aggro_targets`, and the new
-  `db_creature_return_home_guids`. This points to distributed per-session
-  map interaction pressure rather than one remaining smoking gun.
-- Two local fixes were added from that branch:
-  - disconnected-player expiry is now map-loop-owned via
-    `MapRuntimeManager::expire_all_disconnected_players(...)` and a new
-    `disconnected_player_expiration` map phase, instead of scanning a map's
-    players from every session combat tick
-  - `MapRuntime::sync_player_gameplay_state(...)` now only clones session
-    active spells, inventory, and quest-status collections into map state when
-    those collections actually changed; `CharacterInventoryItem` and
-    `CharacterQuestStatus` now derive `PartialEq/Eq` to support that cheap
-    comparison
-- Follow-up quick WPA after those changes showed the same top Tokio task shape,
-  but smaller:
-  `sync_player_gameplay_state` around `288 ms`,
-  `select_db_creature_sight_aggro_targets` around `217 ms`,
-  `batch_semaphore::add_permits_locked` around `188 ms`, and
-  `db_creature_return_home_guids` around `132 ms`; disconnected-player expiry
-  disappeared from that hot path.
-- A second local pressure-source pass moves return-home motion fully into the
-  map-owned creature motion tick and removes runtime session polling for
-  `advance_db_creature_return_home_motions(...)`. Return-home creatures now use
-  the same active motion advancement queue as random/confused/waypoint motion.
-- Sight aggro selection is now map-owned throttled/dirty-gated per player:
-  steady players check at most every `250 ms`, while players that move at least
-  `2 yd` can check immediately. The selector also sorts candidate
-  `(distance, guid)` pairs before cloning final target snapshots, avoiding
-  clone work for ordering.
-- A rebuilt `1000` `creature_grid_scatter` run with OOC EventAI enabled
-  produced a quick WPA hot path in
-  `MapRuntime::player_runtime_snapshot -> Vec::clone`. The pressure source was
-  high-frequency movement/session tick code asking the map for a full gameplay
-  snapshot, including inventory, quest statuses, auras, cooldown maps, and
-  active spells, when it only needed position/death/vitals/combat flags.
-- The local fix adds `PlayerRuntimeSessionSnapshot` and
-  `MapRuntimeManager::player_runtime_session_snapshot(...)`; movement handling,
-  character position persistence, and the idle session tick refresh now use the
-  narrow snapshot. Full `PlayerRuntimeSnapshot` remains for non-movement
-  packet pre-refresh and gameplay handlers that need rich state.
+- `src/game/Entities/Unit.cpp`: when a creature enters combat,
+  `creature->CallAssistance()` runs from the creature combat-entry path, not
+  only from sight aggro. `Creature::CallAssistance()` uses DB `CallForHelp`
+  when set, falls back to the configured family-assistance radius, marks the
+  caller as already called, and sends a delayed assistance AI event.
+- `src/game/AI/BaseAI/UnitAI.cpp`: `MoveInLineOfSight` calls `CheckForHelp`
+  when a creature sees another creature already in combat. `CheckForHelp` uses
+  `CreatureCheckForHelpRadius = 5y`, requires both creatures' check-for-help
+  gate to be enabled, requires LOS between the helper and fighting creature,
+  and requires the helper to be able to attack the fighting creature's victim.
+  `src/game/Entities/Unit.cpp` disables `CanCheckForHelp` for
+  `CreatureCheckForHelpAggroDelay = 2000ms` after aggro.
 
-## What Is Proven
+Rust now routes player-initiated creature combat through CMaNGOS-shaped
+assistance helpers:
 
-- Disabling the map-owned OOC EventAI phase immediately restored:
-  - NPC idle patrol motion
-  - mana / health regen
-  - other timed map systems
-- So OOC EventAI was a real regression source, but it is not the whole
-  `1000`-client movement-flood problem.
-- The earlier session-loop starvation work is already landed:
-  - DB-creature lifecycle is map-owned
-  - OOC EventAI scans were removed from `handle_combat_tick(...)`
-  - active creature attack processing is collapsed into map-owned victim
-    transactions
-- A real-client hostile caster hang was reproduced against Burning Blade
-  Neophyte (`entry=3196`, combat EventAI `348 = Immolate`) and reduced to an
-  async mutex lifetime bug in the manager-owned combat wrapper.
-- That deadlock is fixed, and the same bug class was audited/fixed in the
-  playerbot manager loops.
-- The movement actor only coalesces after a movement packet is already inside
-  the movement path; it does not reduce the session-side per-packet work.
-- Our current movement handler still does far more inline work than CMaNGOS:
-  movement map update, creature/gameobject/corpse visibility rescans, aggro
-  start checks, area discovery, and session-to-map gameplay-state sync.
+- Session combat entry (`begin_db_creature_combat_with_assistance`) starts the
+  primary creature, sends the attack-start/flag packets, selects nearby helpers,
+  starts them against the same player, and sends matching packets.
+- Melee/hostile aura retaliation and direct spell damage both use that helper,
+  so pulling by hit or spell can bring nearby same-faction mobs.
+- Map-runtime channel/dynamic-object combat entry now uses
+  `begin_db_creature_combat_packets_with_assistance`, so periodic spell-owned
+  combat startup does not keep a separate primary-only implementation.
+- Map-owned creature relocation now also runs `CheckForHelp` parity:
+  dragging a fighting mob past another eligible hostile can pull the helper
+  after the 2s aggro delay, and an idle/patrol creature walking by an existing
+  fight can join that fight.
 
-## Latest Change
+Previously completed pathfinding/barrier task: compare and fix mob pathfinding
+around barriers/trees with CMaNGOS-shaped ownership. CMaNGOS source comparison
+found these relevant mismatches:
 
-Gameplay-test P1 general combat lifecycle cleanup is now implemented locally:
+- `PathFinder::getPolyByLocation` tries a 5 yard `findNearestPoly` box, then
+  retries a 10 yard box before treating a point as off-mesh. Rust's native mmap
+  bridge only used the 5 yard lookup, so chase destinations near
+  walls/fences/barriers could return no path instead of snapping to the
+  reachable navmesh like CMaNGOS.
+- `WorldObject::GetNearPointAt`, used by
+  `ChaseMovementGenerator::_getLocation`, does not blindly use the first
+  target-ring point. If the original melee slot has LOS/collision trouble, it
+  rotates through nearby angles and uses the first LOS-valid candidate. Rust's
+  map-owned chase-slot destination used one raw `target + angle * distance`
+  point, so kiting around a tree could pick a slot on the obstructed side and
+  leave the mob stuck.
+- `Unit::CanReachWithMeleeAttack` is reach/distance-only for NPCs. It does not
+  fold LOS, mmap path availability, or evade state into melee reach. Rust had
+  navigation guardrails inside both session and map-owned reach checks, so a mob
+  close to a tree/object could remain in a chase/repath loop instead of letting
+  normal reach or motion ownership decide the next action.
+- `PathFinder` preserves `PATHFIND_INCOMPLETE` when Detour only returns a
+  partial poly path or the requested point had to be snapped far onto the mesh.
+  Rust's native mmap bridge only returned a point count, so partial endpoints
+  near barriers were misclassified as normal paths and could become stable stuck
+  chase destinations.
 
-- added `clear_db_creature_combat_with_player_flag_packets(...)` so map-owned
-  death paths can clear creature combat and broadcast the player
-  out-of-combat flags without relying on a per-session finalizer
-- periodic DB-creature aura/DoT deaths no longer remove combat maps by hand;
-  they now clear player melee state, interrupt stale player spell/channel work
-  targeting the dead creature, and use the shared combat cleanup helper
-- direct spell/channel damage deaths now include map-produced player combat
-  flag clear packets in the `DbCreatureDamageEvent`
-- persistent dynamic-object periodic damage deaths use the same cleanup helper
-  instead of only clearing the creature combat entry
-- regression coverage now proves a DoT death clears active creature combat,
-  clears the player `in_combat` state, sends the player unit-flag clear packet,
-  preserves corpse state, stops motion, and keeps old death/respawn ownership
-  tests semantic rather than packet-count fragile
+Recently addressed playtest parity bugs:
 
-Gameplay-test P2 inventory/equipment integrity cleanup is now implemented
-locally:
+- Death package: rage must clear on death/revive, ghost/death aura must be a
+  negative debuff aura, and Night Elf ghosts should receive Wisp Form.
+- Combat-cast timing: white swings must not fire during a combat-interruptible
+  cast such as Hearthstone, and overdue swing timers should be reset instead of
+  released when the cast is active.
+- Consumable regen refresh: eating/drinking over an existing food/drink aura
+  should not stand the player up and immediately sit them back down.
+- Evading-target spell parity: hostile spells cast at an evading creature should
+  follow CMaNGOS range validation first, then report `SPELL_MISS_EVADE` through
+  `SMSG_SPELL_GO` instead of failing cast validation as out of range.
 
-- `handle_inventory_swap(...)` now loads and validates the destination item
-  template too, so a swap checks both `src -> dst` and displaced `dst -> src`
-  before writing character inventory rows
-- CMaNGOS `CanChangeEquipStateInCombat()` parity is encoded for equipment
-  moves: weapons, shields, held offhands, relics, and projectiles can change
-  during combat; armor and ordinary bags cannot be equipped or unequipped
-  during combat
-- successful swaps immediately update the map-owned player inventory snapshot,
-  so later map-owned combat/spell/stat code does not keep stale item state
-  until a session sync
-- successful in-combat main-hand/offhand/ranged slot swaps now cancel active
-  player casts/channels, and main-hand slot changes retime the map-owned
-  next-swing timestamp from the newly computed combat stats
-- equipment/ammo-driven combat-stat recomputes now preserve active aura and
-  passive-racial modifiers on the direct self update packet; this fixes the
-  Night Elf `+10 Nature Resistance` stat page disappearing after equipping gear
-- queued next-melee spells now reload their spell template at swing resolution
-  and fail with the CMaNGOS main-hand equipped-item error if the player removed
-  their main-hand weapon after queueing Heroic Strike-style abilities
-- consumable direct heal/energize effects now update the map-owned live
-  resources instead of only the session cache; this fixes HP potions briefly
-  increasing health and then snapping back, and covers mana-style energize item
-  effects with the same ownership rule
-- GM `.additem #itemid [#count]` now grants items to the active GM character,
-  supports raw IDs and pasted item links, merges stacks before empty slots,
-  sends item push/update packets, refreshes map-owned inventory, and rechecks
-  inventory item quest completion
-- consumable cooldowns now follow the CMaNGOS item-template cooldown/category
-  override path, persist through logout via an immediate post-use session cache
-  refresh from map-owned cooldown state, and avoid Rust-only cooldown refresh
-  packets when a matching item template becomes visible from loot/vendor/GM
-  grants; newly visible item cooldown UI is left to CMaNGOS-shaped item query
-  data plus the existing spell/category cooldown state
-- CMaNGOS comparison for target portrait aura timers found that
-  `SMSG_UPDATE_AURA_DURATION` is only sent to player aura targets, not creature
-  targets, and `CMSG_SET_SELECTION` does not push aura updates; Rust no longer
-  sends those creature-target duration/selection packets
+Previously completed and user live-confirmed: the quest completion UI bug where
+rewarding a chain quest completed server state but left the client dialogue
+stuck instead of advancing to the next quest.
 
-The movement path is now materially thinner and more map-owned:
+CMaNGOS reference shape:
 
-- authenticated sessions still coalesce same-session movement bursts for `10 ms`
-  in `crates/wow-network/src/world/server/session_loop.rs`
-- pure movement packets no longer force an immediate
-  `sync_active_player_gameplay_state(...)` after dispatch; sync still happens
-  for non-movement packets and on the world-tick path
-- `crates/wow-network/src/world/server/movement.rs` no longer starts
-  DB-creature aggro inline on every successful move; we now rely on the
-  existing once-per-world-tick `handle_combat_tick(...)` aggro path instead
-- player area discovery checks are now throttled to `100 ms` via
-  `MovementSessionState::next_position_status_update_at`, matching the
-  CMaNGOS idea of throttled position-status updates instead of per-packet work
-- player-to-player enter/leave visibility diffing and
-  `sync_db_creature_idle_motion_tracking_for_player_interest_positions(...)`
-  were removed from inline `MapRuntime::update_player_position(...)`
-- movement now only marks a dirty player-visibility refresh
-- the new map-owned `player_visibility_refresh` phase runs once per map tick,
-  batches each player once, updates player-player visibility, and then performs
-  the deferred creature-interest sync before idle motion
-- the thin-client harness now supports `--move-phase-jitter-ms` for a
-  deterministic per-client movement start offset after the shared ready gate;
-  this keeps the same per-client interval but avoids all clients sharing the
-  same movement phase
-- observability now splits the new `player_visibility_refresh` phase into:
-  - `wow_player_visibility_refresh_visibility_diff_broadcast_time_*`
-  - `wow_player_visibility_refresh_creature_interest_sync_time_*`
-  and movement packet ownership already had:
-  - `wow_movement_map_mutex_wait_*`
-  - `wow_movement_map_mutex_hold_*`
-- movement observability now also exposes an explicit pipeline split:
-  - actor enqueue -> apply start latency:
-    `wow_movement_actor_apply_start_latency_*`
-  - per-applied-move counts:
-    `wow_movement_apply_observers_notified_*`
-    `wow_movement_apply_packets_emitted_*`
-  - `MapRuntime::update_player_position(...)` subphases:
-    - `wow_movement_apply_observer_snapshot_time_*`
-    - `wow_movement_apply_movement_broadcast_time_*`
-    - `wow_movement_apply_grid_update_time_*`
-    - `wow_movement_apply_player_state_environment_time_*`
-    - `wow_movement_apply_fall_damage_broadcast_time_*`
-    - `wow_movement_apply_death_presentation_time_*`
-    - `wow_movement_apply_visibility_refresh_mark_time_*`
-    - `wow_movement_apply_total_time_*`
-  - the HTML dashboard now has a **Movement Pipeline** panel for these metrics
-- movement packets now take a more aggressive session-loop fast path:
-  - they skip pre-dispatch `refresh_active_player_session_cache(...)`
-  - they skip pre-dispatch death finalization
-  - they skip pre/post pending player spell completion checks unless the
-    session already has active spells
-  - the main session-loop timeout path also skips map `next_pending_player_spell_cast_due_at(...)`
-    lookups unless the session already has active spells
-  This is an explicit measurement experiment aimed at reducing movement
-  `dispatch/service` cost before we decide whether deeper actor/map-thread
-  ownership work is still needed.
+- `WorldSession::HandleQuestgiverChooseRewardOpcode` rewards the quest.
+- It sends `SMSG_QUESTGIVER_QUEST_COMPLETE`.
+- It then calls `Player::GetNextQuest(guid, pQuest)` and, when the same
+  questgiver starts `Quest::GetNextQuestInChain()`, sends
+  `SMSG_QUESTGIVER_QUEST_DETAILS` for the next quest.
+- It does not rely on a blind gossip close for this path.
 
-Creature/gameobject/corpse visibility streaming from `movement.rs` still
-remains inline and distance-gated, so it is the next likely movement-side
-effect family to revisit if the harness still lags badly.
+Rust now follows that shape: after a successful reward, the reward handler
+checks `next_quest_in_chain`, verifies the same questgiver starts that quest,
+loads the next template, checks the player can now take it, and sends
+`SMSG_QUESTGIVER_QUEST_DETAILS`. The user live-smoked this with the Northshire
+chain and confirmed it fixed the issue.
 
-RCA setup added this session:
+CMaNGOS death reference shape:
 
-- `docs/performance_rca_runbook.md` maps the user's fishbone to current crate
-  boundaries, existing metric names, run shapes, jitter matrix, and decision
-  rules for identifying the first growing queue or phase.
-- `scripts/capture-rca-metrics.ps1` and `.cmd` capture raw Prometheus metrics,
-  a filtered RCA summary, git/status metadata, runtime environment, matching
-  process command lines, world config snippets, and quick baseline metrics into
-  `logs/perf-rca/`.
-- Generic channel metrics are now exposed in Prometheus:
-  - `wow_channel_queue_age_*{channel=...}`
-  - `wow_channel_queue_depth_*{channel=...}`
-  - `wow_channel_send_wait_*{channel=...}`
-  These are wired for the production action-latency mailboxes:
-  `movement_actor`, `world_session_outbound`, and
-  `world_session_disconnect`.
-- Tokio runtime metrics are now exposed when observability is enabled:
-  `wow_tokio_runtime_workers`, `wow_tokio_task_count`,
-  `wow_tokio_worker_busy_milliseconds`,
-  `wow_tokio_runtime_global_queue_depth`, and, when built with
-  `RUSTFLAGS=--cfg tokio_unstable`, task poll duration, local queue depth,
-  spawn-blocking queue/thread counts, and cooperative forced-yield counters.
-  `scripts/start-thin-client-load.ps1` exposes
-  `-EnableTokioUnstableMetrics` for repeatable RCA controls.
-- This setup intentionally does not add a new perf crate yet. Existing
-  `wow-network` observability already covers the first RCA pass; add new
-  metrics only when the runbook's current signals cannot isolate the next
-  boundary.
+- `Player::BuildPlayerRepop()` casts Night Elf Wisp Form spell `20584` before
+  ghost spell `8326`.
+- `Player::ResurrectPlayer()` removes ghost/wisp auras and sets rage to `0`.
+- Rust now clears rage in map-owned lethal damage, deferred death presentation,
+  release spirit, resurrection, and session finalization paths; death/revive
+  update packets also write `UNIT_FIELD_POWER2 = 0`.
 
-First RCA control run captured:
+CMaNGOS spell/evade reference shape:
 
-- Command shape:
-  `500` clients, `local_radius`, `MoveIntervalMs=50`,
-  `MovePhaseJitterMs=0`, `LoginStaggerMs=1`, `HoldSeconds=90`,
-  movement actor enabled.
-- Capture files:
-  - `logs/perf-rca/20260518-193541-500-local-radius-50ms-jitter0-actor-on.metrics.prom`
-  - `logs/perf-rca/20260518-193541-500-local-radius-50ms-jitter0-actor-on.summary.prom`
-  - `logs/perf-rca/20260518-193541-500-local-radius-50ms-jitter0-actor-on.metadata.md`
-- Harness completed with `clients=500`, `failures=2`,
-  `movements_sent=568890`, `packets_drained=5316421`; treat this as usable
-  but not perfectly clean.
-- Capture window reached `500` connected sessions and roughly `498-500` active
-  players.
-- First read:
-  - multi-second delay is visible on inbound world packet dispatch/service for
-    movement-like opcodes
-  - outbound queue latency is tiny (`world_session_outbound` queue age average
-    `0.036 ms`, max `2.068 ms`)
-  - `movement_actor` queue age is non-zero but below the observed client delay
-    (average `78.641 ms`, max `247.552 ms`)
-  - movement apply itself is small compared with the lag (total average
-    `2.057 ms`, max `34.256 ms`)
-  - map tick spikes are large (duration max `1080.746 ms`, lag max
-    `1059.029 ms`)
-  This points the next RCA pass toward session/map scheduling and tick-phase
-  spikes before outbound write, not outbound socket backlog and not the small
-  per-movement apply subphases alone.
+- `Spell::CheckRange()` validates distance/facing for the target without
+  treating evade mode as an out-of-range cast failure.
+- `Unit::SpellHitResult()` then returns `SPELL_MISS_EVADE` for units in evade
+  mode.
+- Rust now follows that split: map-owned hostile spell validation allows an
+  in-range evading creature through, while `player_db_creature_spell_target_outcome`
+  emits `SPELL_MISS_EVADE` before damage/aura effects run.
 
-Spell-cast sentinel setup added after the first control:
+CMaNGOS mmap/path reference shape:
 
-- `bins/world-load-test` now supports an opt-in self-cast probe:
-  - `--sentinel-cast-clients <n>`
-  - `--sentinel-cast-spell-id <id>`; default `168` (`Frost Armor Rank 1`)
-  - `--sentinel-cast-interval-ms <ms>`; default `5000`
-  - `--sentinel-cast-phase-jitter-ms <ms>` to spread sentinel cast starts
-  - `--disable-movement` to keep watch/sentinel clients stationary after login
-  - `--disable-sentinel-movement` to keep only sentinel clients stationary
-    while the remaining load clients keep generating movement pressure
-- The harness records `CMSG_CAST_SPELL` to matching `SMSG_CAST_RESULT`
-  response latency in the final stdout:
-  `casts_sent`, `responses`, `failures`, `pending`, `avg_response_ms`, and
-  `max_response_ms`.
-- `scripts/start-thin-client-load.ps1` exposes the same options and now also
-  exposes character `Race`, `CharacterClass`, and `Gender`, so the sentinel run
-  can seed mage clients with `-CharacterClass 8 -SentinelCastSpellId 168`.
-- Tiny live smoke passed:
-  `2` mage clients, `1` Frost Armor sentinel, `10s` hold, movement actor on.
-  Result: `casts_sent=4`, `responses=4`, `failures=1`, `pending=0`,
-  `avg_response_ms=129.019`, `max_response_ms=515.492`.
-  The one spell failure does not block latency measurement, but a later
-  success-only sentinel may need a different self-buff or longer interval.
-- User watch group launched after the moving/synchronized first attempt was
-  stopped: `5` stationary human mages near Northshire spawn, all self-casting
-  Frost Armor with `5000 ms` phase jitter and no movement packets. Current
-  harness PID at launch was `63072`; it was stopped before the full control.
+- `src/game/MotionGenerators/PathFinder.cpp` defines `NearPolySearchBound` as
+  `{ 5.0f, 5.0f, 5.0f }` and `FarPolySearchBound` as
+  `{ 10.0f, 10.0f, 10.0f }`.
+- `PathFinder::getPolyByLocation()` retries the far search bound before giving
+  up on start/end points.
+- Rust now mirrors that in `crates/wow-network/native/mmap_path.cpp` for both
+  direct path and random path entry points.
 
-Second RCA control with stationary spell sentinels captured:
+CMaNGOS chase near-point reference shape:
 
-- Command shape:
-  `500` human mage clients, `local_radius`, `MoveIntervalMs=50`,
-  `MovePhaseJitterMs=0`, `LoginStaggerMs=1`, `HoldSeconds=90`, movement actor
-  enabled, first `5` clients configured as stationary Frost Armor sentinels
-  with `SentinelCastIntervalMs=5000`,
-  `SentinelCastPhaseJitterMs=5000`, and `DisableSentinelMovement=True`.
-- Full-load capture files:
-  - `logs/perf-rca/20260518-200247-500-local-radius-50ms-jitter0-actor-on-5-stationary-mage-sentinels.metrics.prom`
-  - `logs/perf-rca/20260518-200247-500-local-radius-50ms-jitter0-actor-on-5-stationary-mage-sentinels.summary.prom`
-  - `logs/perf-rca/20260518-200247-500-local-radius-50ms-jitter0-actor-on-5-stationary-mage-sentinels.metadata.md`
-- Post-run aggregate capture files:
-  - `logs/perf-rca/20260518-200440-500-local-radius-50ms-jitter0-actor-on-5-stationary-mage-sentinels-postrun.metrics.prom`
-  - `logs/perf-rca/20260518-200440-500-local-radius-50ms-jitter0-actor-on-5-stationary-mage-sentinels-postrun.summary.prom`
-  - `logs/perf-rca/20260518-200440-500-local-radius-50ms-jitter0-actor-on-5-stationary-mage-sentinels-postrun.metadata.md`
-- Full-load scrape reached `501` connected sessions / `501` active players
-  because the user's real client was also connected.
-- Full-load `CMSG_CAST_SPELL` (`0x012E`) server timings from the first `15`
-  sentinel casts:
-  - dispatch delay average `122.445 ms`, max `228.313 ms`
-  - handler duration average `403.344 ms`, max `893.445 ms`
-  - total service time average `525.792 ms`, max `981.541 ms`
-- Post-run aggregate after `82` received spell cast packets:
-  - dispatch delay average `124.390 ms`, max `228.313 ms`
-  - handler duration average `347.487 ms`, max `907.162 ms`
-  - total service time average `471.880 ms`, max `1006.878 ms`
-- Queue/tick context from the full-load scrape:
-  - `movement_actor` queue age average `69.890 ms`, max `219.645 ms`
-  - `world_session_outbound` queue age average `0.034 ms`, max `12.175 ms`
-  - map tick duration average `23.997 ms`, max `977.393 ms`
-  - map tick lag average `27.537 ms`, max `970.099 ms`
-- The load harness exited with `0xc0000005` after the run, so the final
-  client-side `sentinel-cast summary` line was not emitted. Treat server-side
-  spell opcode metrics as the usable control measurement and the missing
-  harness summary as an unproven harness bug.
+- `ChaseMovementGenerator::_getLocation` calls `target->GetNearPoint(...)`.
+- `WorldObject::GetNearPointAt` tests the original angle first; when LOS fails,
+  it scans adjacent angles using `ObjectPosSelector`'s step shape based on
+  `atan(1.8 * searcher_radius / distance)`.
+- Rust now mirrors that angle retry before building the mmap chase path, using
+  map-owned geometry/LOS as the candidate validity check.
 
-Harness crash mitigation added:
+CMaNGOS melee reach reference shape:
 
-- Newest Windows crash dump was
-  `C:\Users\subhe\AppData\Local\CrashDumps\world-load-test.exe.41676.dmp`.
-  Several dumps had the same access-violation shape: faulting read at `0x24`
-  from the packet-drain timeout/error classification path.
-- `bins/world-load-test` no longer classifies timeout reads by calling
-  `anyhow::Error::downcast_ref::<std::io::Error>()` in the hot drain/login/logout
-  paths. Packet reads now return a concrete `WorldPacketReadError`, so timeout
-  handling is direct and avoids the trait-object downcast path seen in the
-  dumps.
-- The harness no longer forces client threads onto a `256 KiB` stack by
-  default. Default per-client thread stack is now `1024 KiB`, with
-  `--client-thread-stack-kb <kb>` exposed for experiments. The PowerShell
-  wrapper exposes `-ClientThreadStackKb`.
-- Post-fix verification against the existing release server:
-  - `500` clients, `20s`, `5` stationary mage sentinels, movement load:
-    completed with `failures=0`, `casts_sent=30`, `responses=30`,
-    `avg_response_ms=757.459`, `max_response_ms=1387.023`.
-  - `500` clients, `90s`, same sentinel shape, `MaxAttempts=1`: completed
-    without access violation and printed the sentinel summary; exited through
-    normal harness failure handling with `6` client failures. Result:
-    `casts_sent=71`, `responses=71`, `avg_response_ms=711.371`,
-    `max_response_ms=1230.748`.
-  - No newer `world-load-test.exe` crash dump appeared after these patched
-    runs. Treat the `0xc0000005` as mitigated unless it reappears under the
-    default `MaxAttempts=3` script path.
+- `Unit::CanReachWithMeleeAttack` checks combat reach and distance; NPC reach is
+  not gated by LOS or path availability.
+- Rust now keeps navigation guardrails on generated aggro/chase motion, while
+  session and map-owned melee reach checks are distance-only like CMaNGOS.
 
-Runtime-metrics control captured after adding the remaining RCA setup:
+CMaNGOS incomplete-path reference shape:
 
-- Command shape matched the stationary sentinel control and added
-  `-EnableTokioUnstableMetrics`: `500` human mage clients, `local_radius`,
-  `MoveIntervalMs=50`, `MovePhaseJitterMs=0`, `LoginStaggerMs=1`,
-  `HoldSeconds=90`, movement actor enabled, `5` stationary Frost Armor
-  sentinels with `SentinelCastIntervalMs=5000`,
-  `SentinelCastPhaseJitterMs=5000`.
-- Capture files:
-  - `logs/perf-rca/20260518-204613-500-local-radius-50ms-jitter0-actor-on-5-stationary-mage-sentinels-runtime-tokio.metrics.prom`
-  - `logs/perf-rca/20260518-204613-500-local-radius-50ms-jitter0-actor-on-5-stationary-mage-sentinels-runtime-tokio.summary.prom`
-  - `logs/perf-rca/20260518-204613-500-local-radius-50ms-jitter0-actor-on-5-stationary-mage-sentinels-runtime-tokio.metadata.md`
-- Run completed without an access violation and emitted the harness sentinel
-  summary: `clients=500`, `failures=5`, `movements_sent=554466`,
-  `packets_drained=5227195`; spell sentinel result `casts_sent=89`,
-  `responses=89`, `failures=45`, `pending=0`,
-  `avg_response_ms=665.147`, `max_response_ms=1393.490`.
-- Full-load scrape reached exactly `500` connected sessions and `500` active
-  players.
-- Runtime health from the scrape:
-  - `wow_tokio_runtime_workers=24`, `wow_tokio_task_count=1008`
-  - worker busy duration over the latest ~1s interval was `9257.459 ms`
-    across all workers, so the runtime was busy but not saturated across
-    `24` workers
-  - `wow_tokio_runtime_global_queue_depth=0`
-  - `wow_tokio_task_poll_duration_milliseconds=0.029`
-  - `wow_tokio_spawn_blocking_queue_depth=0`
-- Server spell path for `CMSG_CAST_SPELL` (`0x012E`) during the scrape:
-  - dispatch delay average `142.706 ms`, max `191.971 ms`
-  - handler duration average `668.709 ms`, max `917.284 ms`
-  - total service time average `811.418 ms`, max `1030.636 ms`
-  - outbound `SMSG_CAST_RESULT` (`0x0130`) queue/write remained tiny:
-    queue average `0.019 ms`, max `0.041 ms`; write average `0.011 ms`,
-    max `0.014 ms`
-- Movement / map context:
-  - `movement_actor` queue age average `80.796 ms`, max `416.761 ms`
-  - `world_session_outbound` queue age average `0.048 ms`, max `8.101 ms`
-  - movement apply total average `1.958 ms`, max `27.935 ms`
-  - map tick latest `672.009 ms`, max `860.766 ms`; tick lag latest
-    `742.615 ms`, max `839.668 ms`
-  - session-loop `packet_dispatch` average `2067.932 ms`, max
-    `12211.373 ms`; `packet_branch_total` average `2683.226 ms`, max
-    `12371.774 ms`
-- Current read: the control captures the spell lag without manual casting.
-  The first obvious problem remains session/map scheduling and long
-  packet-branch/dispatch phases under movement flood; outbound socket queues,
-  spawn-blocking, and Tokio global queue depth are not the current first
-  bottleneck.
+- `PathFinder::BuildPolyPath()` marks paths `PATHFIND_INCOMPLETE` when the
+  start/end point is far from its navmesh polygon or the final Detour poly is
+  not the requested end poly.
+- `ChaseMovementGenerator::DispatchSplineToPosition(..., checkReachable=true)`
+  allows incomplete paths only when the final path point can still reach the
+  target by combat reach.
+- Rust's native mmap bridge now returns CMaNGOS-style path flags alongside path
+  points, and chase motion rejects incomplete endpoints that are outside melee
+  reach instead of treating them as normal destinations.
 
-Core scalability matrix captured:
+CMaNGOS combat-leash refresh reference shape:
 
-- New repeatable runner:
-  `scripts/run-rca-scalability-matrix.ps1`.
-- Core matrix id: `20260518-210239`.
-- Matrix output:
-  - `logs/perf-rca/matrix-20260518-210239/matrix-results.csv`
-  - `logs/perf-rca/matrix-20260518-210239/matrix-analysis.csv`
-  - `logs/perf-rca/matrix-20260518-210239/matrix-summary.md`
-- Shape:
-  - player counts: `50`, `100`, `250`, `500`
-  - scenarios per count:
-    - `idle-same-grid`
-    - `movement-same-grid-sync`
-    - `movement-same-grid-jitter250`
-    - `movement-spread-sync`
-  - all runs used stationary mage sentinels and
-    `-EnableTokioUnstableMetrics`.
-- Key sentinel spell response averages / maxes:
-  - `50` idle: `1.300 ms` avg, `61.780 ms` max
-  - `50` same-grid movement sync: `56.262 ms` avg, `152.812 ms` max
-  - `50` same-grid movement jitter250: `41.920 ms` avg, `124.061 ms` max
-  - `50` spread movement sync: `96.771 ms` avg, `2541.807 ms` max
-  - `100` idle: `1.848 ms` avg, `62.107 ms` max
-  - `100` same-grid movement sync: `124.034 ms` avg, `252.450 ms` max
-  - `100` same-grid movement jitter250: `124.360 ms` avg, `230.526 ms` max
-  - `100` spread movement sync: `134.111 ms` avg, `2772.751 ms` max
-  - `250` idle: `2.096 ms` avg, `62.852 ms` max
-  - `250` same-grid movement sync: `337.648 ms` avg, `544.339 ms` max
-  - `250` same-grid movement jitter250: `334.476 ms` avg, `639.148 ms` max
-  - `250` spread movement sync: `300.807 ms` avg, `4199.256 ms` max
-  - `500` idle: `2.427 ms` avg, `61.617 ms` max
-  - `500` same-grid movement sync: `608.477 ms` avg, `1152.261 ms` max
-  - `500` same-grid movement jitter250: `634.240 ms` avg, `1256.794 ms` max
-  - `500` spread movement sync: `252.782 ms` avg, `3303.231 ms` max
-- Matrix interpretation:
-  - Idle stays near-zero even at `500` players, so connected session count
-    alone is not the root cause.
-  - Movement at `50 ms` is the trigger. Same-grid movement response averages
-    scale roughly `56 ms -> 124 ms -> 338 ms -> 608 ms` from
-    `50 -> 100 -> 250 -> 500` players.
-  - `250 ms` movement phase jitter does not help at `100+` players, so this is
-    not primarily same-millisecond burst collapse.
-  - Spread movement improves the `500` average versus same-grid movement
-    (`252.782 ms` vs `608.477 ms`) but still has multi-second tails and still
-    degrades badly from idle. That points to both sustained movement-path cost
-    and some same-grid/AOI pressure, with sustained path cost first.
-  - For the `500` same-grid movement sync scrape, `CMSG_CAST_SPELL` service
-    average was `513.990 ms`; dispatch average `129.660 ms`, handler average
-    `384.327 ms`. Movement actor queue age max was `269.298 ms`, outbound
-    queue max stayed small, and spawn-blocking / Tokio global queue depth
-    remained `0`.
-- No new `world-load-test.exe` crash dump appeared during the matrix.
+- `src/game/Combat/CombatManager.cpp` owns the pursuit/combat leash timer, not
+  `CreatureAI::DamageTaken`.
+- `TriggerCombatTimer(bool)` sets the timer to `m_owner->GetPursuit()` and
+  refreshes `m_lastRefreshPos` to the creature/owner position.
+- The file comment and implementation say the timer is refreshed by direct
+  player damage to the creature and direct creature damage to the player; periodic
+  aura/dynamic-object ticks should not refresh it.
+- Rust now keeps `CreatureCombatLeashState` map-owned and follows the direct-only
+  refresh policy.
 
-Rate-knee follow-up captured:
+## What Changed Recently
 
-- Runner preset added: `RateKnee` in
-  `scripts/run-rca-scalability-matrix.ps1`.
-- Matrix id: `20260518-215725`.
-- Output:
-  - `logs/perf-rca/matrix-20260518-215725/matrix-results.csv`
-  - `logs/perf-rca/matrix-20260518-215725/matrix-analysis.csv`
-  - `logs/perf-rca/matrix-20260518-215725/matrix-summary.md`
-- Shape: `500` players, same-grid movement, movement actor on, stationary mage
-  sentinels, runtime metrics enabled.
-- Results:
-  - `MoveIntervalMs=250`: sentinel avg `676.117 ms`, max `1217.108 ms`;
-    `CMSG_CAST_SPELL` service avg `623.038 ms`; movement apply avg
-    `1.754 ms`; movement actor queue age max `219.012 ms`; outbound queue max
-    `9.854 ms`; Tokio global queue and spawn-blocking queue both `0`.
-  - `MoveIntervalMs=500`: sentinel avg `738.274 ms`, max `1386.574 ms`;
-    `CMSG_CAST_SPELL` service avg `542.517 ms`; movement apply avg
-    `1.722 ms`; movement actor queue age max `201.248 ms`; outbound queue max
-    `2.457 ms`; Tokio global queue and spawn-blocking queue both `0`.
-- Interpretation: slowing movement packets from `50 ms` to `250/500 ms` did
-  not collapse the lag. The root is no longer best described as simple packet
-  rate saturation. It looks more like movement-triggered session/map work or
-  lock/scheduling interaction that remains costly once the 500 players are in
-  the moving-state path.
-
-Profiling attempt:
-
-- Reproduced the worst case with a longer `500` same-grid `50 ms` movement run
-  (`HoldSeconds=210`) and captured matching RCA metrics during the intended
-  profile window:
-  - `logs/perf-rca/20260518-220807-20260518-220616-wpr-500-same-grid-50ms-during-wpr.metrics.prom`
-  - `logs/perf-rca/20260518-220807-20260518-220616-wpr-500-same-grid-50ms-during-wpr.summary.prom`
-  - `logs/perf-rca/20260518-220807-20260518-220616-wpr-500-same-grid-50ms-during-wpr.metadata.md`
-- The long run reproduced the lag: sentinel avg `745.499 ms`, max
-  `1382.070 ms`; metrics window had `CMSG_CAST_SPELL` service avg
-  `619.468 ms`, handler avg `533.172 ms`, dispatch avg `86.293 ms`;
-  `packet_dispatch` avg `1273.856 ms`, `packet_branch_total` avg
-  `1850.037 ms`; movement actor queue age max `413.546 ms`; Tokio global and
-  spawn-blocking queues still `0`.
-- `cargo flamegraph` / `flamegraph` is now installed in
-  `C:\Users\subhe\.cargo\bin`.
-- Attaching with `flamegraph --pid <worldserver-pid>` failed because
-  `flamegraph` uses `dtrace` for PID attach on Windows, and `dtrace` is not
-  installed on this machine.
-- Command-mode `flamegraph -- <command>` fell back to the built-in Windows
-  `blondie` backend. A non-elevated smoke failed with `NotAnAdmin`, but an
-  elevated smoke succeeded and produced:
-  `logs/perf-rca/20260518-223922-elevated-flamegraph-smoke.svg`.
-- Elevated `flamegraph --pid 62696` still failed because PID attach always
-  shells out to `dtrace`; elevation alone does not make attach work without
-  installing/enabling Windows DTrace.
-- Windows Performance Recorder is installed, but `wpr -start CPU -filemode`
-  failed from a non-elevated shell with `0xc5585011` ("Failed to enable the
-  policy to profile system performance"), but elevated WPR works.
-- First elevated WPR attempt started before the load wrapper restarted the game
-  stack and produced an ETL, but the load failed before gameplay
-  (`500` failures, `0` movements, `0` packets drained), so treat that trace as
-  startup/login noise:
-  `logs/perf-rca/20260518-224201-wpr-500-same-grid-50ms-spell-sentinels.etl`.
-- Useful elevated WPR profile captured during an already-steady `500` direct
-  same-grid `50 ms` movement run with stationary mage spell sentinels:
-  - WPR ETL:
-    `logs/perf-rca/20260518-224929-wpr-steady-direct-500-same-grid-50ms-spell-sentinels.etl`
-    (`14,918,090,752` bytes)
-  - paired metrics:
-    `logs/perf-rca/20260518-224941-wpr-steady-direct-500-same-grid-50ms-spell-sentinels.summary.prom`
-  - post-WPR metrics:
-    `logs/perf-rca/20260518-225255-post-wpr-steady-direct-500-same-grid-50ms-spell-sentinels.summary.prom`
-- The steady WPR metrics window reached `501` connected sessions and
-  `501` active players. Spell opcode `0x012E` had dispatch avg `89.072 ms`,
-  handler avg `399.309 ms`, service avg `489.125 ms`, and service max
-  `1861.016 ms`. Map tick latest/max were `983.079/1535.937 ms`; map tick lag
-  latest/max were `1117.772/1505.345 ms`. Movement apply remained small
-  (`1.956 ms` avg, `36.792 ms` max), while movement actor apply-start latency
-  averaged `146.502 ms` and reply latency averaged `174.600 ms`.
-- The direct load harness process stayed alive past its expected hold window
-  and did not flush a final sentinel summary under/after the WPR run, so it was
-  stopped manually after post-WPR metrics were captured. Treat this as another
-  harness robustness caveat, not as invalidating the paired server metrics.
-- WPA stack inspection of the useful ETL found the hottest async task under
-  `world_session_writer`, with the hot branch:
-  `world_session_writer -> tokio::time::timeout -> TcpStream::poll_write_priv -> std::net::tcp::write -> ws2_32.dll!send -> mswsock.dll!WSPSend`.
-  This confirms the profile is showing real outbound socket write work, not
-  just timeout/timer overhead.
-- WPA stack inspection also found a second confirmed hot branch:
-  `worldserver::main -> WorldGeometry::area_entry -> native_map_area_info -> wow_map_area_info -> VMAP::VMapManager2::loadMap`.
-  This accounts for roughly `25 s` in view and means movement-driven player
-  position status / area discovery is still reaching expensive native terrain
-  or vmap lookup/load behavior during the steady load window.
-- Current RCA read: movement pressure causes large outbound replication/write
-  fanout and repeated terrain/area lookup work. Outbound queue age remains low
-  because writers are actively draining work, but that write volume consumes
-  scheduler/CPU time and coincides with delayed spell service and map tick
-  spikes. The next evidence gaps are per-opcode outbound bytes / write cost /
-  recipient fanout plus area-entry/native-vmap lookup counts, timings, and
-  cache/load behavior.
-- No new `world-load-test.exe` crash dump appeared during the rate-knee or
-  profiling-attempt runs.
-
-Attribution metrics added and control rerun:
-
-- Code now emits:
-  - `wow_world_packet_outbound_enqueued_bytes_total{opcode}`
-  - `wow_world_packet_write_bytes_total{opcode}`
-  - `wow_world_outbound_fanout_recipients_*{source,opcode}`
-  - `wow_world_position_status_total{result}`
-  - `wow_world_geometry_area_entry_*{source}`
-  - `wow_world_geometry_wmo_area_*{source}`
-  - `wow_world_geometry_area_flag_*{source}`
-  - `wow_world_geometry_native_area_info_*{status}`
-  - `wow_world_geometry_native_area_flag_*{status}`
-  - `wow_world_geometry_lookup_results_total{result}`
-- Steady-state capture:
-  `logs/perf-rca/20260518-234640-500-same-grid-50ms-5-mage-sentinels-attribution-steady.summary.prom`
-- Post-run aggregate capture:
-  `logs/perf-rca/20260518-234928-500-same-grid-50ms-5-mage-sentinels-attribution-postrun.summary.prom`
-- Harness summary:
-  `clients=500`, `failures=5`, `movements_sent=570264`,
-  `packets_drained=6130460`; sentinel result `casts_sent=89`,
-  `responses=89`, `failures=45`, `avg_response_ms=653.853`,
-  `max_response_ms=1160.594`.
-- Steady scrape reached `500` connected sessions and `499` active players.
-  `CMSG_CAST_SPELL` service average/max over the 1m window were
-  `569.275/780.043 ms`.
-- Outbound byte attribution at steady scrape:
-  - `SMSG_UPDATE_OBJECT` (`0x00A9`) dominated: `77,716,311` queued bytes and
-    `77,709,747` written bytes.
-  - `MSG_MOVE_HEARTBEAT` (`0x00EE`) was second: `10,196,634` queued bytes and
-    `10,191,174` written bytes.
-  - Other movement opcodes were much smaller:
-    `0x00B5` `2.2 MB`, `0x00DA` `1.9 MB`, `0x00BB` `1.5 MB`,
-    `0x00C9` `0.78 MB`.
-  - Movement broadcast fanout averaged roughly `153-160` recipients and maxed
-    around `224-226`.
-- Area lookup attribution at steady scrape:
-  - `wow_world_position_status_total{result="attempted"} = 2786`
-  - `area_entry` average/max `18.212/355.866 ms`
-  - WMO area average/max `17.956/355.860 ms`
-  - ADT area-flag average/max `0.252/38.467 ms`
-  - native WMO area info `not_found` average/max `17.891/355.859 ms`
-  - all resolved area entries went through `area_entry_area_flag_found`, so
-    this Northshire control is mostly paying expensive WMO misses before a
-    cheap ADT area flag succeeds.
-
-Outbound source attribution added and control rerun:
-
-- Code now also emits:
-  - `wow_world_outbound_source_packets_total{source,opcode}`
-  - `wow_world_outbound_source_bytes_total{source,opcode}`
-- Useful steady scrape:
-  `logs/perf-rca/20260519-000158-500-same-grid-50ms-source-attribution-steady2.summary.prom`
-- Harness summary:
-  `clients=500`, `failures=5`, `movements_sent=560487`,
-  `packets_drained=5296001`; sentinel result `casts_sent=89`,
-  `responses=89`, `failures=44`, `avg_response_ms=815.632`,
-  `max_response_ms=1606.316`.
-- Steady scrape reached `500` connected sessions and `500` active players.
-  `CMSG_CAST_SPELL` service average/max over the 1m window were
-  `455.831/1184.130 ms`.
-- Top steady-state source/opcode byte families:
-  - `movement_apply` / `0x00EE` (`MSG_MOVE_HEARTBEAT`): `106,284,955`
-    bytes
-  - `player_visibility_refresh` / `0x00A9` (`SMSG_UPDATE_OBJECT`):
-    `56,651,147` bytes
-  - `player_add_visibility` / `0x00A9`: `55,911,280` bytes
-  - `movement_apply` movement opcodes:
-    `0x00BB` `13.3 MB`, `0x00C9` `9.0 MB`, `0x00B5` `8.5 MB`,
-    `0x00DA` `8.0 MB`, `0x00B7` `7.2 MB`
-- Postrun-minus-steady source deltas show ongoing movement pressure is
-  dominated by `movement_apply`, especially `MSG_MOVE_HEARTBEAT`.
-  `player_add_visibility` is mostly startup/login visibility cost;
-  `player_visibility_refresh` remains the ongoing `SMSG_UPDATE_OBJECT`
-  producer.
-- Session-writer batching was tried as a fix experiment and rejected:
-  - steady scrape:
-    `logs/perf-rca/20260519-001018-500-same-grid-50ms-writer-batch-steady.summary.prom`
-  - harness result worsened to `avg_response_ms=890.854`,
-    `max_response_ms=1618.473`
-  - the code path was reverted; keep the source-attribution metrics, but do
-    not pursue writer batching as the first fix.
-
-First producer-side movement coalescing experiment:
-
-- Code now coalesces stale observer broadcasts for `movement_apply`
-  `MSG_MOVE_HEARTBEAT` (`0x00EE`) to at most once per `100 ms` per mover.
-  The server still accepts every movement packet and updates authoritative
-  player state. Non-heartbeat movement packets still broadcast immediately.
-- New regression test:
-  `map_runtime_coalesces_stale_heartbeat_broadcasts_to_observers`.
-- Active steady scrape:
-  `logs/perf-rca/20260519-003425-500-same-grid-50ms-5-mage-sentinels-heartbeat-coalesce100-active-steady.summary.prom`
-- Harness summary:
-  `clients=500`, `failures=2`, `movements_sent=575564`,
-  `packets_drained=3219278`; sentinel result `casts_sent=89`,
-  `responses=89`, `failures=45`, `avg_response_ms=948.112`,
-  `max_response_ms=1635.198`.
-- The scrape reached `500` connected sessions and `499` active players.
-  `CMSG_CAST_SPELL` service average/max were `742.636/1354.926 ms`.
-- The intended outbound bucket dropped: `movement_apply` / `0x00EE` was
-  `12,995,803` bytes in the active steady scrape, and
-  `player_movement_broadcast` fanout for `0x00EE` averaged `87.408`
-  recipients. `packets_drained` also fell to `3.2M`.
-- Spell latency did not improve, so heartbeat coalescing is a useful volume
-  reduction but not the complete root fix. The next evidence gap is inside or
-  around `CMSG_CAST_SPELL` service time: map lock wait, spell-handler stages,
-  remaining `SMSG_UPDATE_OBJECT` churn, and terrain/area lookup.
-
-VMap tile-load cache guard:
-
-- Static CMaNGOS comparison showed that `TerrainInfo::LoadMapAndVMap` checks
-  `IsTileLoaded(map, x, y)` before calling `loadMap(...)`.
-- The Rust native bridge did not have that guard in hot height, liquid, area,
-  and LOS paths; repeated movement-position status work could reach
-  `VMapManager2::loadMap(...)` under the global native bridge mutex.
-- Fixed by adding `wow_vmap_ensure_tile_loaded(...)` in
-  `crates/wow-network/native/vmap_bridge.cpp` and using it from:
-  - `crates/wow-network/native/map_height.cpp`
-  - `crates/wow-network/native/vmap_los.cpp`
-- Active-polled post-fix control:
-  `logs/perf-rca/20260519-010653-500-same-grid-50ms-5-mage-sentinels-vmap-cache-guard-active-steady.summary.prom`
-- Harness summary:
-  `clients=500`, `failures=20`, `movements_sent=241409`,
-  `packets_drained=21814770`; sentinel result `casts_sent=89`,
-  `responses=89`, `failures=46`, `avg_response_ms=80.677`,
-  `max_response_ms=310.921`.
-- The scrape reached `500` connected sessions and `500` active map players.
-  `CMSG_CAST_SPELL` service average/max were `245.803/1088.052 ms`.
-- The core geometry metric collapsed from about `23 ms` native area-info
-  average in the previous control to `0.007 ms` found / `0.002 ms` not-found.
-  Movement actor queue age dropped from `90.295 ms` average / `324.114 ms` max
-  to `0.589 ms` average / `63.432 ms` max.
-- This moves native vmap repeated loading from "secondary hypothesis" to
-  "confirmed contributor fixed." The control is not a clean scalability pass
-  because of thin-client failures, but it is strong RCA evidence.
-
-Player visibility relocation threshold:
-
-- CMaNGOS reference: `Unit::OnRelocated` only calls
-  `UpdateObjectVisibility()` after movement exceeds
-  `Visibility.RelocationLowerLimit`, default `10` yards, from
-  `m_last_notified_position`.
-- The Rust map-owned movement path was marking every accepted movement packet
-  for player-player visibility refresh. That made the
-  `player_visibility_refresh` phase rebuild create/destroy visibility at the
-  `50 ms` movement-packet cadence.
-- Fixed by adding
-  `PlayerRuntime::last_player_visibility_refresh_position` and only marking
-  player-player visibility refreshes after `10` yards of relocation.
-- Regression test added:
-  `map_runtime_skips_player_visibility_refresh_below_relocation_limit`.
-- Active-polled post-fix control:
-  `logs/perf-rca/20260519-011936-500-same-grid-50ms-5-mage-sentinels-player-vis-relocation10-active-steady.summary.prom`
-- Harness summary:
-  `clients=500`, `failures=20`, `movements_sent=258904`,
-  `packets_drained=23672092`; sentinel result `casts_sent=89`,
-  `responses=88`, `failures=44`, `pending=1`, `avg_response_ms=39.000`,
-  `max_response_ms=374.827`.
-- The scrape reached `500` connected sessions and `498` active map players.
-  `CMSG_CAST_SPELL` service average/max were `81.326/419.431 ms`.
-- Intended producer drop versus the vmap-cache-guard control:
-  - `player_visibility_refresh/0x00A9` bytes:
-    `130,241,624 -> 1,852,928`
-  - `player_visibility_refresh/0x00A9` packets:
-    `187,980 -> 2,674`
-  - refresh players per sample:
-    `163.870 avg / 494 max -> 0.393 avg / 6 max`
-  - refresh packets per sample:
-    `1748.995 avg / 9834 max -> 13.057 avg / 224 max`
-- Remaining largest outbound source is now movement broadcasts from
-  `movement_apply`, especially `0x00EE`; `player_visibility_refresh` is no
-  longer the main ongoing update-object churn source.
+- Audited CMaNGOS creature AI scheduling against Rust. Rust already had generic
+  spell-list initial/repeat cooldowns, but in-combat EventAI was checked every
+  Rust world tick instead of CMaNGOS' 500ms EventAI pulse. Rust now gates
+  timer-executed EventAI casts with `next_event_ai_update_at`, anchors
+  timer-in-combat initial delays to combat start, and resets repeat cooldowns
+  when EventAI chance rolls fail. This should reduce too-immediate combat casts
+  and over-frequent retries without special-casing Webwood Silkspinners.
+- Audited Defias Cutpurse Backstab spam against local CMaNGOS DB/source. Entry
+  `94` has legacy `creature_template_spells` Backstab `53`, no
+  `creature_cooldowns`, and no modern `creature_spell_list_entry`/`9400`.
+  CMaNGOS marks legacy template spell lists disabled for generic UnitAI, while
+  Rust was using them as active spell-list rows. Removed that fallback from the
+  active Rust creature spell-list query.
+- Added `send_next_chain_quest_details_after_reward(...)` in the quest handler.
+- The normal reward path now sends `SMSG_QUESTGIVER_QUEST_COMPLETE` first, then
+  attempts the CMaNGOS-style next-chain details packet.
+- Added a focused unit test proving rewarded quest `783` opens quest `7`
+  details from the same questgiver when the previous quest is rewarded.
+- Updated the starter-zone fixture seeding to include `PrevQuestId` and
+  `NextQuestInChain`.
+- Updated the starter-zone flow check so rewarding `A Threat Within` must be
+  followed by `SMSG_QUESTGIVER_QUEST_DETAILS` containing `Kobold Camp Cleanup`.
+- Death update packets now include `UNIT_FIELD_POWER2 = 0`; map/session death
+  transitions clear rage authoritatively instead of relying on regen.
+- Night Elf ghost presentation now places Wisp Form `20584` and Ghost `8326` in
+  negative/debuff aura slots.
+- Map-owned active casts suppress overdue melee swings without mutating the
+  stored weapon timer; cancelled long casts resume from the real swing timer
+  instead of waiting for the full cast duration.
+- Cast-time spells retime the auto-attack timer when the cast starts, not only
+  after spell completion.
+- Food/drink item uses skip the standing-cancels path when the item is a
+  refreshable periodic regen consumable, preventing the stand/sit flicker.
+- Player spell validation no longer aliases `creature.is_evading_home()` to
+  target-not-alive/out-of-range. In-range spells now cast and send
+  `SMSG_SPELL_GO` with `SPELL_MISS_EVADE`; far evading targets still fail the
+  normal range check.
+- The test-only melee validator now checks melee reach before navigation, matching
+  the map-owned validator and CMaNGOS' reach-before-evade feedback shape.
+- Native mmap path lookup now uses the CMaNGOS near-then-far polygon search
+  bounds (`5y` then `10y`) instead of returning no path after only the near
+  lookup. This is aimed at mobs stopping near barriers when the desired chase
+  point is slightly off the navmesh.
+- Map-owned chase destination selection now retries nearby target-ring angles
+  when the primary melee slot has LOS trouble, matching CMaNGOS
+  `GetNearPointAt`. This is aimed at mobs stopping when kited around trees.
+- Session and map-owned DB-creature melee reach now ignore LOS/path guardrails,
+  matching CMaNGOS `CanReachWithMeleeAttack`. Navigation still gates generated
+  aggro and chase movement; it no longer redefines whether a close target is in
+  melee reach.
+- Native mmap direct/random path calls now return CMaNGOS path status flags
+  (`NORMAL`, `INCOMPLETE`, `NOPATH`) through the Rust FFI instead of inferring
+  status from point count. Chase startup now refuses incomplete paths whose
+  final endpoint is still outside target combat reach, matching
+  `DispatchSplineToPosition`'s reachable-endpoint guard.
+- Audited CMaNGOS `CombatManager` leash refresh against Rust. Rust already had
+  map-owned combat leash state, but one policy was inverted: creature melee hits
+  while still in chase motion did not refresh the timer, while periodic
+  aura/dynamic-object ticks did. Rust now refreshes on direct creature melee,
+  direct creature spell damage, and direct player damage to creatures; periodic
+  aura and dynamic-object tick damage add threat/damage without refreshing the
+  leash timer.
+- Audited CMaNGOS creature assistance against Rust. Rust already loaded
+  `CallForHelp` and tracked `already_called_assistance`, but only sight aggro
+  used it. Player-hit retaliation, direct hostile spell damage, and map-runtime
+  channel/dynamic-object combat startup now all call nearby same-faction
+  combat-capable helpers once and announce each helper's combat start.
+- Added CMaNGOS `CheckForHelp` parity on creature relocation. Creatures now
+  track the 2s post-aggro check-for-help delay, active combat creatures can pull
+  nearby same-faction helpers after that delay, and idle/patrol creatures moving
+  past an existing fight can join when they are within 5y, in LOS, and hostile
+  to the victim.
+- Audited CMaNGOS vendor buyback against Rust. Rust used the correct slot range
+  (`69..80`) and player update fields, but wrapped the buyback cursor after slot
+  `80` and assigned the same timestamp to every entry. Rust now keeps the cursor
+  parked at the final slot like CMaNGOS, reuses cleared slots when appropriate,
+  and assigns monotonic timestamps so full-list replacement follows oldest-slot
+  ordering.
 
 ## Tests Run
 
-- Questgiver complete/cancel UI parity follow-up:
-  - `cargo fmt`
-  - `cargo test -p wow-network questgiver_cancel_closes_gossip_like_cmangos --lib`
-  - `cargo test -p wow-network parse_world_client_packet_keeps_questgiver_intents_distinct --lib`
-  - `cargo test -p wow-network quest_request_items_can_close_on_cancel_for_auto_opened_turnins --lib`
-  - `cargo test -p wow-network quest_request_items_packet_includes_required_items_and_complete_flags --lib`
-  - `cargo test -p wow-network quest --lib`
-  - `cargo test -p wow-proto world_opcode_known_values_are_stable --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\test-rust.cmd`
-- Vendor potion acquisition item-push parity:
-  - `cargo fmt`
-  - `cargo test -p wow-network vendor_buy_item_push_result_matches_cmangos_purchased_flags --lib`
-  - `cargo test -p wow-network vendor --lib`
-  - `cargo test -p wow-network item_push_result --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\test-rust.cmd`
-- P2 inventory/equipment integrity cleanup:
-  - `cargo fmt`
-  - `cargo test -p wow-network inventory_swap_validation_checks_displaced_item_against_source_equipment_slot --lib`
-  - `cargo test -p wow-network inventory_combat_equip_state_rules_match_cmangos_allowlist --lib`
-  - `cargo test -p wow-network inventory_combat_weapon_slot_changes_drive_cast_and_swing_side_effects --lib`
-  - `cargo test -p wow-network inventory_recomputed_combat_stats_keep_passive_resistance_on_self_update --lib`
-  - `cargo test -p wow-network map_runtime_player_power1_update_refreshes_shared_state_and_observers --lib`
-  - `cargo test -p wow-network map_owned_consumable_resource_updates_survive_later_session_sync --lib`
-  - `cargo test -p wow-network map_owned_player_heal_clamps_health_and_notifies_observers --lib`
-  - `cargo test -p wow-network heroic_strike_queue_requires_main_hand_weapon_at_swing_resolution --lib`
-  - `cargo test -p wow-network parses_gm_dot_commands_for_creature_spawn_and_die --lib`
-  - `cargo test -p wow-network malformed_gm_npc_add_returns_syntax_error --lib`
-  - `cargo test -p wow-network gm --lib`
-  - `cargo test -p wow-network item_use_cooldown --lib`
-  - `cargo test -p wow-network item_query_response_writes_cmangos_invalid_spell_slots --lib`
-  - `cargo test -p wow-network item_query_response_falls_back_to_spell_cooldowns_when_item_has_no_override --lib`
-  - `cargo test -p wow-network cooldown --lib`
-  - `cargo test -p wow-network item --lib`
-  - `cargo test -p wow-network spell --lib`
-  - `cargo test -p wow-network inventory --lib`
-  - `cargo test -p wow-network loot --lib`
-  - `cargo test -p wow-network heroic_strike --lib`
-  - `cargo test -p wow-network combat --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\test-rust.cmd`
-- Questgiver complete/cancel UI transition cleanup:
-  - `cargo fmt`
-  - `cargo test -p wow-network parse_world_client_packet_keeps_questgiver_intents_distinct --lib`
-  - `cargo test -p wow-network quest_request_items --lib`
-  - `cargo test -p wow-proto world_opcode_known_values_are_stable --lib`
-  - `cargo test -p wow-network quest --lib`
-  - `cargo test -p wow-network reputation --lib`
-  - `cargo test -p wow-network packet_dispatch --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\test-rust.cmd`
-- Evading-target melee reach parity:
-  - `cargo fmt`
-  - `cargo test -p wow-network db_creature_player_melee_check_allows_evade_feedback_for_returning_creature --lib`
-  - `cargo test -p wow-network map_runtime_player_melee_rejects_far_evading_target_before_evade_feedback --lib`
-  - `cargo test -p wow-network combat --lib`
-  - `cargo test -p wow-network --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\test-rust.cmd`
-- Target portrait aura duration timers:
-  - `cargo fmt`
-  - `cargo test -p wow-proto combat_spell_and_loot_responses_write_expected_layouts`
-  - `cargo test -p wow-network item_query_response_writes_cmangos_invalid_spell_slots --lib`
-  - `cargo test -p wow-network item_query_response_falls_back_to_spell_cooldowns_when_item_has_no_override --lib`
-  - `cargo test -p wow-network rend_applies_harmful_periodic_aura_to_db_creature --lib`
-  - `cargo test -p wow-network polymorph_transform_updates_creature_display_and_breaks_on_damage --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\test-rust.cmd`
-- P1 general combat lifecycle cleanup:
-  - `cargo fmt`
-  - `cargo test -p wow-network creature_dot_death_clears_auras_before_respawn --lib`
-  - `cargo test -p wow-network arcane_missile_impact_death_stops_target_motion --lib`
-  - `cargo test -p wow-network player_channel --lib`
-  - `cargo test -p wow-network dynamic_object --lib`
-  - `cargo test -p wow-network db_creature_death --lib`
-  - `cargo test -p wow-network spell --lib`
-  - `cargo test -p wow-network combat --lib`
-  - `cargo check -p worldserver`
-  - first `.\scripts\test-rust.cmd` found one packet-count-fragile shared
-    death test, then `map_runtime_db_creature_damage_owns_death_and_respawn_state`
-    was updated to assert the new player combat-flag clear semantics
-  - final `.\scripts\test-rust.cmd` passed
-- Current spell/control slice:
-  - `cargo test -p wow-network hard_control --lib`
-  - `cargo test -p wow-network polymorph --lib`
-  - `cargo test -p wow-network confused_creature --lib`
-  - `cargo test -p wow-network db_creature_polymorph_uses_no_pve_diminishing_group --lib`
-  - `cargo test -p wow-network db_creature_evade_removes_polymorph_aura_display_and_diminishing_tracker --lib`
-  - `cargo test -p wow-network failed_hostile_aura_rank_cast_still_pulls_db_creature_aggro --lib`
-  - `cargo test -p wow-network resisted_hostile_aura_spell_sends_miss_without_applying_aura_and_pulls_aggro --lib`
-  - `cargo test -p wow-network resisted_hostile_direct_damage_spell_sends_go_miss_without_damage_or_miss_log --lib`
-  - `cargo test -p wow-network resisted_damage_plus_aura_spell_skips_damage_and_aura_from_same_target_outcome --lib`
-  - `cargo test -p wow-network item_hostile_damage_spell --lib`
-  - `cargo test -p wow-network --lib -- --test-threads=1`
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network polymorphed_creature_keeps_confused_wandering_while_in_combat --lib`
-  - `cargo test -p wow-network rooted_polymorph_does_not_start_confused_wandering_until_root_ends --lib`
-  - `cargo test -p wow-network db_creature_random_motion_is_blocked_by_root --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\test-rust.cmd`
 - `cargo fmt`
-- `cargo test -p wow-network enqueue_pending_movement_replaces_older_packet --lib`
-- `cargo test -p wow-network pending_movement_timeout_uses_coalesce_deadline --lib`
-- `cargo test -p wow-network pending_movement_due_only_after_deadline --lib`
-- `cargo test -p wow-network player_position_status_update_is_throttled --lib`
-- `cargo test -p wow-network movement_packets_skip_immediate_gameplay_sync --lib`
-- `cargo test -p wow-network map_runtime_defers_player_visibility_enter_until_refresh_phase --lib`
-- `cargo test -p wow-network map_runtime_visibility_refresh_keeps_earliest_old_position_across_multiple_moves --lib`
-- `cargo test -p wow-network map_runtime_manager_movement_actor_matches_direct_path_packets --lib`
-- `cargo test -p wow-network map_runtime_player_movement_preserves_db_creature_visibility_set --lib`
-- `cargo test -p wow-network movement_packets_skip_pre_dispatch_session_refresh --lib`
-- `cargo test -p wow-network movement_packets_skip_pending_spell_checks_without_active_spells --lib`
-- `cargo test -p wow-network active_spells_keep_pending_spell_checks_enabled_for_movement --lib`
-- `cargo test -p wow-network dashboard_renders_live_metrics_page --lib`
-- `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib`
-- `cargo test -p wow-network map_runtime_manager_movement_actor_matches_direct_path_packets --lib`
-- `cargo test -p world-load-test movement_phase_jitter_is_deterministic_and_bounded`
+- `cargo test -p wow-network map_runtime_event_ai_zero_initial_timer_waits_for_cmangos_update_pulse --lib`
+- `cargo test -p wow-network map_runtime_event_ai_timer_in_combat_schedules_cast --lib`
+- `cargo test -p wow-network map_runtime_event_ai_cast_respects_hard_control --lib`
+- `cargo test -p wow-network map_runtime_event_ai_aggro_cast_targets_self --lib`
+- `cargo test -p wow-network map_runtime_event_ai_range_and_missing_aura_select_casts --lib`
+- `cargo test -p wow-network map_runtime_event_ai_facing_target_matches_cmangos_position_and_repeat_rules --lib`
+- `docker exec cmangos-rust-realmd mariadb -uroot -proot -N -B mangos -e "SELECT COUNT(*) FROM creature_spell_list_entry WHERE Id=9400; SELECT COUNT(*) FROM creature_template_spells WHERE entry=94 AND setId=0;"`
+- `cargo check -p wow-db`
+- `cargo test -p wow-network map_runtime_db_creature_spell_list_schedules_direct_damage_cast --lib`
+- `cargo test -p wow-network rewarded_chain_quest_opens_next_quest_details_from_same_questgiver --lib`
+- `cargo check -p starter-zone-flow-test`
 - `cargo check -p worldserver`
-- `cargo check -p world-load-test`
 - `.\scripts\test-rust.cmd`
-- PowerShell parser check for `scripts/capture-rca-metrics.ps1`
-- `cargo test -p wow-network session_registry_requests_disconnect_when_bounded_queue_is_full --lib`
-- Final `.\scripts\test-rust.cmd` after queue-metric wiring
-- Control load run:
-  `.\scripts\start-thin-client-load.ps1 -ClientCount 500 -SpawnMode local_radius -MoveIntervalMs 50 -MovePhaseJitterMs 0 -LoginStaggerMs 1 -HoldSeconds 90 -EnableMovementActor`
-  captured metrics successfully, but harness exited with `2` client failures.
-- `cargo test -p world-load-test`
-- `cargo check -p world-load-test`
-- `cargo run -p world-load-test -- --help`
-- `.\scripts\test-rust.cmd`
-- Tiny live sentinel smoke:
-  `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-thin-client-load.ps1 -ClientCount 2 -HoldSeconds 10 -MoveIntervalMs 500 -LoginStaggerMs 10 -CharacterClass 8 -Race 1 -SentinelCastClients 1 -SentinelCastSpellId 168 -SentinelCastIntervalMs 3000 -EnableMovementActor`
-- After adding stationary/desync sentinel options:
-  - `cargo test -p world-load-test`
-  - `cargo check -p world-load-test`
-  - `cargo build --release -p world-load-test`
-  - `cargo run -p world-load-test -- --help`
-- live launch of stationary mage sentinels:
-    `target\release\world-load-test.exe --client-count 5 --hold-seconds 900 --spawn-mode local_radius --center-x -8949 --center-y -132 --center-z 83.5 --radius 6 --move-radius 0 --race 1 --class 8 --sentinel-cast-clients 5 --sentinel-cast-spell-id 168 --sentinel-cast-interval-ms 5000 --sentinel-cast-phase-jitter-ms 5000 --disable-movement`
-- Full 500-client stationary-sentinel control:
-  `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-thin-client-load.ps1 -ClientCount 500 -SpawnMode local_radius -MoveIntervalMs 50 -MovePhaseJitterMs 0 -LoginStaggerMs 1 -HoldSeconds 90 -CharacterClass 8 -Race 1 -SentinelCastClients 5 -SentinelCastSpellId 168 -SentinelCastIntervalMs 5000 -SentinelCastPhaseJitterMs 5000 -DisableSentinelMovement -EnableMovementActor`
-- Metrics capture during the full 500-client stationary-sentinel control:
-  `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\capture-rca-metrics.ps1 -Scenario "500-local-radius-50ms-jitter0-actor-on-5-stationary-mage-sentinels"`
-- Post-run metrics capture after the harness crash:
-  `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\capture-rca-metrics.ps1 -Scenario "500-local-radius-50ms-jitter0-actor-on-5-stationary-mage-sentinels-postrun"`
-- Harness crash fix verification:
-  - `cargo test -p world-load-test`
-  - `cargo check -p world-load-test`
-  - `cargo build --release -p world-load-test`
-  - `cargo run -p world-load-test -- --help`
-  - direct `target\release\world-load-test.exe` run with `500` clients,
-    `20s`, `5` stationary mage sentinels
-  - direct `target\release\world-load-test.exe` run with `500` clients,
-    `90s`, `5` stationary mage sentinels, `MaxAttempts=1`
-- Runtime metrics / control setup:
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib`
-  - PowerShell parser check for `scripts/capture-rca-metrics.ps1` and
-    `scripts/start-thin-client-load.ps1`
-  - `RUSTFLAGS="--cfg tokio_unstable" cargo check -p worldserver`
-  - `cargo check -p world-load-test`
-  - full `500`-client stationary-sentinel control with
-    `-EnableTokioUnstableMetrics`, captured at steady state
-- Scalability matrix:
-  - PowerShell parser check for `scripts/run-rca-scalability-matrix.ps1`
-  - smoke matrix: `50` clients, movement same-grid sync, `20s` hold
-  - core matrix: `50`, `100`, `250`, `500` clients across idle same-grid,
-    movement same-grid sync, movement same-grid jitter250, and movement spread
-    sync
-  - rate-knee matrix: `500` clients, same-grid movement at `250 ms` and
-    `500 ms`
-  - WPR CPU profile attempt during a long `500` same-grid `50 ms` run; WPR was
-    blocked by Windows profiling policy/privilege, but matching RCA metrics
-    were captured
-- Source-attribution control:
-  - `cargo fmt`
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib`
-  - full `500`-client stationary-sentinel control with outbound
-    source/opcode metrics, captured at steady state and postrun
-  - session-writer batching control, captured at steady state; batching was
-    reverted after the control worsened spell latency
-  - post-revert validation:
-    `cargo check -p worldserver` and
-    `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib`
-  - final `.\scripts\test-rust.cmd`
-- Current item target-outcome slice:
-  - `cargo fmt`
-  - `cargo test -p wow-network item_hostile_damage_spell --lib`
-  - `cargo test -p wow-network resisted_hostile_aura_spell_sends_miss_without_applying_aura_and_pulls_aggro --lib`
-  - `cargo test -p wow-network resisted_hostile_direct_damage_spell_sends_go_miss_without_damage_or_miss_log --lib`
-  - `cargo test -p wow-network resisted_damage_plus_aura_spell_skips_damage_and_aura_from_same_target_outcome --lib`
-  - `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib -- --nocapture`
-  - `cargo test -p wow-network --lib -- --test-threads=1`
-  - `cargo check -p worldserver`
-  - `.\scripts\test-rust.cmd` was attempted; it failed in the parallel
-    `wow-network` lib run on
-    `observability::tests::prometheus_render_includes_histogram_and_opcode_labels`
-    because the rendered global counter did not contain
-    `wow_player_environment_geometry_checks_total 1`. The same test passed
-    when isolated, and the full `wow-network` lib suite passed serially, so
-    this is currently classified as global observability test-order sensitivity
-    rather than a spell regression.
-- Current active-cast movement-interrupt slice:
-  - `cargo fmt`
-  - `cargo test -p wow-network movement_interrupt --lib`
-  - `cargo test -p wow-network movement_does_not_interrupt --lib`
-  - `cargo test -p wow-network moving_during_cast_time_interrupts_spell_before_damage_or_power_spend --lib`
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network --lib -- --test-threads=1`
-  - `.\scripts\test-rust.cmd`
-- Current active-cast damage interrupt/pushback slice:
-  - `cargo test -p wow-network map_owned_active_cast_damage --lib`
-  - `cargo test -p wow-network map_owned_active_cast_without_damage_flags_ignores_damage_interrupt --lib`
-  - `cargo test -p wow-network damage_pushback --lib`
-  - `cargo test -p wow-network damage_cancels --lib`
-  - `cargo fmt`
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network --lib -- --test-threads=1`
-  - `.\scripts\test-rust.cmd`
-- Current active-cast hard-control invalidation slice:
-  - `cargo test -p wow-network applying_hard_control_aura_interrupts_active_player_cast --lib`
-  - `cargo test -p wow-network applying_silence_and_pacify_only_interrupt_matching_existing_casts --lib`
-  - `cargo test -p wow-network hard_control --lib`
-  - `cargo fmt`
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network --lib -- --test-threads=1`
-  - `.\scripts\test-rust.cmd`
-- Current active-cast lifecycle cleanup slice:
-  - `cargo fmt`
-  - `cargo test -p wow-network player_death_clears_active_spell_channels_and_dynamic_objects --lib`
-  - `cargo test -p wow-network removing_player_clears_spell_channels_and_notifies_observers --lib`
-  - `cargo test -p wow-network disconnect_in_combat --lib`
-  - `cargo test -p wow-network active_cast --lib`
-  - `cargo test -p wow-network movement_interrupt --lib`
-  - `cargo test -p wow-network hard_control --lib`
-  - `cargo check -p worldserver`
-- Current active-cast teleport invalidation slice:
-  - test-first failure confirmed
-    `near_teleport_position_set_clears_active_spell_runtime` left active casts
-    alive before implementation
-  - `cargo fmt`
-  - `cargo test -p wow-network near_teleport_position_set_clears_active_spell_runtime --lib`
-  - `cargo test -p wow-network regular_movement_position_update_preserves_non_movement_interrupt_cast --lib`
-  - `cargo test -p wow-network teleport --lib`
-  - `cargo test -p wow-network active_cast --lib`
-  - `cargo test -p wow-network movement_interrupt --lib`
-  - `cargo test -p wow-network hard_control --lib`
-  - `cargo check -p worldserver`
-- Current active-cast aura/target invalidation slice:
-  - test-first failure confirmed
-    `removing_channeled_creature_aura_interrupts_player_channel` left the
-    channel alive before implementation
-  - test-first failure confirmed
-    `creature_target_death_interrupts_active_player_spell_work_targeting_it`
-    left active spell work alive before implementation
-  - `cargo fmt`
-  - `cargo test -p wow-network removing_channeled_creature_aura_interrupts_player_channel --lib`
-  - `cargo test -p wow-network creature_target_death_interrupts_active_player_spell_work_targeting_it --lib`
-  - `cargo test -p wow-network deleting_creature_target_interrupts_active_player_spell_work_targeting_it --lib`
-  - `cargo test -p wow-network active_cast --lib`
-  - `cargo test -p wow-network channel --lib`
-  - `cargo test -p wow-network death --lib`
-  - `cargo test -p wow-network movement_interrupt --lib`
-  - `cargo test -p wow-network hard_control --lib`
-  - `cargo check -p worldserver`
-- Heartbeat coalescing:
-  - `cargo test -p wow-network map_runtime_coalesces_stale_heartbeat_broadcasts_to_observers --lib`
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network map_runtime_manager_movement_actor_matches_direct_path_packets --lib`
-  - `cargo test -p wow-network map_runtime_broadcasts_stop_with_final_idle_orientation --lib`
-  - final `.\scripts\test-rust.cmd`
-  - active-polled `500`-client stationary-sentinel control captured with
-    `-EnableTokioUnstableMetrics`
-- VMap tile-load cache guard:
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network db_creature_vmap_los_uses_local_cmangos_data_when_available --lib`
-  - `cargo test -p wow-network terrain_height_uses_local_cmangos_map_data_when_available --lib`
-  - final `.\scripts\test-rust.cmd`
-  - `cargo build --release -p authserver -p worldserver -p world-load-test`
-  - active-polled `500`-client stationary-sentinel control captured with
-    `-EnableTokioUnstableMetrics`
-- Player visibility relocation threshold:
-  - `cargo test -p wow-network map_runtime_skips_player_visibility_refresh_below_relocation_limit --lib`
-  - `cargo test -p wow-network map_runtime_visibility_refresh_keeps_earliest_old_position_across_multiple_moves --lib`
-  - `cargo test -p wow-network map_runtime_defers_player_visibility_enter_until_refresh_phase --lib`
-  - `cargo check -p worldserver`
-  - `cargo build --release -p authserver -p worldserver -p world-load-test`
-  - active-polled `500`-client stationary-sentinel control captured with
-    `-EnableTokioUnstableMetrics`
-- 2000-player RCA pressure-source fixes:
-  - `cargo fmt`
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network map_runtime_disconnect_in_combat_lingers_before_removal --lib`
-  - `cargo test -p wow-network db_creature_return_home_motion_advances_without_active_combat --lib`
-  - `cargo test -p wow-network dashboard_renders_live_metrics_page --lib`
-- Return-home / sight-aggro pressure-source fixes:
-  - `cargo fmt`
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network map_runtime_sight_aggro_uses_cell_buckets_and_detection_range --lib`
-  - `cargo test -p wow-network map_runtime_sight_aggro_is_throttled_until_player_moves_enough --lib`
-  - `cargo test -p wow-network map_runtime_tick_advances_return_home_motion_without_session_polling --lib`
-  - `cargo test -p wow-network db_creature_return_home_motion_advances_without_active_combat --lib`
-- OOC EventAI re-enabled:
-  - `cargo fmt`
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network ooc_event_ai --lib`
-- Dialogue branch merge:
-  - `cargo test -p wow-network gossip --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\test-rust.cmd`
-- Local starter DB startup fix:
-  - `cargo fmt`
-  - `cargo check -p worldserver`
-  - `.\scripts\restart-game-stack.cmd --release`
-  - `.\scripts\test-rust.cmd` hit the known parallel
-    `prometheus_render_includes_histogram_and_opcode_labels` observability
-    counter-order failure
-  - isolated `cargo test -p wow-network prometheus_render_includes_histogram_and_opcode_labels --lib -- --nocapture`
-  - `cargo test -p wow-db --lib`
-  - `cargo test -p wow-network gossip --lib`
-- Account seed fix:
-  - `cargo run -p auth-flow-test`
-  - PowerShell parser check for `scripts/run-client-stack-18085.ps1`
-  - DB sanity check confirmed `RUSTAUTH` exists and has starter characters.
-- Empty-world live DB repair:
-  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\import-classic-db-world.ps1`
-  - `.\scripts\restart-game-stack.cmd --release`
-  - DB sanity counts for full world tables and Northshire creature/gameobject
-    rows
-- GM account enablement:
-  - live DB `UPDATE account SET gmlevel=3 WHERE username='RUSTAUTH'`
-  - PowerShell parser check for `scripts/run-client-stack-18085.ps1`
-- Dialogue template service backing:
-  - `cargo fmt`
-  - `cargo test -p wow-db --lib`
-  - `cargo test -p wow-network gossip --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\test-rust.cmd`
-  - `.\scripts\restart-game-stack.cmd --release`
-  - DB sanity check confirmed representative template-backed vendors/trainers
-    such as Corina Steele, Jessara Cordell, Mogwah, and World Mage Trainer have
-    service rows through CMaNGOS template tables.
-- Trainer gossip diagnostics:
-  - DB sanity check confirmed nearby Northshire class trainers such as Khelden
-    Bremen and Llane Beshere use gossip-menu trainer options backed by direct
-    `npc_trainer` rows; nearby weapon masters use template rows.
-  - Live metrics before the second diagnostic restart showed
-    `CMSG_GOSSIP_HELLO=52`, `SMSG_GOSSIP_MESSAGE=52`, and no
-    `CMSG_GOSSIP_SELECT_OPTION`, pointing at the menu presented to the client.
-  - Live mage attempt against Khelden Bremen showed Rust sending menu `4660`,
-    `text_id=538`, `options=2`, but still no `CMSG_GOSSIP_SELECT_OPTION`.
-    Follow-up DB RCA showed `538/539` are in `npc_text_broadcast_text`, not
-    `npc_text`, and point to `broadcast_text` rows `2502/2503`. Rust now treats
-    that overlay as CMaNGOS gossip text backing instead of classifying the rows
-    as missing.
-  - `cargo fmt`
-  - `cargo test -p wow-network gossip --lib`
-  - `cargo test -p wow-network trainer --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\restart-game-stack.cmd --release`
-  - `.\scripts\test-rust.cmd`
-  - Added gossip hello / prepared-menu logging, then reran `cargo fmt`,
-    `cargo test -p wow-network gossip --lib`, `cargo check -p worldserver`, and
-    `.\scripts\restart-game-stack.cmd --release`.
-  - Missing-gossip-text fix validation: `cargo fmt`,
-    `cargo test -p wow-network gossip --lib`,
-    `cargo test -p wow-network trainer --lib`, `cargo check -p worldserver`,
-    and `.\scripts\restart-game-stack.cmd --release`.
-  - Broadcast-backed gossip text correction: `cargo fmt`,
-    `cargo test -p wow-db --lib`, `cargo test -p wow-network gossip --lib`,
-    `cargo check -p worldserver`, and
-    `.\scripts\restart-game-stack.cmd --release`.
-- Bank branch integration:
-  - committed `codex/banking-parity` worktree changes as `bec18507b`
-  - merged into `codex/rusty-mangos`
-  - added integration glue so DB gossip banker selections call the same banker
-    access/open-bank path as `CMSG_BANKER_ACTIVATE`
-  - resolved the `UNIT_NPC_FLAG_*` constant conflict by keeping the full
-    dialogue-service flag set plus banker's `0x0000_0100`
-  - `cargo fmt`
-  - `cargo test -p wow-db --lib`
-  - `cargo test -p wow-network bank --lib`
-  - `cargo test -p wow-network inventory --lib`
-  - `cargo test -p wow-network gossip --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\test-rust.cmd`
-- GM money / bag vendor hotfix:
-  - `cargo fmt`
-  - `cargo test -p wow-network parses_gm_dot_commands_for_creature_spawn_and_die --lib`
-  - `cargo test -p wow-network db_vendor_inventory_uses_cmangos_list_shape --lib`
-  - `cargo test -p wow-network vendor --lib`
-  - `cargo test -p wow-db --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\restart-game-stack.cmd --release`
-- Bank-bag icon drag hotfix:
-  - `cargo fmt`
-  - `cargo test -p wow-network bank_bag --lib`
-  - `cargo test -p wow-network autostore_to_bank_bag_icon_selects_first_valid_slot_in_that_bank_bag --lib`
-  - `cargo test -p wow-network swap_to_bank_bag_icon_resolves_non_bag_item_to_bag_storage --lib`
-  - `cargo test -p wow-network inventory --lib`
-  - `cargo test -p wow-network bank --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\restart-game-stack.cmd --release`
-- Mail branch integration:
-  - committed `codex/mail-system-parity` worktree code as `42e985da2`
-  - resolved merge conflicts in `crates/wow-network/src/world/opcodes.rs` and
-    `crates/wow-network/src/world/packets.rs` by keeping both bank and mail
-    opcode/packet additions
-  - `cargo fmt`
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network mail --lib`
-  - `cargo test -p wow-db --lib`
-  - `cargo test -p wow-network bank --lib`
-- Mail money delivery hotfix:
-  - money-only player mail now uses zero delivery delay; item/COD/other player
-    mail keeps the default one-hour delay
-  - `cargo fmt`
-  - `cargo test -p wow-network mail --lib`
-  - `cargo check -p worldserver`
-- Mailbox open disconnect fix:
-  - fixed DB decoding for signed `mail.stationery` rows
-  - `cargo fmt`
-  - `cargo test -p wow-db --lib`
-  - `cargo test -p wow-network mail --lib`
-  - `cargo check -p worldserver`
-  - `.\scripts\restart-game-stack.cmd --release`
-- World layout cleanup:
-  - renamed `map_runtime/map.rs` to `map_runtime/state.rs`
-  - renamed `map_runtime/map/*` extension modules to `map_runtime/systems/*`
-  - added `crates/wow-network/src/world/README.md`
-  - split the former giant `crates/wow-network/src/world/tests.rs` into
-    topic-oriented files under `crates/wow-network/src/world/tests/`, with
-    shared helpers in `support.rs`
-  - split spell cast orchestration, shared spell definitions, effect-value
-    scaling, and skill-backed spell helpers out of
-    `crates/wow-network/src/world/spells.rs` into focused
-    `crates/wow-network/src/world/spells/{casting,definitions,values,skills}.rs`
-  - removed empty top-level CMaNGOS scaffold husks `world/maps/` and
-    `world/movement/`, and collapsed the half-real `world/motion/` folder into
-    live `world/motion.rs`; future CMaNGOS mappings now live in
-    `world/PARITY_LAYOUT.md` instead of empty source files
-  - split the former giant
-    `crates/wow-network/src/world/map_runtime/map_manager.rs` into
-    `crates/wow-network/src/world/map_runtime/map_manager/{mod,spells,players,grids,creatures,ticks}.rs`
-    while preserving the existing `MapRuntimeManager` facade and behavior
-  - split the remaining large creature manager facade into nested
-    `crates/wow-network/src/world/map_runtime/map_manager/creatures/{combat,gameobjects,loot,motion,snapshots,spells}.rs`
-  - split the remaining giant spell effect implementation into nested
-    `crates/wow-network/src/world/spells/effects/{areas,auras,coverage,damage,dispatch,healing,items,movement,utility}.rs`
-    while keeping `spells/effects.rs` as the effect facade
-  - moved shared world runtime dependencies out of `world/session.rs` into
-    `world/session_runtime.rs`; `world/session.rs` now stays focused on
-    per-session mutable state
-  - removed the legacy synthetic `Rust Guide` NPC fixture module, constants,
-    query/gossip/vendor branches, and fixture-only tests
-  - removed the dead session-owned DB-creature combat/spell shim functions from
-    `world/combat/aggro.rs`; live creature combat continues through
-    map-owned `advance_db_creature_combats_for_victim`
-  - `cargo fmt`
-  - `cargo check -p worldserver`
-  - `cargo test -p wow-network query --lib`
-  - `cargo test -p wow-network gossip --lib`
-  - `cargo test -p wow-network vendor --lib`
-  - `cargo test -p wow-network map_runtime --lib`
-  - `cargo test -p wow-network spell --lib`
-  - `cargo test -p wow-network motion --lib`
-  - `cargo test -p wow-network --lib -- --test-threads=1`
-  - `.\scripts\test-rust.cmd`
+- `cargo test -p wow-network player_death_update_sets_health_flags_and_release_timer --lib`
+- `cargo test -p wow-network night_elf_ghost_update_includes_wisp_form_as_negative_aura --lib`
+- `cargo test -p wow-network lethal_player_world_damage_clears_rage_immediately --lib`
+- `cargo test -p wow-network active_cast_suppresses_melee_without_extending_resume_timer_to_cast_end --lib`
+- `cargo test -p wow-network combat_flag_spell_completion_resets_ready_melee_swing_timer --lib`
+- `cargo test -p wow-network map_runtime_player_spell_allows_in_range_evading_target_for_spell_miss_resolution --lib`
+- `cargo test -p wow-network fireball_against_evading_creature_casts_then_reports_evade_miss --lib`
+- `cargo test -p wow-network --lib`
+- `cargo test -p wow-network db_creature_mmap_path_uses_cmangos_smooth_steps_when_available --lib`
+- `cargo test -p wow-network db_creature_mmap_path_corner_uses_local_detour_data_when_available --lib`
+- `cargo test -p wow-network db_creature_mmap_path_uses_kalimdor_teldrassil_data_when_available --lib`
+- `cargo test -p wow-network db_creature_chase_near_point_retries_adjacent_angles_when_primary_los_fails --lib`
+- `cargo test -p wow-network db_creature_chase_near_point_keeps_primary_when_no_los_candidate_exists --lib`
+- `cargo test -p wow-network db_creature_melee_reach_ignores_los_and_path_like_cmangos --lib`
+- `cargo test -p wow-network db_creature_chase_motion_advances_position_over_time_before_reach --lib`
+- `cargo test -p wow-network db_creature_melee_reach_is_position_gated --lib`
+- `cargo test -p wow-network map_runtime_chase_destination_fans_out_same_victim_attackers --lib`
+- `cargo test -p wow-network db_creature_navigation_guardrail_blocks_aggro_and_chase_not_reach --lib`
+- `cargo test -p wow-network native_mmap_path_status_preserves_cmangos_incomplete_flag --lib`
+- `cargo test -p wow-network incomplete_chase_endpoint_must_reach_target_like_cmangos --lib`
+- `cargo test -p wow-network db_creature_random_mmap_path_uses_local_detour_data_when_available --lib`
+- `cargo test -p wow-network map_runtime_db_creature_direct_melee_refreshes_leash_timer_while_chasing --lib`
+- `cargo test -p wow-network map_runtime_db_creature_periodic_aura_damage_does_not_refresh_leash_timer --lib`
+- `cargo test -p wow-network player_hit_calls_nearby_db_creature_assistance --lib`
+- `cargo test -p wow-network map_runtime_db_creature_combat_packets_call_assistance --lib`
+- `cargo test -p wow-network player_hit_announces_db_creature_retaliation_start --lib`
+- `cargo test -p wow-network map_runtime_db_creature_assistance_call_is_shared_once --lib`
+- `cargo test -p wow-network db_creature_assistance_calls_nearby_same_faction_hostiles_once --lib`
+- `cargo test -p wow-network blizzard_creates_channel_dynamic_object_and_ticks_area_damage --lib`
+- `cargo test -p wow-network arcane_missiles_starts_unit_channel_and_ticks_triggered_damage --lib`
+- `cargo test -p wow-network map_runtime_active_combat_creature_pulls_help_after_aggro_delay --lib`
+- `cargo test -p wow-network map_runtime_idle_patrol_walking_by_active_fight_joins_combat --lib`
+- `cargo test -p wow-network buyback_fills_all_twelve_slots_including_last --lib`
+- `cargo test -p wow-network buyback_reuses_last_slot_after_it_is_cleared --lib`
+- `cargo test -p wow-network buyback_full_list_replaces_oldest_slot_in_order --lib`
+- `cargo test -p wow-network buyback_slot_update_writes_guid_price_and_timestamp_fields --lib`
+- `cargo test -p wow-network buyback --lib`
+- `git diff --check`
+- `.\scripts\test-rust.cmd` attempted after the creature AI scheduler change.
+  The gate reached the DB-backed tests and failed on local MySQL auth:
+  `database error: 1698 (28000): Access denied for user 'root'@'localhost'`.
+  The failing tests were
+  `world::tests::map_runtime_direct_completion_after_manager_started_3196_immolate_does_not_hang`
+  and
+  `world::tests::map_runtime_manager_advances_3196_event_ai_immolate_with_delayed_completion`.
 
-## Current Confidence
-
-- High that the old standalone OOC due-queue architecture is no longer the
-  best explanation for the remaining `1000`-client movement lag.
-- High that movement flood currently causes too much per-packet session-side
-  work compared with CMaNGOS.
-- High that `update_player_position(...)` was still a major hot path because it
-  owned player-visibility diffing and creature-interest sync inline.
-- Medium-high that the new map-owned `player_visibility_refresh` phase is a
-  correct architecture move.
-- Medium that this slice alone materially improves the `1000`-client harness;
-  the first `500`-client control still shows multi-second packet
-  dispatch/service delay and large map tick spikes.
-- High that outbound movement/replication fanout is now the leading root-cause
-  class for the captured `500` same-grid spell lag: WPR shows the hottest
-  resolved async task in `world_session_writer` doing real socket sends.
-- High that terrain/area lookup is a second confirmed contributor in the same
-  capture: the second-largest resolved branch goes through
-  `WorldGeometry::area_entry`, native `wow_map_area_info`, and
-  `VMapManager2::loadMap`.
-- High that, after the VMap/cache and observability fixes, there is no single
-  remaining WPA smoking gun in the `2000` spread capture. The current pressure
-  source is distributed per-session map work.
-- High that disconnected-player expiration belonged in the map runtime loop,
-  not in each session combat tick; this was fixed locally and should remove a
-  redundant map-wide player scan under high connected-player counts.
-- Medium that conditional `sync_player_gameplay_state(...)` collection updates
-  will reduce allocator churn in repeated non-movement/session tick syncs; it
-  is low risk but still needs another live `2000` run to quantify.
-- High that return-home motion should not be polled from each session; this is
-  now map motion tick work.
-- Medium-high that sight aggro throttling/dirty gating should reduce repeated
-  nearby-cell scans for stationary or tiny-jitter players without delaying
-  meaningful movement-triggered aggro by more than the `250 ms` fallback.
-- High that repeated native vmap tile loading was a real root-cause
-  contributor and is now fixed by the cache guard. The post-fix control reduced
-  sentinel spell average from the prior comparable `948.112 ms` to
-  `80.677 ms`, and reduced native area-info averages from roughly `23 ms` to
-  micro-scale millisecond values.
-- High that per-packet player visibility refresh marking was a real
-  update-object churn source and is now fixed with the CMaNGOS-shaped
-  relocation threshold. The post-fix control reduced
-  `player_visibility_refresh/0x00A9` bytes from `130 MB` to `1.85 MB`.
-- High that the first attribution pass confirms the concrete split: outbound
-  writer volume is dominated by `SMSG_UPDATE_OBJECT`, while position-status
-  area discovery is dominated by repeated native WMO area-info misses.
-- High that the latest control captures the user's spell-cast lag shape without
-  manual casting and includes enough runtime metrics to rule out
-  spawn-blocking and Tokio global queue backlog for this specific run.
-- High that the scalability trigger is movement pressure, not connected player
-  count alone: the `500` idle control stayed at `2.427 ms` average spell
-  response while `500` same-grid movement sync rose to `608.477 ms`.
-- Medium-high that same-grid AOI contributes to the `500` average, but is not
-  the whole root cause because spread movement still has degraded averages and
-  multi-second tails.
-- OOC EventAI is enabled again after the return-home/sight-aggro ownership
-  pass; the next comparison run should measure its map phase instead of
-  excluding it.
-- High that slower movement intervals alone do not eliminate the lag at `500`
-  same-grid players; `250 ms` and `500 ms` movement still averaged
-  `676-738 ms` spell responses.
-- High that producer-side heartbeat coalescing reduces outbound volume, but it
-  is not sufficient to fix spell latency by itself. The latest control dropped
-  `movement_apply/0x00EE` traffic and still averaged nearly `1s` spell
-  response.
-- High that session-writer batching is not the right first fix: the control
-  worsened sentinel spell average and did not address producer-side byte
-  volume.
+Focused creature AI tests, formatting, and diff whitespace checks passed. The
+full Rust gate is blocked locally by DB credentials rather than a creature AI
+assertion failure.
 
 ## Known Blockers / Unproven Areas
 
-- The currently running live server, if still up from before this change, does
-  not include the latest return-home/sight-aggro/OOC EventAI changes until the
-  release stack is rebuilt and restarted.
-- P1 general combat lifecycle cleanup is compile- and harness-proven, but still
-  needs a real-client smoke with Arcane Missiles/channel damage and a DoT kill
-  to confirm the player exits combat immediately when the target dies, without
-  needing to open loot or wait for a later refresh.
-- P2 inventory/equipment cleanup is compile- and harness-proven, but still
-  needs a real-client smoke covering weapon-on-backpack-item swaps, armor/bag
-  changes while in combat, legal in-combat weapon/shield swaps cancelling active
-  casts and resetting main-hand swing timing, Night Elf `+10 Nature Resistance`
-  staying visible after equipping/unequipping gear, HP/mana potion resource
-  gains persisting after movement/session refresh, `.additem` grants for test
-  potion setup, potion cooldowns staying active across logout/login, picking up
-  a new potion after consuming the last one showing the existing cooldown icon,
-  and queueing Heroic Strike with a weapon then removing the weapon before the
-  next swing.
-- Questgiver complete/cancel UI cleanup is compile- and harness-proven after
-  the close-packet and completed-hello `CloseOnCancel` parity follow-up, but
-  still needs a real-client smoke covering accept close, complete/continue/
-  reward screen advancement, questgiver cancel, and quest-log abandon behavior.
-- Evading-target melee reach cleanup is compile- and harness-proven, but still
-  needs a real-client smoke: pull a creature into return-home/evade, stand well
-  outside melee reach, swing, and confirm the client gets the normal
-  not-in-range behavior instead of an evade combat result; then step into melee
-  reach and confirm evade feedback still appears while the creature is
-  returning.
-- Item cooldown and target portrait aura timer parity cleanup is compile- and
-  harness-proven, but still needs real-client smoke. For cooldowns: consume the
-  potion from one bag slot while another matching potion stack exists in a
-  different bag slot, and confirm all matching slots show the shared cooldown
-  timer; existing-stack smoke passed after the spell/category cooldown split.
-  Also consume a potion, acquire another matching potion during the active
-  cooldown via `.additem 118`/`.additem 929`, loot, and vendor purchase, and
-  confirm whether the new icon lights after the item-push flag parity fix. For
-  target timers: cast a timed visible debuff such as Rend or Immolate on an
-  enemy, keep/reselect the enemy target, and confirm whether the target
-  portrait icon shows the clock sweep. CMaNGOS source comparison says
-  creature-target auras do not normally get `SMSG_UPDATE_AURA_DURATION`; if
-  this still fails, packet-capture CMaNGOS plus Rust for the same scenario
-  rather than adding more blind duration packets.
-- The teleport/player-visibility fix is unit-test proven but still needs the
-  real-client two-player Northshire smoke that originally showed the remote
-  pivot/offset symptom.
-- The `.go`-specific teleport-path fix is compile/test proven but still needs
-  the exact user repro: `.go` away, `.go` back to Northshire, then remote
-  turn-in-place and short movement observation from a second client.
-- The right-click-turn movement-actor fix is compile/test proven but still
-  needs the exact live repro: hold right-click turn with a second client
-  observing and confirm the old nearby snap/facing jitter is gone.
-- The right-click-turn movement-timestamp fix is compile/test proven and the
-  local release stack has been restarted with it, but it still needs the exact
-  live repro from a second client observer.
-- The right-click-turn session-loop batching fix is compile/test proven and the
-  local release stack has been restarted with it, but it still needs the exact
-  live repro from a second client observer.
-- The right-click-turn `MSG_MOVE_SET_FACING` position-clamp fix is compile/test
-  proven and the local release stack has been restarted with it, but it still
-  needs the exact live repro from a second client observer.
-- Trainer gossip needs one more real-client login and mage trainer click after
-  the latest restart. Watch `world-client-18085.log` for Khelden's menu `4660`
-  with `text_id=538`, then `Dispatching DB gossip selection` followed by
-  `Sending trainer list`.
-- Bank integration needs a real-client banker smoke after the next release
-  restart: open bank, buy one bank bag slot if DBC prices are available, move
-  an item into a bank main slot, move it back, relog, and confirm bank contents
-  plus purchased slot count persist.
-- The new movement coalescing is compile- and test-proven, but not yet
-  benchmark-proven under the thin-client harness.
-- The first `500`-client control was not perfectly clean: two clients exhausted
-  all attempts.
-- The latest runtime-metrics control was not perfectly clean: five clients
-  exhausted all attempts, but the harness completed normally and emitted the
-  sentinel summary.
-- The post-vmap-cache-guard control was also not perfectly clean: twenty
-  clients exhausted all attempts. The active scrape still reached `500`
-  connected sessions / active players and emitted the sentinel summary, so it
-  is useful RCA evidence but not a final scalability acceptance run.
-- The post-player-visibility-threshold control also had twenty client
-  failures and one pending sentinel cast. It reached an active scrape and is
-  useful RCA evidence, but not a final clean scalability acceptance run.
-- The core matrix has some client failures in movement scenarios. Every row
-  reached steady state and emitted sentinel summaries, so the matrix is useful
-  for RCA shape, but exact pass/fail cleanliness is not perfect.
-- Local CPU profiling is blocked in a non-elevated Windows shell, but elevated
-  WPR works and has produced a useful profile. `flamegraph --pid` still needs
-  Windows DTrace; command-mode flamegraph works only elevated and only when it
-  launches the process itself.
-- `scripts/capture-rca-metrics.ps1` metadata fenced-code formatting was fixed
-  after the runtime control capture; the capture's raw/summary metrics are
-  intact, but that specific metadata file has malformed fences.
-- Long thin-client harness runs previously hit `world-load-test.exe`
-  `0xc0000005`. The default `MaxAttempts=3` script-run control now completed
-  without an access violation; continue watching for new dumps, but the known
-  crash shape is mitigated.
+- Creature AI spell scheduling is source- and unit-test-backed, but still needs
+  live smoke on Webwood Silkspinner and another early caster. Expected behavior:
+  aggro EventAI casts may still happen quickly when DB scripts say so, but
+  timer/range/facing/missing-aura EventAI should not fire before the CMaNGOS
+  500ms pulse or retry every 100ms world tick.
+- Defias Cutpurse Backstab spam should be live-smoked after rebuild/restart.
+  Expected behavior: entry `94` should no longer autocast Backstab from legacy
+  `creature_template_spells` unless/until a proper modern CMaNGOS spell-list or
+  script owner is wired by DB data.
+- The standard `.\scripts\test-rust.cmd` gate is currently blocked in this
+  environment by local MySQL `root@localhost` access for two DB-backed map
+  runtime tests. Fix credentials or run against the expected local DB setup
+  before treating the full gate as green.
+- No remaining blocker is known for the quest reward chain-advance bug; the
+  focused test gate passed and the user confirmed the real client advances
+  from `A Threat Within` into `Kobold Camp Cleanup`.
+- Night Elf Wisp Form is now represented in negative aura slots using
+  CMaNGOS/DBC spell id `20584`, but live-client visual transform still needs a
+  quick smoke test because Rust does not yet build player transform display
+  updates from active auras.
+- The food/drink stand/sit fix is covered by behavior-level code review and the
+  full `wow-network` unit suite, but not yet by a focused `handle_use_item`
+  integration test because that path currently depends on DB-backed item
+  templates.
+- The earlier target portrait aura timer issue remains unresolved and should be
+  packet-capture compared against CMaNGOS before further Rust patches. CMaNGOS
+  only sends `SMSG_UPDATE_AURA_DURATION` directly to player aura targets, so do
+  not add caster-directed creature debuff duration packets without a capture.
+- The near-barrier/tree pathing fixes are source- and test-backed, but still
+  need live smoke at known tree/barrier repros. The latest close-to-object stall
+  report led to the CMaNGOS reach-ownership correction and native incomplete
+  path-status preservation above. If mobs still stop at the same coordinate,
+  capture the creature/player coordinates and compare whether CMaNGOS generates
+  a complete alternate path there or also marks it unreachable. Do not blindly
+  tune chase slot offsets.
+- Enemy cry-for-help assistance is unit-tested for initial pull, player-hit
+  retaliation, map-runtime packet combat startup, active-combat drag-through,
+  and idle/patrol walk-by assistance. It still needs a live client smoke with a
+  clustered same-faction hostile pull, a drag-through-another-mob pull, and a
+  patrol walking by an existing fight.
+- Vendor buyback cursor/timestamp behavior is unit-tested and full Rust-gated,
+  but should still get a quick live smoke: sell 12 distinct stacks/items, confirm
+  the final buyback slot fills, buy back the final slot, sell another item, and
+  confirm the final slot can be occupied again.
 
 ## Recommended Next Task
 
-0. Restart the local release stack and smoke P1 plus P2 together: confirm
-   Arcane Missiles/channel and DoT kills exit combat immediately, then test the
-   inventory cases for invalid weapon/backpack swaps, in-combat armor/bag
-   rejection, legal in-combat weapon/shield changes cancelling active casts and
-   resetting main-hand swing timing, Night Elf `+10 Nature Resistance` staying
-   visible after gear changes, `.additem` granting HP/mana potions, potion
-   gains persisting after movement, potion cooldowns surviving logout/login,
-   using the last potion then acquiring another of the same template while the
-   cooldown is active via `.additem 118`/`.additem 929`, loot, and vendor
-   purchase, and Heroic Strike queued with a weapon then resolved after weapon
-   removal. Also smoke
-   questgiver completion UI: complete should
-   advance to request-items/continue, request-reward should advance to the
-   reward screen, cancel should close cleanly, and quest-log abandon should
-   still clear the quest. Add the evade reach repro: a returning-home/evading
-   creature should show normal not-in-range behavior from outside melee reach
-   and only show evade feedback once the player is actually in melee reach.
-   Also smoke target portrait aura timers by casting a timed debuff such as
-   Rend/Immolate on an enemy, reselecting that enemy, and confirming whether
-   the debuff icon shows the clock sweep while targeted.
-1. If any other stat-page value flickers after gear changes, inspect whether
-   that direct self update is still bypassing the aura-effective stat model
-   rather than treating it as a race-specific passive issue.
-2. After the combat/inventory smokes, continue launcher work from the Updates page
-   by adding a safe out-of-process apply/relaunch helper that stops the stack,
-   replaces packaged files from the downloaded app zip, preserves launcher
-   data, and starts the refreshed launcher.
-3. Then return to the parked two-client Northshire smoke covering `.go`
-   away/back plus stationary and moving right-click turn observation from a
-   second client.
-4. If the pivot/offset and right-click snap symptoms are gone, update
-   `docs/playable_gate_board.md` / multiplayer notes with the real-client proof
-   and then return to the trainer-gossip verification.
-5. After the user-directed multiplayer proof, resume the prior spell roadmap:
-   damage-interrupt coverage, cross-map transfer active-spell cleanup, then the
-   broader target-outcome / Polymorph / triggered-spell parity slices.
+Rebuild/restart and live-smoke creature AI with Webwood Silkspinner and Defias
+Cutpurse. For Cutpurse, confirm Backstab is no longer spammed from legacy
+`creature_template_spells`. Then live-smoke vendor buyback using the 12-slot
+repro above, enemy cry-for-help with clustered/drag-through/patrol cases, and
+the tree/barrier mob pathing repro. If those pass, the next useful
+playtest-parity slice is the aura refresh/timer issue, but it should start from
+a CMaNGOS source/packet compare rather than a UI-only patch.
 
 ## Key Files
 
-- `crates/wow-network/src/world/server/session_loop.rs`
-- `crates/wow-network/src/world/server/movement.rs`
-- `crates/wow-network/src/world/map_runtime/movement_actor.rs`
-- `crates/wow-network/src/world/map_runtime/map_manager/mod.rs`
-- `crates/wow-network/src/world/map_runtime/map_manager/creatures.rs`
+- `crates/wow-network/src/world/handlers/quest.rs`
+- `crates/wow-network/src/world/handlers/vendor.rs`
+- `crates/wow-db/src/world_data.rs`
+- `crates/wow-network/native/mmap_path.cpp`
+- `crates/wow-network/src/world/handlers/mmap_path.rs`
+- `crates/wow-network/src/world/handlers/death.rs`
+- `crates/wow-network/src/world/combat/aggro.rs`
+- `crates/wow-network/src/world/combat/lifecycle.rs`
+- `crates/wow-network/src/world/combat/melee.rs`
+- `crates/wow-network/src/world/combat/motion.rs`
+- `crates/wow-network/src/world/combat/runtime.rs`
+- `crates/wow-network/src/world/entities/creature.rs`
 - `crates/wow-network/src/world/map_runtime/map_manager/creatures/combat.rs`
-- `crates/wow-network/src/world/map_runtime/map_manager/creatures/motion.rs`
-- `crates/wow-network/src/world/map_runtime/map_manager/creatures/spells.rs`
-- `crates/wow-network/src/world/map_runtime/map_manager/players.rs`
-- `crates/wow-network/src/world/map_runtime/map_manager/spells.rs`
-- `crates/wow-network/src/world/map_runtime/map_manager/grids.rs`
-- `crates/wow-network/src/world/map_runtime/map_manager/ticks.rs`
-- `crates/wow-network/src/world/map_runtime/state.rs`
-- `crates/wow-network/src/world/map_runtime/systems/players.rs`
 - `crates/wow-network/src/world/map_runtime/systems/creature_combat.rs`
 - `crates/wow-network/src/world/map_runtime/systems/creature_damage.rs`
-- `crates/wow-network/src/world/map_runtime/systems/dynamic_objects.rs`
-- `crates/wow-network/src/world/handlers/inventory.rs`
-- `crates/wow-network/src/world/combat/lifecycle.rs`
-- `crates/wow-network/src/world/spells/definitions.rs`
-- `crates/wow-network/src/world/spells.rs`
-- `crates/wow-network/src/world/spells/effects.rs`
-- `crates/wow-network/src/world/spells/effects/damage.rs`
-- `crates/wow-network/src/world/spells/effects/auras.rs`
-- `crates/wow-network/src/world/spells/effects/items.rs`
-- `crates/wow-network/src/world/spells/spell_mgr.rs`
-- `crates/wow-network/src/world/session_runtime.rs`
 - `crates/wow-network/src/world/map_runtime/systems/creature_motion.rs`
-- `crates/wow-network/src/world/combat/evade.rs`
-- `crates/wow-network/src/world/tests/mod.rs`
+- `crates/wow-network/src/world/map_runtime/systems/dynamic_objects.rs`
+- `crates/wow-network/src/world/map_runtime/systems/player_channels.rs`
+- `crates/wow-network/src/world/spells.rs`
+- `crates/wow-network/src/world/spells/casting.rs`
+- `crates/wow-network/src/world/map_runtime/systems/damage.rs`
+- `crates/wow-network/src/world/map_runtime/systems/players.rs`
+- `crates/wow-network/src/world/tests/quests_reputation.rs`
 - `crates/wow-network/src/world/tests/character_inventory_social.rs`
-- `crates/wow-network/src/world/tests/spells.rs`
+- `crates/wow-network/src/world/tests/death_aggro.rs`
+- `crates/wow-network/src/world/tests/map_runtime_grids_playerbots.rs`
+- `crates/wow-network/src/world/tests/navigation_motion.rs`
 - `crates/wow-network/src/world/tests/player_runtime_auras.rs`
-- `crates/wow-network/src/world/tests/map_runtime_creatures.rs`
-- `docs/performance_rca_runbook.md`
-- `scripts/capture-rca-metrics.ps1`
+- `crates/wow-network/src/world/tests/spells.rs`
+- `bins/starter-zone-flow-test/src/main.rs`
+- `docs/playable_gate_board.md`
+- `docs/playable_execution_roadmap.md`

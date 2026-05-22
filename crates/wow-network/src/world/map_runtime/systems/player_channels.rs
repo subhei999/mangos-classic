@@ -642,58 +642,17 @@ impl MapRuntime {
         caster_character_guid: u32,
         target: ObjectGuid,
         caster_session_id: SessionId,
-        caster_position: WorldPosition,
-        target_creature: &DbCreatureRuntime,
+        _caster_position: WorldPosition,
+        _target_creature: &DbCreatureRuntime,
         now: Instant,
     ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
-        if self.active_creature_combats.contains_key(&target.raw()) {
-            return Ok(Vec::new());
-        }
-        if self.begin_db_creature_combat(target, caster, now).is_none() {
-            return Ok(Vec::new());
-        }
-        let creature_flags = self
-            .creatures
-            .get(&target.raw())
-            .map(|creature| db_creature_unit_flags(creature, true))
-            .unwrap_or_else(|| db_creature_unit_flags(target_creature, true));
-        let attack_start = OutboundWorldPacket {
-            opcode: WorldOpcode::SmsgAttackStart as u16,
-            body: build_attack_start_body(target, caster),
-        };
-        let player_flags = OutboundWorldPacket {
-            opcode: WorldOpcode::SmsgUpdateObject as u16,
-            body: build_unit_flags_update_body(caster, player_unit_flags(true))?,
-        };
-        let creature_flags = OutboundWorldPacket {
-            opcode: WorldOpcode::SmsgUpdateObject as u16,
-            body: build_unit_flags_update_body(target, creature_flags)?,
-        };
-
-        let mut packets = vec![
-            (caster_session_id, attack_start.clone()),
-            (caster_session_id, player_flags.clone()),
-            (caster_session_id, creature_flags.clone()),
-        ];
-        packets.extend(self.broadcast_packet_near_position(
-            target_creature.current_position,
-            CREATURE_SPAWN_RADIUS_YARDS,
-            Some(caster_character_guid),
-            attack_start,
-        ));
-        packets.extend(self.broadcast_packet_near_position(
-            caster_position,
-            PLAYER_VISIBILITY_RADIUS_YARDS,
-            Some(caster_character_guid),
-            player_flags,
-        ));
-        packets.extend(self.broadcast_packet_near_position(
-            target_creature.current_position,
-            CREATURE_SPAWN_RADIUS_YARDS,
-            Some(caster_character_guid),
-            creature_flags,
-        ));
-        Ok(packets)
+        self.begin_db_creature_combat_packets_with_assistance(
+            target,
+            caster,
+            caster_character_guid,
+            caster_session_id,
+            now,
+        )
     }
 
     fn player_channel_clear_event(

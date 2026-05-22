@@ -152,6 +152,32 @@ fn gm_flag_prevents_player_world_damage() {
 }
 
 #[test]
+fn lethal_player_world_damage_clears_rage_immediately() {
+    let mut player =
+        test_player_runtime(7, SessionId(7), WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
+    player.class = 1;
+    player.power2 = 100;
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, player.guid);
+
+    let applied = apply_player_runtime_world_damage(
+        &mut player,
+        player_guid,
+        Some(ObjectGuid::new(HighGuid::Unit, 0, 42)),
+        999,
+        WorldDamageKind::Melee,
+        Instant::now(),
+    )
+    .unwrap()
+    .expect("lethal damage should apply");
+
+    assert!(applied.died);
+    assert_eq!(player.power2, 0);
+    let (values, trailing) = decode_values_update_block(&applied.health_packet.body[5..], player_guid);
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_POWER2], Some(0));
+}
+
+#[test]
 fn player_damage_uses_generic_school_absorb_and_mana_shield_auras() {
     let mut player =
         test_player_runtime(7, SessionId(7), WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
@@ -6539,6 +6565,70 @@ async fn repeated_auto_attack_input_preserves_swing_timer_and_uses_normal_due_ti
     );
 
     session.character.active_character = None;
+}
+
+#[tokio::test]
+async fn active_cast_suppresses_melee_without_extending_resume_timer_to_cast_end() {
+    let maps = Arc::new(MapRuntimeManager::default());
+    let map_id = 0;
+    let character_guid = 1;
+    let position = WorldPosition::new(map_id, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(character_guid, SessionId(1), position);
+    player.combat_stats.main_attack_time_ms = 1_800;
+    maps.add_player(player).await.unwrap();
+    let target = ObjectGuid::new(HighGuid::Unit, 6, 77);
+    let now = Instant::now();
+    maps.set_player_auto_attack(
+        map_id,
+        character_guid,
+        Some(target),
+        Some(now + Duration::from_millis(1_800)),
+    )
+    .await;
+    maps.set_active_player_spell_cast(
+        map_id,
+        character_guid,
+        ActivePlayerSpellCast {
+            spell_id: 133,
+            source: ActivePlayerSpellCastSource::Player,
+            profile: player_spell_cast_profile(&fireball_spell_template()).unwrap(),
+            targets: PendingSpellCastTargets {
+                target_mask: 0,
+                unit_target: None,
+                gameobject_target: None,
+                source_location: None,
+                destination: None,
+            },
+            due_at: now + Duration::from_secs(10),
+            cast_time_millis: 10_000,
+            interrupt_flags: SPELL_INTERRUPT_FLAG_COMBAT,
+            damage_pushback_count: 0,
+        },
+    )
+    .await;
+
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, now).await,
+        None,
+        "white swings must stay suppressed while a combat-interruptible cast is active"
+    );
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, now + Duration::from_secs(9))
+            .await,
+        None,
+        "active cast ownership suppresses an overdue swing without pushing the stored timer to cast end"
+    );
+    maps.cancel_active_player_spell_cast(map_id, character_guid)
+        .await;
+    assert_eq!(
+        maps.player_auto_attack_due(map_id, character_guid, now + Duration::from_secs(9))
+            .await,
+        Some(PlayerAutoAttackDue {
+            target,
+            kind: PlayerAutoAttackKind::Melee,
+        }),
+        "interrupting a long cast should resume auto-attack from the real swing timer, not wait for the full cast duration"
+    );
 }
 
 #[tokio::test]

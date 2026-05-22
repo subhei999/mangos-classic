@@ -1569,6 +1569,58 @@ fn buyback_slot_update_writes_guid_price_and_timestamp_fields() {
 }
 
 #[test]
+fn buyback_fills_all_twelve_slots_including_last() {
+    let mut session = WorldSessionState::default();
+
+    for index in 0..12 {
+        let slot = next_buyback_slot(&session);
+        push_buyback_entry(&mut session, slot, 1_000 + index, 5);
+    }
+
+    for slot in BUYBACK_SLOT_START..BUYBACK_SLOT_END {
+        assert!(
+            session
+                .inventory
+                .buyback_items
+                .iter()
+                .any(|entry| entry.slot == slot),
+            "buyback slot {slot} should be occupied"
+        );
+    }
+}
+
+#[test]
+fn buyback_reuses_last_slot_after_it_is_cleared() {
+    let mut session = WorldSessionState::default();
+
+    for index in 0..12 {
+        let slot = next_buyback_slot(&session);
+        push_buyback_entry(&mut session, slot, 1_000 + index, 5);
+    }
+
+    remove_buyback_entry_from_session(&mut session, BUYBACK_SLOT_END - 1);
+
+    assert_eq!(next_buyback_slot(&session), BUYBACK_SLOT_END - 1);
+}
+
+#[test]
+fn buyback_full_list_replaces_oldest_slot_in_order() {
+    let mut session = WorldSessionState::default();
+
+    for index in 0..12 {
+        let slot = next_buyback_slot(&session);
+        push_buyback_entry(&mut session, slot, 1_000 + index, 5);
+    }
+
+    let replacement_slot = next_buyback_slot(&session);
+    assert_eq!(replacement_slot, BUYBACK_SLOT_START);
+    let replacement = push_buyback_entry(&mut session, replacement_slot, 2_000, 5);
+
+    assert_eq!(replacement.timestamp, 30 * 3600 + 12);
+    assert_eq!(next_buyback_slot(&session), BUYBACK_SLOT_START + 1);
+}
+
+#[test]
 fn autoequip_bag_prefers_first_empty_bag_slot() {
     let mut bag = test_item_template(
         RUST_VENDOR_BAG_ITEM,

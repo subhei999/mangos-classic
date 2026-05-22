@@ -1632,7 +1632,7 @@ fn map_runtime_db_creature_damage_refreshes_leash_timer() {
 }
 
 #[test]
-fn map_runtime_db_creature_chase_melee_does_not_refresh_leash_timer() {
+fn map_runtime_db_creature_direct_melee_refreshes_leash_timer_while_chasing() {
     let mut map = MapRuntime::new(0, 0);
     let attacker_spawn = test_creature_spawn(6);
     let attacker = creature_spawn_guid(&attacker_spawn);
@@ -1667,7 +1667,65 @@ fn map_runtime_db_creature_chase_melee_does_not_refresh_leash_timer() {
     .expect("melee outcome should apply")
     .expect("damage event");
 
-    assert!(map.db_creature_should_evade(attacker, now + Duration::from_secs(16),));
+    assert!(!map.db_creature_should_evade(attacker, now + Duration::from_secs(16),));
+    assert!(map.db_creature_should_evade(attacker, hit_while_chasing_at + Duration::from_secs(16),));
+}
+
+#[test]
+fn map_runtime_db_creature_periodic_aura_damage_does_not_refresh_leash_timer() {
+    let mut map = MapRuntime::new(0, 0);
+    let mut attacker_spawn = test_creature_spawn(6);
+    attacker_spawn.template.pursuit = 4_000;
+    attacker_spawn.template.min_level_health = 100;
+    attacker_spawn.template.max_level_health = 100;
+    let attacker = creature_spawn_guid(&attacker_spawn);
+    let victim = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let now = Instant::now();
+    let victim_position =
+        WorldPosition::new(0, DB_CREATURE_LEASH_RADIUS_YARDS + 5.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, victim_position);
+    let mut creature = DbCreatureRuntime::new(attacker_spawn);
+    creature.active_auras.push(ActiveAura {
+        spell_id: 772,
+        caster: victim,
+        level: 1,
+        interrupt_flags: 0,
+        positive: false,
+        visible: true,
+        duration_millis: Some(9_000),
+        expires_at: Some(now + Duration::from_secs(9)),
+        periodic_damage: Some(PeriodicDamageAura {
+            aura_name: SPELL_AURA_PERIODIC_DAMAGE,
+            school: 1,
+            damage_class: 2,
+            attributes_ex2: 0,
+            attributes_ex3: 0,
+            caster_snapshot: SpellCombatUnitSnapshot {
+                level: 1,
+                class: 0,
+                intellect: 0,
+                resistances: [0; MAX_SPELL_SCHOOL],
+            },
+            amount: 1,
+            tick_millis: 3_000,
+            next_tick_at: now + Duration::from_secs(3),
+        }),
+        periodic_regen: None,
+        stat_modifiers: Vec::new(),
+        proc_triggers: Vec::new(),
+    });
+    map.creatures.insert(attacker.raw(), creature);
+    map.begin_db_creature_combat(attacker, victim, now)
+        .expect("combat should start");
+
+    map.advance_db_creature_auras(now + Duration::from_secs(3), 1_000)
+        .expect("periodic tick should advance");
+
+    assert_eq!(map.creatures.get(&attacker.raw()).unwrap().health, 99);
+    assert!(
+        map.db_creature_should_evade(attacker, now + Duration::from_secs(5)),
+        "CMaNGOS direct-damage leash refresh does not include periodic aura ticks"
+    );
 }
 
 #[test]
@@ -4476,7 +4534,7 @@ fn map_runtime_event_ai_timer_in_combat_schedules_cast() {
             creature_guid,
             player,
             &scripts,
-            now + Duration::from_millis(3_999),
+            now + Duration::from_millis(DB_CREATURE_EVENT_AI_UPDATE_INTERVAL.as_millis() as u64 - 1),
         )
         .is_none());
 
@@ -4497,6 +4555,53 @@ fn map_runtime_event_ai_timer_in_combat_schedules_cast() {
         .unwrap()
         .event_ai_cooldowns_until
         .contains_key(&4002));
+}
+
+#[test]
+fn map_runtime_event_ai_zero_initial_timer_waits_for_cmangos_update_pulse() {
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, 5.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 1, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let mut spawn = test_creature_spawn(40);
+    spawn.guid = 1915;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    spawn.position_z = 0.0;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+    let now = Instant::now();
+    map.begin_db_creature_combat(creature_guid, player, now)
+        .unwrap();
+    let scripts = [test_creature_ai_cast_script(
+        4015,
+        40,
+        EVENT_AI_EVENT_TIMER_IN_COMBAT,
+        [0, 0, 38_000, 42_000],
+        6016,
+        EVENT_AI_TARGET_HOSTILE,
+    )];
+
+    assert!(
+        map.ready_db_creature_event_ai_spell_cast(
+            creature_guid,
+            player,
+            &scripts,
+            now + DB_CREATURE_EVENT_AI_UPDATE_INTERVAL - Duration::from_millis(1),
+        )
+        .is_none(),
+        "CMaNGOS EventAI does not process timer events before the first 500ms update pulse"
+    );
+    let ready = map
+        .ready_db_creature_event_ai_spell_cast(
+            creature_guid,
+            player,
+            &scripts,
+            now + DB_CREATURE_EVENT_AI_UPDATE_INTERVAL,
+        )
+        .expect("zero-initial timer should become ready on the first EventAI update pulse");
+    assert_eq!(ready.spell_id, 6016);
+    assert_eq!(ready.target, player);
 }
 
 #[test]
@@ -4572,9 +4677,10 @@ fn map_runtime_event_ai_range_and_missing_aura_select_casts() {
         12544,
         EVENT_AI_TARGET_SELF,
     );
+    let event_ai_tick = DB_CREATURE_EVENT_AI_UPDATE_INTERVAL;
 
     let ready = map
-        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[fireball], now)
+        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[fireball], now + event_ai_tick)
         .expect("range EventAI should cast when target is inside configured distance");
     assert_eq!(ready.spell_id, 20793);
     assert_eq!(ready.target, player);
@@ -4584,7 +4690,7 @@ fn map_runtime_event_ai_range_and_missing_aura_select_casts() {
             creature_guid,
             player,
             std::slice::from_ref(&frost_armor),
-            now,
+            now + event_ai_tick + event_ai_tick,
         )
         .expect("missing-aura EventAI should cast when the aura is absent");
     assert_eq!(ready.spell_id, 12544);
@@ -4605,7 +4711,12 @@ fn map_runtime_event_ai_range_and_missing_aura_select_casts() {
         .active_auras
         .push(aura);
     assert!(map
-        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[frost_armor], now)
+        .ready_db_creature_event_ai_spell_cast(
+            creature_guid,
+            player,
+            &[frost_armor],
+            now + event_ai_tick + event_ai_tick + event_ai_tick,
+        )
         .is_none());
 }
 
@@ -4624,6 +4735,7 @@ fn map_runtime_event_ai_facing_target_matches_cmangos_position_and_repeat_rules(
     let now = Instant::now();
     map.begin_db_creature_combat(creature_guid, player, now)
         .unwrap();
+    let event_ai_tick = DB_CREATURE_EVENT_AI_UPDATE_INTERVAL;
 
     let backstab_without_repeat_timer = test_creature_ai_cast_script(
         9401,
@@ -4638,7 +4750,7 @@ fn map_runtime_event_ai_facing_target_matches_cmangos_position_and_repeat_rules(
             creature_guid,
             player,
             std::slice::from_ref(&backstab_without_repeat_timer),
-            now,
+            now + event_ai_tick,
         )
         .expect("creature should be behind the player and inside the CMaNGOS 5yd check");
     assert_eq!(ready.spell_id, 53);
@@ -4665,7 +4777,7 @@ fn map_runtime_event_ai_facing_target_matches_cmangos_position_and_repeat_rules(
             creature_guid,
             player,
             std::slice::from_ref(&front_only),
-            now,
+            now + event_ai_tick + event_ai_tick,
         )
         .is_none());
 
@@ -4674,7 +4786,12 @@ fn map_runtime_event_ai_facing_target_matches_cmangos_position_and_repeat_rules(
         .unwrap()
         .current_position = WorldPosition::new(0, 7.0, 0.0, 0.0, 0.0);
     assert!(map
-        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[front_only], now)
+        .ready_db_creature_event_ai_spell_cast(
+            creature_guid,
+            player,
+            &[front_only],
+            now + event_ai_tick + event_ai_tick + event_ai_tick,
+        )
         .is_some());
 
     map.creatures
@@ -4690,7 +4807,12 @@ fn map_runtime_event_ai_facing_target_matches_cmangos_position_and_repeat_rules(
         EVENT_AI_TARGET_HOSTILE,
     );
     assert!(map
-        .ready_db_creature_event_ai_spell_cast(creature_guid, player, &[far_backstab], now)
+        .ready_db_creature_event_ai_spell_cast(
+            creature_guid,
+            player,
+            &[far_backstab],
+            now + event_ai_tick + event_ai_tick + event_ai_tick + event_ai_tick,
+        )
         .is_none());
 }
 
@@ -5147,6 +5269,151 @@ fn map_runtime_db_creature_assistance_call_is_shared_once() {
             .unwrap()
             .already_called_assistance
     );
+}
+
+#[test]
+fn map_runtime_db_creature_combat_packets_call_assistance() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 7, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+
+    let mut caller_spawn = test_creature_spawn(6);
+    caller_spawn.guid = 192;
+    caller_spawn.position_x = 0.0;
+    caller_spawn.position_y = 0.0;
+    caller_spawn.template.npc_flags = 0;
+    caller_spawn.template.faction = 17;
+    caller_spawn.template.call_for_help = 6;
+    let caller = creature_spawn_guid(&caller_spawn);
+    let mut helper_spawn = test_creature_spawn(6);
+    helper_spawn.guid = 193;
+    helper_spawn.position_x = 5.0;
+    helper_spawn.position_y = 0.0;
+    helper_spawn.template.npc_flags = 0;
+    helper_spawn.template.faction = 17;
+    let helper = creature_spawn_guid(&helper_spawn);
+    map.share_db_creature_snapshots(vec![
+        DbCreatureRuntime::new(caller_spawn),
+        DbCreatureRuntime::new(helper_spawn),
+    ]);
+
+    let packets = map
+        .begin_db_creature_combat_packets_with_assistance(
+            caller,
+            player,
+            7,
+            SessionId(7),
+            now,
+        )
+        .unwrap();
+
+    assert!(map.active_creature_combats.contains_key(&caller.raw()));
+    assert!(map.active_creature_combats.contains_key(&helper.raw()));
+    assert_eq!(
+        packets
+            .iter()
+            .filter(|(_, packet)| packet.opcode == WorldOpcode::SmsgAttackStart as u16)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn map_runtime_active_combat_creature_pulls_help_after_aggro_delay() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 7, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+
+    let mut runner_spawn = test_creature_spawn(6);
+    runner_spawn.guid = 194;
+    runner_spawn.position_x = 0.0;
+    runner_spawn.position_y = 0.0;
+    runner_spawn.template.npc_flags = 0;
+    runner_spawn.template.faction = 17;
+    let runner = creature_spawn_guid(&runner_spawn);
+    let mut helper_spawn = test_creature_spawn(6);
+    helper_spawn.guid = 195;
+    helper_spawn.position_x = 4.0;
+    helper_spawn.position_y = 0.0;
+    helper_spawn.template.npc_flags = 0;
+    helper_spawn.template.faction = 17;
+    let helper = creature_spawn_guid(&helper_spawn);
+    map.share_db_creature_snapshots(vec![
+        DbCreatureRuntime::new(runner_spawn),
+        DbCreatureRuntime::new(helper_spawn),
+    ]);
+    map.begin_db_creature_combat(runner, player, now).unwrap();
+
+    let navigation = DbCreatureNavigationGuardrail::default();
+    let early_packets = map
+        .db_creature_check_for_help_packets_on_relocation(
+            runner,
+            &navigation,
+            now + Duration::from_millis(DB_CREATURE_CHECK_FOR_HELP_AGGRO_DELAY_MILLIS - 1),
+        )
+        .unwrap();
+    assert!(early_packets.is_empty());
+    assert!(!map.active_creature_combats.contains_key(&helper.raw()));
+
+    let packets = map
+        .db_creature_check_for_help_packets_on_relocation(
+            runner,
+            &navigation,
+            now + Duration::from_millis(DB_CREATURE_CHECK_FOR_HELP_AGGRO_DELAY_MILLIS),
+        )
+        .unwrap();
+
+    assert!(map.active_creature_combats.contains_key(&helper.raw()));
+    assert!(packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgAttackStart as u16));
+}
+
+#[test]
+fn map_runtime_idle_patrol_walking_by_active_fight_joins_combat() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 7, player_position);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+
+    let mut fighting_spawn = test_creature_spawn(6);
+    fighting_spawn.guid = 196;
+    fighting_spawn.position_x = 0.0;
+    fighting_spawn.position_y = 0.0;
+    fighting_spawn.template.npc_flags = 0;
+    fighting_spawn.template.faction = 17;
+    let fighting = creature_spawn_guid(&fighting_spawn);
+    let mut patrol_spawn = test_creature_spawn(6);
+    patrol_spawn.guid = 197;
+    patrol_spawn.position_x = 4.0;
+    patrol_spawn.position_y = 0.0;
+    patrol_spawn.template.npc_flags = 0;
+    patrol_spawn.template.faction = 17;
+    let patrol = creature_spawn_guid(&patrol_spawn);
+    map.share_db_creature_snapshots(vec![
+        DbCreatureRuntime::new(fighting_spawn),
+        DbCreatureRuntime::new(patrol_spawn),
+    ]);
+    map.begin_db_creature_combat(fighting, player, now)
+        .unwrap();
+
+    let packets = map
+        .db_creature_check_for_help_packets_on_relocation(
+            patrol,
+            &DbCreatureNavigationGuardrail::default(),
+            now + Duration::from_millis(DB_CREATURE_CHECK_FOR_HELP_AGGRO_DELAY_MILLIS),
+        )
+        .unwrap();
+
+    assert!(map.active_creature_combats.contains_key(&patrol.raw()));
+    assert!(packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgAttackStart as u16));
 }
 
 #[test]

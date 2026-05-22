@@ -395,7 +395,7 @@ impl MapRuntime {
                 check: PlayerSpellTargetCheck::MissingTarget,
             };
         };
-        if !creature.is_alive() || creature.is_evading_home() {
+        if !creature.is_alive() {
             return PlayerSpellTargetValidation {
                 check: PlayerSpellTargetCheck::TargetNotAlive,
             };
@@ -695,6 +695,7 @@ impl MapRuntime {
     pub(in crate::world) fn clear_db_creature_ooc_event_ai_tracking(&mut self, guid: u64) {
         if let Some(creature) = self.creatures.get_mut(&guid) {
             creature.event_ai_update_accum = Duration::ZERO;
+            creature.next_event_ai_update_at = None;
         }
     }
 
@@ -719,6 +720,9 @@ impl MapRuntime {
         if !creature.is_alive() || creature.is_evading_home() || creature.is_fleeing() || in_combat
         {
             creature.event_ai_update_accum = Duration::ZERO;
+            if !in_combat {
+                creature.next_event_ai_update_at = None;
+            }
             return;
         }
         creature.event_ai_update_accum = DB_CREATURE_EVENT_AI_UPDATE_INTERVAL;
@@ -834,6 +838,7 @@ impl MapRuntime {
             None => {}
         }
 
+        let mut timer_event_update_ready: Option<bool> = None;
         for script in scripts {
             let Some(action) = db_creature_event_ai_actions(script)
                 .into_iter()
@@ -841,6 +846,14 @@ impl MapRuntime {
             else {
                 continue;
             };
+            if db_creature_event_ai_uses_update_gate(script.event_type) {
+                let update_ready = *timer_event_update_ready.get_or_insert_with(|| {
+                    self.db_creature_event_ai_update_gate_ready(attacker, now)
+                });
+                if !update_ready {
+                    continue;
+                }
+            }
             let Some(target) =
                 db_creature_event_ai_action_target(self, attacker, victim, action.param2)
             else {
@@ -858,6 +871,23 @@ impl MapRuntime {
             });
         }
         None
+    }
+
+    fn db_creature_event_ai_update_gate_ready(
+        &mut self,
+        attacker: ObjectGuid,
+        now: Instant,
+    ) -> bool {
+        let Some(creature) = self.creatures.get_mut(&attacker.raw()) else {
+            return false;
+        };
+        match creature.next_event_ai_update_at {
+            Some(due_at) if now < due_at => false,
+            _ => {
+                creature.next_event_ai_update_at = Some(now + DB_CREATURE_EVENT_AI_UPDATE_INTERVAL);
+                true
+            }
+        }
     }
 
     pub(in crate::world) fn apply_db_creature_event_ai_spell_cooldown(
@@ -984,11 +1014,15 @@ impl MapRuntime {
                 let Some(_victim) = victim else {
                     return false;
                 };
+                let Some(combat) = self.active_creature_combats.get(&attacker.raw()).copied()
+                else {
+                    return false;
+                };
                 let Some(creature) = self.creatures.get_mut(&attacker.raw()) else {
                     return false;
                 };
                 db_creature_event_ai_common_ready(creature, script)
-                    && db_creature_event_ai_timer_ready(creature, script, now)
+                    && db_creature_event_ai_timer_ready(creature, script, now, combat.started_at)
             }
             EVENT_AI_EVENT_TIMER_OOC => {
                 if victim.is_some() {
@@ -998,7 +1032,7 @@ impl MapRuntime {
                     return false;
                 };
                 db_creature_event_ai_common_ready(creature, script)
-                    && db_creature_event_ai_timer_ready(creature, script, now)
+                    && db_creature_event_ai_timer_ready(creature, script, now, now)
             }
             EVENT_AI_EVENT_RANGE => {
                 let Some(victim) = victim else {
@@ -1035,7 +1069,34 @@ impl MapRuntime {
         if !event_ready {
             return false;
         }
-        script.event_chance >= 100 || rand::thread_rng().gen_range(0..100) < script.event_chance
+        if script.event_chance >= 100 || rand::thread_rng().gen_range(0..100) < script.event_chance
+        {
+            return true;
+        }
+        self.reset_db_creature_event_ai_after_failed_chance(attacker, script, now);
+        false
+    }
+
+    fn reset_db_creature_event_ai_after_failed_chance(
+        &mut self,
+        attacker: ObjectGuid,
+        script: &wow_db::CreatureAiScriptQuery,
+        now: Instant,
+    ) {
+        if !db_creature_event_ai_uses_update_gate(script.event_type) {
+            return;
+        }
+        let Some(creature) = self.creatures.get_mut(&attacker.raw()) else {
+            return;
+        };
+        let repeat_millis = random_millis_between_i32(script.event_param3, script.event_param4);
+        if repeat_millis > 0 {
+            creature
+                .event_ai_cooldowns_until
+                .insert(script.id, now + Duration::from_millis(repeat_millis as u64));
+        } else {
+            creature.event_ai_cooldowns_until.remove(&script.id);
+        }
     }
 
     fn db_creature_event_ai_observer_packets<const N: usize>(
@@ -1712,10 +1773,14 @@ impl MapRuntime {
         let combat = CreatureCombatState {
             attacker,
             victim,
+            started_at: now,
             next_swing_at: now,
         };
         if let Some(creature) = self.creatures.get_mut(&attacker.raw()) {
             creature.aggro_enabled_at = None;
+            creature.check_for_help_enabled_at =
+                Some(now + Duration::from_millis(DB_CREATURE_CHECK_FOR_HELP_AGGRO_DELAY_MILLIS));
+            creature.next_event_ai_update_at = Some(now + DB_CREATURE_EVENT_AI_UPDATE_INTERVAL);
         }
         self.active_creature_combats.insert(attacker.raw(), combat);
         self.track_db_creature_combat_victim(victim, attacker);
@@ -1737,6 +1802,334 @@ impl MapRuntime {
         self.sync_db_creature_idle_motion_tracking(attacker.raw());
         self.sync_db_creature_ooc_event_ai_tracking(attacker.raw(), now);
         Some(combat)
+    }
+
+    pub(in crate::world) fn begin_db_creature_combat_packets_with_assistance(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        caster_character_guid: u32,
+        caster_session_id: SessionId,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        self.begin_db_creature_combat_packets_with_assistance_inner(
+            attacker,
+            victim,
+            caster_character_guid,
+            caster_session_id,
+            now,
+            true,
+        )
+    }
+
+    fn begin_db_creature_combat_packets_with_assistance_inner(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        caster_character_guid: u32,
+        caster_session_id: SessionId,
+        now: Instant,
+        include_player_flags: bool,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        if self.active_creature_combats.contains_key(&attacker.raw())
+            || self
+                .begin_db_creature_combat(attacker, victim, now)
+                .is_none()
+        {
+            return Ok(Vec::new());
+        }
+        let Some(caster_player) = self.players.get(&caster_character_guid).cloned() else {
+            return Ok(Vec::new());
+        };
+        let mut packets = self.db_creature_combat_start_packets_for_player(
+            attacker,
+            victim,
+            caster_character_guid,
+            caster_session_id,
+            caster_player.position,
+            include_player_flags,
+        )?;
+
+        let character = ActiveCharacter {
+            guid: caster_player.guid,
+            name: String::new(),
+            race: caster_player.race,
+            class: caster_player.class,
+            level: caster_player.level,
+            xp: caster_player.xp,
+            position: caster_player.position,
+            movement_flags: caster_player.movement_flags,
+            client_time: caster_player.client_time,
+            fall_time: caster_player.fall_time,
+            jump: caster_player.jump,
+        };
+        let Some((_, assistants)) = self.select_db_creature_assist_targets(
+            &FactionTemplateStore::fallback_bridge(),
+            attacker,
+            &character,
+        ) else {
+            return Ok(packets);
+        };
+        for assistant in assistants {
+            if self
+                .begin_db_creature_combat(assistant, victim, now)
+                .is_some()
+            {
+                packets.extend(self.db_creature_combat_start_packets_for_player(
+                    assistant,
+                    victim,
+                    caster_character_guid,
+                    caster_session_id,
+                    caster_player.position,
+                    false,
+                )?);
+            }
+        }
+        Ok(packets)
+    }
+
+    pub(in crate::world) fn db_creature_check_for_help_packets_on_relocation(
+        &mut self,
+        moved: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        if self.active_creature_combats.contains_key(&moved.raw()) {
+            return self
+                .db_creature_check_for_help_from_active_combat_creature(moved, navigation, now);
+        }
+        self.db_creature_check_for_help_from_idle_creature(moved, navigation, now)
+    }
+
+    fn db_creature_check_for_help_from_active_combat_creature(
+        &mut self,
+        who_guid: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(combat) = self.active_creature_combats.get(&who_guid.raw()).copied() else {
+            return Ok(Vec::new());
+        };
+        let Some(who) = self.creatures.get(&who_guid.raw()).cloned() else {
+            return Ok(Vec::new());
+        };
+        if !db_creature_can_check_for_help(&who, now) || db_creature_help_owner_suspended(&who) {
+            return Ok(Vec::new());
+        }
+        let Some(player) = self.players.get(&combat.victim.counter()).cloned() else {
+            return Ok(Vec::new());
+        };
+        let Some(session_id) = player.client_session_id() else {
+            return Ok(Vec::new());
+        };
+        let character = active_character_from_player_runtime(&player);
+        let mut helper_candidates = self
+            .creatures
+            .values()
+            .filter(|creature| creature.guid() != who_guid)
+            .filter(|creature| {
+                !self
+                    .active_creature_combats
+                    .contains_key(&creature.guid().raw())
+            })
+            .filter_map(|creature| {
+                let distance = distance_2d(
+                    who.current_position.x,
+                    who.current_position.y,
+                    creature.current_position.x,
+                    creature.current_position.y,
+                );
+                (distance <= DB_CREATURE_ASSISTANCE_RADIUS_YARDS)
+                    .then_some((distance, creature.guid()))
+            })
+            .collect::<Vec<_>>();
+        helper_candidates.sort_by(|(left_distance, left_guid), (right_distance, right_guid)| {
+            left_distance
+                .total_cmp(right_distance)
+                .then_with(|| left_guid.raw().cmp(&right_guid.raw()))
+        });
+
+        let mut packets = Vec::new();
+        for (_, helper_guid) in helper_candidates {
+            if self.db_creature_can_help_combat_creature(
+                helper_guid,
+                &who,
+                &character,
+                navigation,
+                now,
+            ) {
+                packets.extend(self.begin_db_creature_combat_packets_with_assistance_inner(
+                    helper_guid,
+                    combat.victim,
+                    player.guid,
+                    session_id,
+                    now,
+                    false,
+                )?);
+            }
+        }
+        Ok(packets)
+    }
+
+    fn db_creature_check_for_help_from_idle_creature(
+        &mut self,
+        helper_guid: ObjectGuid,
+        navigation: &DbCreatureNavigationGuardrail,
+        now: Instant,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(helper) = self.creatures.get(&helper_guid.raw()).cloned() else {
+            return Ok(Vec::new());
+        };
+        if !db_creature_can_check_for_help(&helper, now) {
+            return Ok(Vec::new());
+        }
+        let mut active_neighbors = self
+            .active_creature_combats
+            .values()
+            .filter_map(|combat| {
+                let who = self.creatures.get(&combat.attacker.raw())?;
+                let distance = distance_2d(
+                    helper.current_position.x,
+                    helper.current_position.y,
+                    who.current_position.x,
+                    who.current_position.y,
+                );
+                (distance <= DB_CREATURE_ASSISTANCE_RADIUS_YARDS).then_some((
+                    distance,
+                    combat.attacker,
+                    combat.victim,
+                ))
+            })
+            .collect::<Vec<_>>();
+        active_neighbors.sort_by(
+            |(left_distance, left_guid, _), (right_distance, right_guid, _)| {
+                left_distance
+                    .total_cmp(right_distance)
+                    .then_with(|| left_guid.raw().cmp(&right_guid.raw()))
+            },
+        );
+
+        for (_, who_guid, victim) in active_neighbors {
+            let Some(who) = self.creatures.get(&who_guid.raw()).cloned() else {
+                continue;
+            };
+            if !db_creature_can_check_for_help(&who, now) || db_creature_help_owner_suspended(&who)
+            {
+                continue;
+            }
+            let Some(player) = self.players.get(&victim.counter()).cloned() else {
+                continue;
+            };
+            let Some(session_id) = player.client_session_id() else {
+                continue;
+            };
+            let character = active_character_from_player_runtime(&player);
+            if self.db_creature_can_help_combat_creature(
+                helper_guid,
+                &who,
+                &character,
+                navigation,
+                now,
+            ) {
+                return self.begin_db_creature_combat_packets_with_assistance_inner(
+                    helper_guid,
+                    victim,
+                    player.guid,
+                    session_id,
+                    now,
+                    false,
+                );
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    fn db_creature_can_help_combat_creature(
+        &self,
+        helper_guid: ObjectGuid,
+        who: &DbCreatureRuntime,
+        character: &ActiveCharacter,
+        navigation: &DbCreatureNavigationGuardrail,
+        now: Instant,
+    ) -> bool {
+        let Some(helper) = self.creatures.get(&helper_guid.raw()) else {
+            return false;
+        };
+        if helper.spawn.template.faction != who.spawn.template.faction {
+            return false;
+        }
+        if !db_creature_can_check_for_help(helper, now) {
+            return false;
+        }
+        if !helper.can_aggro_player(&FactionTemplateStore::fallback_bridge(), character, now) {
+            return false;
+        }
+        if !db_creature_has_line_of_sight(navigation, helper.current_position, who.current_position)
+        {
+            return false;
+        }
+        true
+    }
+
+    fn db_creature_combat_start_packets_for_player(
+        &self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        caster_character_guid: u32,
+        caster_session_id: SessionId,
+        caster_position: WorldPosition,
+        include_player_flags: bool,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(target_creature) = self.creatures.get(&attacker.raw()) else {
+            return Ok(Vec::new());
+        };
+        let creature_flags = db_creature_unit_flags(target_creature, true);
+        let attack_start = OutboundWorldPacket {
+            opcode: WorldOpcode::SmsgAttackStart as u16,
+            body: build_attack_start_body(attacker, victim),
+        };
+        let creature_flags = OutboundWorldPacket {
+            opcode: WorldOpcode::SmsgUpdateObject as u16,
+            body: build_unit_flags_update_body(attacker, creature_flags)?,
+        };
+        let player_flags = if include_player_flags {
+            Some(OutboundWorldPacket {
+                opcode: WorldOpcode::SmsgUpdateObject as u16,
+                body: build_unit_flags_update_body(victim, player_unit_flags(true))?,
+            })
+        } else {
+            None
+        };
+        let mut packets = vec![(caster_session_id, attack_start.clone())];
+        if include_player_flags {
+            if let Some(player_flags) = player_flags.clone() {
+                packets.push((caster_session_id, player_flags));
+            }
+        }
+        packets.push((caster_session_id, creature_flags.clone()));
+        packets.extend(self.broadcast_packet_near_position(
+            target_creature.current_position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            Some(caster_character_guid),
+            attack_start,
+        ));
+        if include_player_flags {
+            if let Some(player_flags) = player_flags {
+                packets.extend(self.broadcast_packet_near_position(
+                    caster_position,
+                    PLAYER_VISIBILITY_RADIUS_YARDS,
+                    Some(caster_character_guid),
+                    player_flags,
+                ));
+            }
+        }
+        packets.extend(self.broadcast_packet_near_position(
+            target_creature.current_position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            Some(caster_character_guid),
+            creature_flags,
+        ));
+        Ok(packets)
     }
 
     pub(in crate::world) fn clear_db_creature_combat(&mut self, attacker: ObjectGuid) {
@@ -1872,7 +2265,7 @@ impl MapRuntime {
         &self,
         attacker: ObjectGuid,
         victim: ObjectGuid,
-        navigation: &DbCreatureNavigationGuardrail,
+        _navigation: &DbCreatureNavigationGuardrail,
     ) -> bool {
         let Some(creature) = self.creatures.get(&attacker.raw()) else {
             return false;
@@ -1880,11 +2273,6 @@ impl MapRuntime {
         let Some(player) = self.players.get(&victim.counter()) else {
             return false;
         };
-        if !db_creature_navigation_check(navigation, creature.current_position, player.position)
-            .is_clear()
-        {
-            return false;
-        }
         let reach = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
         let dx = creature.current_position.x - player.position.x;
         let dy = creature.current_position.y - player.position.y;
@@ -1947,10 +2335,6 @@ impl MapRuntime {
             (*combat, combat.next_swing_at)
         };
         self.schedule_db_creature_combat_due_at(attacker, due_at);
-        let creature_motion = self
-            .creatures
-            .get(&attacker.raw())
-            .map(|creature| creature.motion.clone());
         if !self.players.get(&victim.counter()).is_some_and(|player| {
             player.health > 0 && player.death_state == PlayerDeathState::Alive
         }) {
@@ -2013,11 +2397,7 @@ impl MapRuntime {
         let direct_packets = applied.direct_packets;
         let aura_packet = applied.aura_packet;
         let health_update_body = applied.health_packet.body.clone();
-        if damage > 0
-            && creature_motion
-                .as_ref()
-                .is_some_and(|motion| !matches!(motion, CreatureMotionState::Chase(_)))
-        {
+        if damage > 0 {
             self.refresh_db_creature_combat_leash(attacker, now);
         }
         let attacker_state = OutboundWorldPacket {
@@ -2757,6 +3137,7 @@ pub(in crate::world) fn db_creature_event_ai_timer_ready(
     creature: &mut DbCreatureRuntime,
     script: &wow_db::CreatureAiScriptQuery,
     now: Instant,
+    initial_anchor: Instant,
 ) -> bool {
     match creature.event_ai_cooldowns_until.get(&script.id).copied() {
         Some(due_at) => now >= due_at,
@@ -2768,12 +3149,23 @@ pub(in crate::world) fn db_creature_event_ai_timer_ready(
             } else {
                 creature.event_ai_cooldowns_until.insert(
                     script.id,
-                    now + Duration::from_millis(initial_millis as u64),
+                    initial_anchor + Duration::from_millis(initial_millis as u64),
                 );
-                false
+                now >= initial_anchor + Duration::from_millis(initial_millis as u64)
             }
         }
     }
+}
+
+pub(in crate::world) fn db_creature_event_ai_uses_update_gate(event_type: u8) -> bool {
+    matches!(
+        event_type,
+        EVENT_AI_EVENT_TIMER_IN_COMBAT
+            | EVENT_AI_EVENT_TIMER_OOC
+            | EVENT_AI_EVENT_RANGE
+            | EVENT_AI_EVENT_FACING_TARGET
+            | EVENT_AI_EVENT_MISSING_AURA
+    )
 }
 
 pub(in crate::world) fn db_creature_event_ai_repeating_ready(
@@ -3709,4 +4101,32 @@ pub(in crate::world) fn packets_direct_to_character(
             CREATURE_SPAWN_RADIUS_YARDS,
         )
     })
+}
+
+fn db_creature_can_check_for_help(creature: &DbCreatureRuntime, now: Instant) -> bool {
+    creature
+        .check_for_help_enabled_at
+        .is_none_or(|enabled_at| now >= enabled_at)
+}
+
+fn db_creature_help_owner_suspended(creature: &DbCreatureRuntime) -> bool {
+    matches!(creature.motion, CreatureMotionState::Confused(_))
+        || active_aura_has_confuse(&creature.active_auras)
+        || active_aura_has_stun(&creature.active_auras)
+}
+
+fn active_character_from_player_runtime(player: &PlayerRuntime) -> ActiveCharacter {
+    ActiveCharacter {
+        guid: player.guid,
+        name: String::new(),
+        race: player.race,
+        class: player.class,
+        level: player.level,
+        xp: player.xp,
+        position: player.position,
+        movement_flags: player.movement_flags,
+        client_time: player.client_time,
+        fall_time: player.fall_time,
+        jump: player.jump.clone(),
+    }
 }

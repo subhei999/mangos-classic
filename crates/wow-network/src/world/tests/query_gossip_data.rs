@@ -1609,6 +1609,7 @@ fn movement_visibility_retains_out_of_query_active_combat_creature() {
         CreatureCombatState {
             attacker: out_of_query_guid,
             victim: ObjectGuid::new(HighGuid::Player, 0, 7),
+            started_at: Instant::now(),
             next_swing_at: Instant::now(),
         },
     );

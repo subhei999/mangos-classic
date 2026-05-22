@@ -1236,7 +1236,7 @@ pub async fn get_creature_spell_list(
     list_id: u32,
 ) -> Result<Vec<CreatureSpellListQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("creature_spell_list_load");
-    let rows = sqlx::query_as::<_, CreatureSpellListQuery>(
+    sqlx::query_as::<_, CreatureSpellListQuery>(
         "SELECT CAST(entry.Id AS UNSIGNED) AS id, \
                 CAST(entry.ChanceSupportAction AS UNSIGNED) AS chance_support_action, \
                 CAST(entry.ChanceRangedAttack AS UNSIGNED) AS chance_ranged_attack, \
@@ -1270,12 +1270,7 @@ pub async fn get_creature_spell_list(
     .bind(list_id)
     .fetch_all(pool)
     .await
-    .map_err(DbError::from)?;
-    if !rows.is_empty() {
-        return Ok(rows);
-    }
-
-    get_legacy_creature_template_spell_list(pool, list_id).await
+    .map_err(DbError::from)
 }
 
 pub async fn get_creature_ai_scripts_for_entry(
@@ -1297,126 +1292,6 @@ pub async fn get_creature_ai_scripts_for_entry(
     .fetch_all(pool)
     .await
     .map_err(DbError::from)
-}
-
-async fn get_legacy_creature_template_spell_list(
-    pool: &MySqlPool,
-    list_id: u32,
-) -> Result<Vec<CreatureSpellListQuery>, DbError> {
-    let entry = list_id / 100;
-    let set_id = list_id % 100;
-    if entry == 0 {
-        return Ok(Vec::new());
-    }
-
-    let mut rows = Vec::new();
-    let template_rows = sqlx::query_as::<_, LegacyCreatureTemplateSpellRow>(
-        "SELECT entry, setId AS set_id, spell1, spell2, spell3, spell4, spell5, \
-                spell6, spell7, spell8, spell9, spell10 \
-         FROM creature_template_spells \
-         WHERE entry = ? AND setId = ?",
-    )
-    .bind(entry)
-    .bind(set_id)
-    .fetch_all(pool)
-    .await
-    .map_err(DbError::from)?;
-    for row in template_rows {
-        let spells = [
-            row.spell1,
-            row.spell2,
-            row.spell3,
-            row.spell4,
-            row.spell5,
-            row.spell6,
-            row.spell7,
-            row.spell8,
-            row.spell9,
-            row.spell10,
-        ];
-        for (position, spell_id) in spells.into_iter().enumerate() {
-            if spell_id == 0 {
-                continue;
-            }
-            let cooldown = get_creature_cooldown_range(pool, entry, spell_id).await?;
-            let template = get_spell_template_query(pool, spell_id).await?;
-            rows.push(CreatureSpellListQuery {
-                id: row.entry.saturating_mul(100).saturating_add(row.set_id),
-                chance_support_action: 0,
-                chance_ranged_attack: 0,
-                position: position as u32,
-                spell_id,
-                flags: 0,
-                combat_condition: -1,
-                target_id: 1,
-                script_id: 0,
-                availability: 100,
-                probability: 0,
-                initial_min: 0,
-                initial_max: 0,
-                repeat_min: cooldown.map(|cooldown| cooldown.0).unwrap_or(0),
-                repeat_max: cooldown.map(|cooldown| cooldown.1).unwrap_or(0),
-                recovery_time: template
-                    .as_ref()
-                    .map(|template| template.recovery_time)
-                    .unwrap_or(0),
-                category: template
-                    .as_ref()
-                    .map(|template| template.category)
-                    .unwrap_or(0),
-                category_recovery_time: template
-                    .as_ref()
-                    .map(|template| template.category_recovery_time)
-                    .unwrap_or(0),
-                target_type: 0,
-                target_param1: 0,
-                target_param2: 0,
-                target_param3: 0,
-                target_unit_condition: -1,
-            });
-        }
-    }
-    Ok(rows)
-}
-
-#[derive(Debug, FromRow)]
-struct LegacyCreatureTemplateSpellRow {
-    entry: u32,
-    set_id: u32,
-    spell1: u32,
-    spell2: u32,
-    spell3: u32,
-    spell4: u32,
-    spell5: u32,
-    spell6: u32,
-    spell7: u32,
-    spell8: u32,
-    spell9: u32,
-    spell10: u32,
-}
-
-async fn get_creature_cooldown_range(
-    pool: &MySqlPool,
-    entry: u32,
-    spell_id: u32,
-) -> Result<Option<(u32, u32)>, DbError> {
-    let row = sqlx::query_as::<_, CreatureCooldownRow>(
-        "SELECT CooldownMin AS cooldown_min, CooldownMax AS cooldown_max \
-         FROM creature_cooldowns \
-         WHERE Entry = ? AND SpellId = ?",
-    )
-    .bind(entry)
-    .bind(spell_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(DbError::from)?;
-    Ok(row.map(|row| (row.cooldown_min, row.cooldown_max)))
-}
-
-#[derive(Debug, FromRow)]
-struct CreatureCooldownRow {
-    cooldown_min: u32,
-    cooldown_max: u32,
 }
 
 async fn world_table_exists(pool: &MySqlPool, table_name: &str) -> Result<bool, DbError> {

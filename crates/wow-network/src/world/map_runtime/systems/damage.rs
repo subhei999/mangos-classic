@@ -291,8 +291,10 @@ impl MapRuntime {
         clear_player_fall_state_for_death_presentation(player);
         player.death_state = PlayerDeathState::Corpse;
         player.stand_state = PLAYER_STAND_STATE_DEAD;
+        player.power2 = 0;
         let position = player.position;
         let flags = player.flags;
+        let race = player.race;
         let class = player.class;
         let direct_session_id = player.client_session_id();
         self.pending_player_death_presentations
@@ -300,15 +302,16 @@ impl MapRuntime {
 
         let death_packet = OutboundWorldPacket {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
-            body: build_player_death_update_body(
-                player_guid,
-                0,
-                flags,
-                PLAYER_FIELD_BYTE_RELEASE_TIMER,
-                player_unit_flags(false),
+            body: build_player_death_update_body(PlayerDeathUpdate {
+                player: player_guid,
+                health: 0,
+                player_flags: flags,
+                field_bytes: PLAYER_FIELD_BYTE_RELEASE_TIMER,
+                unit_flags: player_unit_flags(false),
+                race,
                 class,
-                PLAYER_STAND_STATE_DEAD,
-            )?,
+                stand_state: PLAYER_STAND_STATE_DEAD,
+            })?,
         };
         let mut packets = Vec::new();
         if let Some(session_id) = direct_session_id {
@@ -419,6 +422,7 @@ pub(in crate::world) fn apply_player_runtime_world_damage_with_school_mask(
         player.combo_target = None;
         player.combo_points = 0;
         player.looting = false;
+        player.power2 = 0;
         if !death_presentation_deferred {
             player.stand_state = PLAYER_STAND_STATE_DEAD;
             direct_packets.push(OutboundWorldPacket {
@@ -442,15 +446,16 @@ pub(in crate::world) fn apply_player_runtime_world_damage_with_school_mask(
     let health_packet = if died && !death_presentation_deferred {
         OutboundWorldPacket {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
-            body: build_player_death_update_body(
-                target,
-                0,
-                player.flags,
-                PLAYER_FIELD_BYTE_RELEASE_TIMER,
-                player_unit_flags(false),
-                player.class,
-                PLAYER_STAND_STATE_DEAD,
-            )?,
+            body: build_player_death_update_body(PlayerDeathUpdate {
+                player: target,
+                health: 0,
+                player_flags: player.flags,
+                field_bytes: PLAYER_FIELD_BYTE_RELEASE_TIMER,
+                unit_flags: player_unit_flags(false),
+                race: player.race,
+                class: player.class,
+                stand_state: PLAYER_STAND_STATE_DEAD,
+            })?,
         }
     } else {
         OutboundWorldPacket {

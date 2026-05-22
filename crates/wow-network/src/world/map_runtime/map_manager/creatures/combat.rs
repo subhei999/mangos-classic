@@ -190,6 +190,9 @@ impl MapRuntimeManager {
                 .get(&attacker.raw())
                 .is_some_and(|creature| creature.is_fleeing());
             let _ = map_guard.advance_db_creature_motion(attacker, now);
+            let help_packets = map_guard
+                .db_creature_check_for_help_packets_on_relocation(attacker, navigation, now)?;
+            Self::split_packets_for_session(current_session_id, help_packets, tick);
             let Some(active) = map_guard.active_db_creature_combat_snapshot(attacker, victim)
             else {
                 return Ok(false);

@@ -1677,18 +1677,16 @@ pub(in crate::world) async fn begin_db_creature_retaliation_if_needed(
     player: ObjectGuid,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if begin_shared_db_creature_combat(shared_world, session, creature, Instant::now()).await {
-        send_db_creature_combat_start(
-            stream,
-            shared_world,
-            map_id,
-            session,
-            creature,
-            player,
-            header_crypto,
-        )
-        .await?;
-    }
+    begin_db_creature_combat_with_assistance(
+        stream,
+        shared_world,
+        map_id,
+        session,
+        creature,
+        player,
+        header_crypto,
+    )
+    .await?;
     Ok(())
 }
 

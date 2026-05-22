@@ -30,6 +30,11 @@ constexpr float WOW_GRID_CENTER_ID = 32.0f;
 constexpr float WOW_GRID_SIZE = 533.3333f;
 constexpr float PI = 3.14159265358979323846f;
 constexpr unsigned short NAV_GROUND = 1;
+constexpr float NEAR_POLY_SEARCH_BOUND = 5.0f;
+constexpr float FAR_POLY_SEARCH_BOUND = 10.0f;
+constexpr int PATHFIND_NORMAL = 0x0001;
+constexpr int PATHFIND_INCOMPLETE = 0x0004;
+constexpr int PATHFIND_NOPATH = 0x0008;
 using SteadyClock = std::chrono::steady_clock;
 
 struct MmapTileHeader
@@ -453,6 +458,33 @@ dtStatus findSmoothPath(
     return DT_SUCCESS;
 }
 
+bool findNearestPolyWithCmangosBounds(
+    dtNavMeshQuery* query,
+    const float* point,
+    const dtQueryFilter& filter,
+    dtPolyRef* polyRef,
+    float* closestPoint)
+{
+    const float nearExtents[VERTEX_SIZE] = {
+        NEAR_POLY_SEARCH_BOUND,
+        NEAR_POLY_SEARCH_BOUND,
+        NEAR_POLY_SEARCH_BOUND,
+    };
+    if (dtStatusSucceed(query->findNearestPoly(point, nearExtents, &filter, polyRef, closestPoint)) && *polyRef)
+        return true;
+
+    // CMaNGOS PathFinder retries a wider box before treating the point as
+    // off-mesh. This keeps chase destinations near walls from collapsing to
+    // "no path" when a reachable polygon is just outside the near search.
+    const float farExtents[VERTEX_SIZE] = {
+        FAR_POLY_SEARCH_BOUND,
+        FAR_POLY_SEARCH_BOUND,
+        FAR_POLY_SEARCH_BOUND,
+    };
+    return dtStatusSucceed(query->findNearestPoly(point, farExtents, &filter, polyRef, closestPoint)) &&
+           *polyRef;
+}
+
 std::uint64_t elapsedNanos(SteadyClock::time_point start)
 {
     return static_cast<std::uint64_t>(
@@ -495,12 +527,15 @@ int wow_mmap_find_path(
     unsigned short excludeFlags,
     WowMmapPathPoint* outPoints,
     int maxPoints,
+    int* outPathStatus,
     WowMmapCallTimings* outTimings) noexcept
 {
     try
     {
         if (outTimings)
             std::memset(outTimings, 0, sizeof(*outTimings));
+        if (outPathStatus)
+            *outPathStatus = PATHFIND_NOPATH;
         if (!dataDir || !outPoints || maxPoints < 2 || maxPoints > MAX_SMOOTH_POINTS)
             return -1;
         if (startTileX > 63 || startTileY > 63 || targetTileX > 63 || targetTileY > 63)
@@ -540,23 +575,26 @@ int wow_mmap_find_path(
 
         const float startPoint[3] = { startY, startZ, startX };
         const float targetPoint[3] = { targetY, targetZ, targetX };
-        const float extents[3] = { 5.0f, 5.0f, 5.0f };
         float nearestStart[3] = { 0.0f, 0.0f, 0.0f };
         float nearestTarget[3] = { 0.0f, 0.0f, 0.0f };
         dtPolyRef startRef = 0;
         dtPolyRef targetRef = 0;
 
         const auto nearestPolyStart = SteadyClock::now();
-        if (dtStatusFailed(query->findNearestPoly(startPoint, extents, &filter, &startRef, nearestStart)) || !startRef)
+        if (!findNearestPolyWithCmangosBounds(query.get(), startPoint, filter, &startRef, nearestStart))
         {
             return 0;
         }
-        if (dtStatusFailed(query->findNearestPoly(targetPoint, extents, &filter, &targetRef, nearestTarget)) || !targetRef)
+        if (!findNearestPolyWithCmangosBounds(query.get(), targetPoint, filter, &targetRef, nearestTarget))
         {
             return 0;
         }
         if (outTimings)
             outTimings->find_nearest_poly_nanos = elapsedNanos(nearestPolyStart);
+
+        int pathStatus = PATHFIND_NORMAL;
+        if (dtVdist(startPoint, nearestStart) > 7.0f || dtVdist(targetPoint, nearestTarget) > 7.0f)
+            pathStatus = PATHFIND_INCOMPLETE;
 
         dtPolyRef polys[MAX_PATH_POLYS];
         int polyCount = 0;
@@ -565,6 +603,8 @@ int wow_mmap_find_path(
         {
             return 0;
         }
+        if (polys[polyCount - 1] != targetRef)
+            pathStatus = PATHFIND_INCOMPLETE;
         if (outTimings)
             outTimings->find_path_nanos = elapsedNanos(findPathStart);
 
@@ -587,6 +627,8 @@ int wow_mmap_find_path(
             outPoints[i].z = smooth[offset + 1];
         }
 
+        if (outPathStatus)
+            *outPathStatus = pathStatus;
         return smoothCount;
     }
     catch (...)
@@ -613,12 +655,15 @@ int wow_mmap_find_random_path(
     unsigned short excludeFlags,
     WowMmapPathPoint* outPoints,
     int maxPoints,
+    int* outPathStatus,
     WowMmapCallTimings* outTimings) noexcept
 {
     try
     {
         if (outTimings)
             std::memset(outTimings, 0, sizeof(*outTimings));
+        if (outPathStatus)
+            *outPathStatus = PATHFIND_NOPATH;
         if (!dataDir || !outPoints || maxPoints < 2 || maxPoints > MAX_SMOOTH_POINTS)
             return -1;
         if (startTileX > 63 || startTileY > 63)
@@ -669,16 +714,15 @@ int wow_mmap_find_random_path(
 
         const float startPoint[3] = { startY, startZ, startX };
         float targetPoint[3] = { targetY, targetZ, targetX };
-        const float extents[3] = { 5.0f, 5.0f, 5.0f };
         float nearestStart[3] = { 0.0f, 0.0f, 0.0f };
         float nearestTarget[3] = { 0.0f, 0.0f, 0.0f };
         dtPolyRef startRef = 0;
         dtPolyRef targetRef = 0;
 
         const auto nearestPolyStart = SteadyClock::now();
-        if (dtStatusFailed(query->findNearestPoly(startPoint, extents, &filter, &startRef, nearestStart)) || !startRef)
+        if (!findNearestPolyWithCmangosBounds(query.get(), startPoint, filter, &startRef, nearestStart))
             return 0;
-        if (dtStatusFailed(query->findNearestPoly(targetPoint, extents, &filter, &targetRef, nearestTarget)) || !targetRef)
+        if (!findNearestPolyWithCmangosBounds(query.get(), targetPoint, filter, &targetRef, nearestTarget))
             return 0;
         if (dtStatusFailed(query->getPolyHeight(targetRef, nearestTarget, &nearestTarget[1])))
             return 0;
@@ -686,11 +730,17 @@ int wow_mmap_find_random_path(
         if (outTimings)
             outTimings->find_nearest_poly_nanos = elapsedNanos(nearestPolyStart);
 
+        int pathStatus = PATHFIND_NORMAL;
+        if (dtVdist(startPoint, nearestStart) > 7.0f || dtVdist(targetPoint, nearestTarget) > 7.0f)
+            pathStatus = PATHFIND_INCOMPLETE;
+
         dtPolyRef polys[MAX_PATH_POLYS];
         int polyCount = 0;
         const auto findPathStart = SteadyClock::now();
         if (dtStatusFailed(query->findPath(startRef, targetRef, nearestStart, targetPoint, &filter, polys, &polyCount, MAX_PATH_POLYS)) || polyCount <= 0)
             return 0;
+        if (polys[polyCount - 1] != targetRef)
+            pathStatus = PATHFIND_INCOMPLETE;
         if (outTimings)
             outTimings->find_path_nanos = elapsedNanos(findPathStart);
 
@@ -711,6 +761,8 @@ int wow_mmap_find_random_path(
             outPoints[i].z = smooth[offset + 1];
         }
 
+        if (outPathStatus)
+            *outPathStatus = pathStatus;
         return smoothCount;
     }
     catch (...)

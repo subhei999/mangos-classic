@@ -519,8 +519,16 @@ pub(in crate::world) async fn apply_db_creature_spell_damage(
                 header_crypto,
             )
             .await?;
-            begin_shared_db_creature_combat(deps.shared_world, session, target, Instant::now())
-                .await;
+            begin_db_creature_combat_with_assistance(
+                stream,
+                deps.shared_world,
+                map_id,
+                session,
+                target,
+                caster,
+                header_crypto,
+            )
+            .await?;
             try_process_db_creature_event_ai_hp_actions(
                 stream,
                 deps.shared_world,

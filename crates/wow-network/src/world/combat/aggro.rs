@@ -28,10 +28,7 @@ pub(in crate::world) async fn try_start_db_creature_aggro(
         {
             continue;
         }
-        if !begin_shared_db_creature_combat(shared_world, session, attacker, Instant::now()).await {
-            continue;
-        }
-        send_db_creature_combat_start(
+        begin_db_creature_combat_with_assistance(
             stream,
             shared_world,
             map_id,
@@ -41,35 +38,61 @@ pub(in crate::world) async fn try_start_db_creature_aggro(
             header_crypto,
         )
         .await?;
-
-        let assistants = shared_world
-            .maps
-            .select_db_creature_assist_targets(map_id, attacker, &character)
-            .await;
-        let assistant_targets = if let Some((caller, assistants)) = assistants {
-            mirror_session_db_creature(session, attacker.raw(), caller);
-            assistants
-        } else {
-            Vec::new()
-        };
-        for assistant in assistant_targets {
-            if begin_shared_db_creature_combat(shared_world, session, assistant, Instant::now())
-                .await
-            {
-                send_db_creature_combat_start(
-                    stream,
-                    shared_world,
-                    map_id,
-                    session,
-                    assistant,
-                    player,
-                    header_crypto,
-                )
-                .await?;
-            }
-        }
     }
     Ok(())
+}
+
+pub(in crate::world) async fn begin_db_creature_combat_with_assistance(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    map_id: u32,
+    session: &mut WorldSessionState,
+    attacker: ObjectGuid,
+    player: ObjectGuid,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    if !begin_shared_db_creature_combat(shared_world, session, attacker, Instant::now()).await {
+        return Ok(false);
+    }
+    send_db_creature_combat_start(
+        stream,
+        shared_world,
+        map_id,
+        session,
+        attacker,
+        player,
+        header_crypto,
+    )
+    .await?;
+
+    let Some(character) = session.character.active_character.clone() else {
+        return Ok(true);
+    };
+    let assistants = shared_world
+        .maps
+        .select_db_creature_assist_targets(map_id, attacker, &character)
+        .await;
+    let assistant_targets = if let Some((caller, assistants)) = assistants {
+        mirror_session_db_creature(session, attacker.raw(), caller);
+        assistants
+    } else {
+        Vec::new()
+    };
+    for assistant in assistant_targets {
+        if begin_shared_db_creature_combat(shared_world, session, assistant, Instant::now()).await {
+            send_db_creature_combat_start(
+                stream,
+                shared_world,
+                map_id,
+                session,
+                assistant,
+                player,
+                header_crypto,
+            )
+            .await?;
+        }
+    }
+    Ok(true)
 }
 
 pub(in crate::world) async fn send_db_creature_combat_start(
@@ -779,6 +802,7 @@ pub(in crate::world) fn begin_db_creature_combat(
         CreatureCombatState {
             attacker,
             victim,
+            started_at: now,
             next_swing_at: now,
         },
     );

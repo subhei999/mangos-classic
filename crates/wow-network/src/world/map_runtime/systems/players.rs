@@ -1279,15 +1279,16 @@ impl MapRuntime {
             let health_update_body = if let Some(applied) = fall_applied.as_ref() {
                 applied.health_packet.body.clone()
             } else if death_state == PlayerDeathState::Corpse && health == 0 {
-                build_player_death_update_body(
-                    player_object,
-                    0,
-                    flags,
-                    PLAYER_FIELD_BYTE_RELEASE_TIMER,
-                    player_unit_flags(false),
-                    current_player.class,
-                    PLAYER_STAND_STATE_DEAD,
-                )?
+                build_player_death_update_body(PlayerDeathUpdate {
+                    player: player_object,
+                    health: 0,
+                    player_flags: flags,
+                    field_bytes: PLAYER_FIELD_BYTE_RELEASE_TIMER,
+                    unit_flags: player_unit_flags(false),
+                    race: current_player.race,
+                    class: current_player.class,
+                    stand_state: PLAYER_STAND_STATE_DEAD,
+                })?
             } else {
                 build_player_health_update_body(player_object, health)?
             };
@@ -2309,15 +2310,16 @@ impl MapRuntime {
                 if let Some(packet) = player.packet_to_client(OutboundWorldPacket {
                     opcode: WorldOpcode::SmsgUpdateObject as u16,
                     body: if player.death_state == PlayerDeathState::Corpse && player.health == 0 {
-                        build_player_death_update_body(
-                            player_guid,
-                            0,
-                            player.flags,
-                            PLAYER_FIELD_BYTE_RELEASE_TIMER,
-                            player_unit_flags(false),
-                            player.class,
-                            PLAYER_STAND_STATE_DEAD,
-                        )?
+                        build_player_death_update_body(PlayerDeathUpdate {
+                            player: player_guid,
+                            health: 0,
+                            player_flags: player.flags,
+                            field_bytes: PLAYER_FIELD_BYTE_RELEASE_TIMER,
+                            unit_flags: player_unit_flags(false),
+                            race: player.race,
+                            class: player.class,
+                            stand_state: PLAYER_STAND_STATE_DEAD,
+                        })?
                     } else {
                         build_player_health_update_body(player_guid, player.health)?
                     },

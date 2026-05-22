@@ -255,6 +255,16 @@ pub(in crate::world) async fn handle_cast_spell(
             .apply_player_spell_cooldowns(map_id, character_guid, &spell_profile, now, false)
             .await;
         if cast_time_ms > 0 {
+            retime_player_auto_attack_after_spell_cast(
+                deps,
+                session,
+                &spell_template,
+                &spell_profile,
+                map_id,
+                character_guid,
+                now,
+            )
+            .await?;
             deps.shared_world
                 .maps
                 .set_active_player_spell_cast(
@@ -435,7 +445,6 @@ pub(in crate::world) async fn handle_use_item(
     );
 
     let now = Instant::now();
-    stand_player_for_spell_cast(stream, deps.shared_world, session, header_crypto).await?;
     let targets = normalize_item_use_targets(request.targets, &item_spell_profile, caster);
     let spell_info = SpellInfo::from_template(&spell_template);
     let item_value_context = player_spell_effect_value_context(
@@ -446,6 +455,9 @@ pub(in crate::world) async fn handle_use_item(
     );
     let refreshable_consumable_regen = item_spell_profile.kind == SpellCastKind::AuraApplication
         && spell_periodic_regen_aura(&spell_info, item_value_context, now).is_some();
+    if !refreshable_consumable_regen {
+        stand_player_for_spell_cast(stream, deps.shared_world, session, header_crypto).await?;
+    }
     if let Some(failure) = item_use_spell_failure(
         deps.shared_world.maps,
         map_id,
@@ -528,6 +540,16 @@ pub(in crate::world) async fn handle_use_item(
         )
         .await;
     if cast_time_ms > 0 {
+        retime_player_auto_attack_after_spell_cast(
+            deps,
+            session,
+            &spell_template,
+            &item_spell_profile,
+            map_id,
+            character_guid,
+            now,
+        )
+        .await?;
         deps.shared_world
             .maps
             .set_active_player_spell_cast(

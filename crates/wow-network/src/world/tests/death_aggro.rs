@@ -31,15 +31,16 @@ fn db_creature_retaliation_can_kill_player() {
 #[test]
 fn player_death_update_sets_health_flags_and_release_timer() {
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
-    let body = build_player_death_update_body(
+    let body = build_player_death_update_body(PlayerDeathUpdate {
         player,
-        0,
-        PLAYER_FLAGS_GHOST,
-        PLAYER_FIELD_BYTE_RELEASE_TIMER,
-        player_unit_flags(false),
-        1,
-        PLAYER_STAND_STATE_DEAD,
-    )
+        health: 0,
+        player_flags: PLAYER_FLAGS_GHOST,
+        field_bytes: PLAYER_FIELD_BYTE_RELEASE_TIMER,
+        unit_flags: player_unit_flags(false),
+        race: 1,
+        class: 1,
+        stand_state: PLAYER_STAND_STATE_DEAD,
+    })
     .unwrap();
     let mut packed = Vec::new();
     PackedGuid::write(&mut packed, player).unwrap();
@@ -47,6 +48,7 @@ fn player_death_update_sets_health_flags_and_release_timer() {
     let values = decode_update_values(&body[values_start..]);
 
     assert_eq!(values[UNIT_FIELD_HEALTH], Some(0));
+    assert_eq!(values[UNIT_FIELD_POWER2], Some(0));
     assert_eq!(values[UNIT_FIELD_FLAGS], Some(UNIT_FLAG_PLAYER_CONTROLLED));
     assert_eq!(
         values[UNIT_FIELD_BYTES_1],
@@ -57,14 +59,17 @@ fn player_death_update_sets_health_flags_and_release_timer() {
         values[PLAYER_FIELD_BYTES],
         Some(PLAYER_FIELD_BYTE_RELEASE_TIMER)
     );
-    assert_eq!(values[UNIT_FIELD_AURA], Some(GHOST_SPELL_ID));
-    assert_eq!(values[UNIT_FIELD_AURAFLAGS], Some(GHOST_AURA_FLAGS));
-    assert_eq!(values[UNIT_FIELD_AURALEVELS], Some(1));
-    assert_eq!(values[UNIT_FIELD_AURAAPPLICATIONS], Some(0));
     let debuff_slot = MAX_POSITIVE_AURA_SLOTS;
-    assert_eq!(values[UNIT_FIELD_AURA + debuff_slot], Some(0));
-    assert_eq!(values[UNIT_FIELD_AURAFLAGS + (debuff_slot / 8)], Some(0));
-    assert_eq!(values[UNIT_FIELD_AURALEVELS + (debuff_slot / 4)], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURA], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURAFLAGS], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURALEVELS], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURAAPPLICATIONS], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURA + debuff_slot], Some(GHOST_SPELL_ID));
+    assert_eq!(
+        values[UNIT_FIELD_AURAFLAGS + (debuff_slot / 8)],
+        Some(GHOST_AURA_FLAGS)
+    );
+    assert_eq!(values[UNIT_FIELD_AURALEVELS + (debuff_slot / 4)], Some(1));
     assert_eq!(
         values[UNIT_FIELD_AURAAPPLICATIONS + (debuff_slot / 4)],
         Some(0)
@@ -74,15 +79,16 @@ fn player_death_update_sets_health_flags_and_release_timer() {
 #[test]
 fn player_alive_recovery_update_clears_all_visible_aura_slots() {
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
-    let body = build_player_death_update_body(
+    let body = build_player_death_update_body(PlayerDeathUpdate {
         player,
-        50,
-        0,
-        0,
-        player_unit_flags(false),
-        1,
-        PLAYER_STAND_STATE_STAND,
-    )
+        health: 50,
+        player_flags: 0,
+        field_bytes: 0,
+        unit_flags: player_unit_flags(false),
+        race: 1,
+        class: 1,
+        stand_state: PLAYER_STAND_STATE_STAND,
+    })
     .unwrap();
     let mut packed = Vec::new();
     PackedGuid::write(&mut packed, player).unwrap();
@@ -90,10 +96,47 @@ fn player_alive_recovery_update_clears_all_visible_aura_slots() {
     let values = decode_update_values(&body[values_start..]);
 
     assert_eq!(values[UNIT_FIELD_AURA], Some(0));
+    assert_eq!(values[UNIT_FIELD_POWER2], Some(0));
     assert_eq!(values[UNIT_FIELD_AURAFLAGS], Some(0));
     let debuff_slot = MAX_POSITIVE_AURA_SLOTS;
     assert_eq!(values[UNIT_FIELD_AURA + debuff_slot], Some(0));
     assert_eq!(values[UNIT_FIELD_AURAFLAGS + (debuff_slot / 8)], Some(0));
+}
+
+#[test]
+fn night_elf_ghost_update_includes_wisp_form_as_negative_aura() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let body = build_player_death_update_body(PlayerDeathUpdate {
+        player,
+        health: 1,
+        player_flags: PLAYER_FLAGS_GHOST,
+        field_bytes: 0,
+        unit_flags: player_unit_flags(false),
+        race: PLAYER_RACE_NIGHT_ELF,
+        class: 4,
+        stand_state: PLAYER_STAND_STATE_STAND,
+    })
+    .unwrap();
+    let mut packed = Vec::new();
+    PackedGuid::write(&mut packed, player).unwrap();
+    let values_start = 4 + 1 + 1 + packed.len();
+    let values = decode_update_values(&body[values_start..]);
+
+    let debuff_slot = MAX_POSITIVE_AURA_SLOTS;
+    assert_eq!(values[UNIT_FIELD_AURA], Some(0));
+    assert_eq!(values[UNIT_FIELD_AURA + 1], Some(0));
+    assert_eq!(
+        values[UNIT_FIELD_AURA + debuff_slot],
+        Some(NIGHT_ELF_WISP_FORM_SPELL_ID)
+    );
+    assert_eq!(
+        values[UNIT_FIELD_AURA + debuff_slot + 1],
+        Some(GHOST_SPELL_ID)
+    );
+    assert_eq!(
+        values[UNIT_FIELD_AURAFLAGS + (debuff_slot / 8)],
+        Some(GHOST_AURA_FLAGS | (GHOST_AURA_FLAGS << 4))
+    );
 }
 
 #[test]
@@ -1738,6 +1781,104 @@ async fn player_hit_announces_db_creature_retaliation_start() {
         .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16));
 }
 
+#[tokio::test]
+async fn player_hit_calls_nearby_db_creature_assistance() {
+    let mut attacker_spawn = test_creature_spawn(299);
+    attacker_spawn.guid = 1_900;
+    attacker_spawn.position_x = -8950.0;
+    attacker_spawn.position_y = -130.0;
+    attacker_spawn.position_z = 83.5;
+    attacker_spawn.template.faction = 17;
+    attacker_spawn.template.npc_flags = 0;
+    attacker_spawn.template.call_for_help = 6;
+    let attacker = creature_spawn_guid(&attacker_spawn);
+
+    let mut assistant_spawn = test_creature_spawn(299);
+    assistant_spawn.guid = 1_901;
+    assistant_spawn.position_x = -8947.0;
+    assistant_spawn.position_y = -130.0;
+    assistant_spawn.position_z = 83.5;
+    assistant_spawn.template.faction = 17;
+    assistant_spawn.template.npc_flags = 0;
+    let assistant = creature_spawn_guid(&assistant_spawn);
+
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 1,
+            ..CharacterSessionState::default()
+        },
+        death: DeathSessionState {
+            player_death_state: PlayerDeathState::Alive,
+            ..DeathSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    maps.share_db_creature_snapshots(
+        0,
+        vec![
+            DbCreatureRuntime::new(attacker_spawn),
+            DbCreatureRuntime::new(assistant_spawn),
+        ],
+    )
+    .await;
+
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(outbound_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    begin_db_creature_retaliation_if_needed(
+        &mut sink,
+        shared_world,
+        0,
+        &mut session,
+        attacker,
+        player,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| outbound_rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(session
+        .combat
+        .active_creature_combats
+        .contains_key(&attacker.raw()));
+    assert!(session
+        .combat
+        .active_creature_combats
+        .contains_key(&assistant.raw()));
+    assert_eq!(
+        packets
+            .iter()
+            .filter(|packet| packet.opcode == WorldOpcode::SmsgAttackStart as u16)
+            .count(),
+        2,
+        "primary and assisting creatures should both announce combat start"
+    );
+}
+
 #[test]
 fn db_creature_melee_reach_is_position_gated() {
     let mut creature = test_creature_spawn(299);
@@ -1821,7 +1962,7 @@ fn db_creature_melee_reach_is_position_gated() {
 }
 
 #[test]
-fn db_creature_navigation_guardrail_blocks_aggro_melee_and_missing_mmap_chase() {
+fn db_creature_navigation_guardrail_blocks_aggro_and_chase_not_reach() {
     let mut creature = test_creature_spawn(6);
     creature.position_x = 0.0;
     creature.position_y = 0.0;
@@ -1888,7 +2029,10 @@ fn db_creature_navigation_guardrail_blocks_aggro_melee_and_missing_mmap_chase() 
         .insert(attacker.raw(), DbCreatureRuntime::new(creature));
 
     assert_eq!(select_db_creature_aggro_target(&session), None);
-    assert!(!db_creature_can_reach_player(&session, attacker));
+    assert!(
+        db_creature_can_reach_player(&session, attacker),
+        "CMaNGOS melee reach is distance-only; navigation guardrails gate aggro/chase ownership"
+    );
     session
         .character
         .active_character

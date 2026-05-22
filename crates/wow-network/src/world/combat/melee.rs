@@ -53,6 +53,9 @@ pub(in crate::world) fn db_creature_player_melee_check(
     if !creature.is_alive() {
         return PlayerMeleeCheck::TargetNotAlive;
     }
+    if !player_can_reach_with_melee_attack(character, creature) {
+        return PlayerMeleeCheck::OutOfRange;
+    }
     let navigation = db_creature_navigation_check(
         &session.movement.db_creature_navigation,
         character.position,
@@ -60,9 +63,6 @@ pub(in crate::world) fn db_creature_player_melee_check(
     );
     if !navigation.is_clear() {
         return PlayerMeleeCheck::NavigationBlocked(navigation);
-    }
-    if !player_can_reach_with_melee_attack(character, creature) {
-        return PlayerMeleeCheck::OutOfRange;
     }
     if !has_in_arc(
         character.position,
@@ -193,15 +193,6 @@ pub(in crate::world) fn db_creature_can_reach_player(
     let Some(creature) = session.visibility.db_creatures.get(&attacker.raw()) else {
         return false;
     };
-    if !db_creature_navigation_check(
-        &session.movement.db_creature_navigation,
-        creature.current_position,
-        character.position,
-    )
-    .is_clear()
-    {
-        return false;
-    }
     creature
         .distance_to_player_squared(character)
         .is_some_and(|distance_sq| {
@@ -226,15 +217,6 @@ pub(in crate::world) async fn db_creature_can_reach_player_from_map(
     else {
         return false;
     };
-    if !db_creature_navigation_check(
-        &session.movement.db_creature_navigation,
-        creature.current_position,
-        character.position,
-    )
-    .is_clear()
-    {
-        return false;
-    }
     creature
         .distance_to_player_squared(character)
         .is_some_and(|distance_sq| {

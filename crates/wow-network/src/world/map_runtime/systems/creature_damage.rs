@@ -942,12 +942,6 @@ impl MapRuntime {
         }
         for (creature_guid, victim, threat) in threat_updates {
             self.add_db_creature_threat(creature_guid, victim, threat);
-            if self
-                .active_creature_combats
-                .contains_key(&creature_guid.raw())
-            {
-                self.refresh_db_creature_combat_leash(creature_guid, now);
-            }
         }
         for (creature_guid, old_duration, new_duration) in attack_timer_adjustments {
             self.adjust_db_creature_attack_timer_for_base_time_change(

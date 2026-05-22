@@ -280,7 +280,7 @@ pub(in crate::world) fn write_minimal_player_update_values(
         },
     )?;
     if character.player_flags & PLAYER_FLAGS_GHOST != 0 {
-        set_player_ghost_aura_update_values(&mut values, true, character.level)?;
+        set_player_ghost_aura_update_values(&mut values, true, character.race, character.level)?;
     } else {
         set_player_aura_update_values(&mut values, active_auras)?;
     }

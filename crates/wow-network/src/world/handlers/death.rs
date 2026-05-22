@@ -97,11 +97,11 @@ pub(in crate::world) async fn handle_repop_request(
     let graveyard_position =
         select_repop_graveyard_position(deps.world_db_pool, corpse_position).await?;
 
-    let (character_guid, character_class) = session
+    let (character_guid, character_race, character_class) = session
         .character
         .active_character
         .as_ref()
-        .map(|character| (character.guid, character.class))
+        .map(|character| (character.guid, character.race, character.class))
         .unwrap_or_default();
     let old_map_id = session
         .character
@@ -112,6 +112,7 @@ pub(in crate::world) async fn handle_repop_request(
     session.death.player_death_state = PlayerDeathState::Ghost;
     session.death.player_death_presentation_pending = false;
     session.character.player_health = PLAYER_SURVIVOR_HEALTH_FLOOR;
+    session.character.player_rage = 0;
     session.character.player_flags |= PLAYER_FLAGS_GHOST;
     session.character.player_stand_state = PLAYER_STAND_STATE_STAND;
     session.combat.player_in_combat = false;
@@ -119,6 +120,9 @@ pub(in crate::world) async fn handle_repop_request(
     clear_session_active_creature_combats(session);
     deps.maps
         .set_player_auto_attack(old_map_id, character_guid, None, None)
+        .await;
+    deps.maps
+        .set_player_power2(old_map_id, character_guid, 0)
         .await;
     if let Some(character) = &mut session.character.active_character {
         character.position = graveyard_position;
@@ -136,15 +140,16 @@ pub(in crate::world) async fn handle_repop_request(
     send_packet(
         stream,
         WorldOpcode::SmsgUpdateObject as u16,
-        &build_player_death_update_body(
+        &build_player_death_update_body(PlayerDeathUpdate {
             player,
-            session.character.player_health,
-            session.character.player_flags,
-            0,
-            player_unit_flags(false),
-            character_class,
-            PLAYER_STAND_STATE_STAND,
-        )?,
+            health: session.character.player_health,
+            player_flags: session.character.player_flags,
+            field_bytes: 0,
+            unit_flags: player_unit_flags(false),
+            race: character_race,
+            class: character_class,
+            stand_state: PLAYER_STAND_STATE_STAND,
+        })?,
         Some(&mut *header_crypto),
     )
     .await?;
@@ -416,6 +421,7 @@ pub(in crate::world) async fn resurrect_player_at_position(
     session.death.player_death_presentation_pending = false;
     let corpse_to_bones = session.death.player_corpse.take();
     session.character.player_health = resurrected_health;
+    session.character.player_rage = 0;
     session.character.player_flags &= !PLAYER_FLAGS_GHOST;
     session.character.player_stand_state = PLAYER_STAND_STATE_STAND;
     let (character_guid, map_id) = {
@@ -433,6 +439,7 @@ pub(in crate::world) async fn resurrect_player_at_position(
         .update_player_health(map_id, character_guid, session.character.player_health)
         .await?;
     deps.sessions.dispatch(packets).await;
+    deps.maps.set_player_power2(map_id, character_guid, 0).await;
     deps.maps
         .sync_player_gameplay_state(map_id, character_guid, session)
         .await;
@@ -442,15 +449,16 @@ pub(in crate::world) async fn resurrect_player_at_position(
     send_packet(
         stream,
         WorldOpcode::SmsgUpdateObject as u16,
-        &build_player_death_update_body(
+        &build_player_death_update_body(PlayerDeathUpdate {
             player,
-            session.character.player_health,
-            session.character.player_flags,
-            0,
-            player_unit_flags(false),
+            health: session.character.player_health,
+            player_flags: session.character.player_flags,
+            field_bytes: 0,
+            unit_flags: player_unit_flags(false),
+            race,
             class,
-            PLAYER_STAND_STATE_STAND,
-        )?,
+            stand_state: PLAYER_STAND_STATE_STAND,
+        })?,
         Some(&mut *header_crypto),
     )
     .await?;

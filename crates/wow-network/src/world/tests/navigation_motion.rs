@@ -674,6 +674,7 @@ fn db_creature_evades_after_leash_radius_and_prepares_return_home() {
         CreatureCombatState {
             attacker,
             victim: ObjectGuid::new(HighGuid::Player, 0, 7),
+            started_at: now,
             next_swing_at: now,
         },
     );
@@ -1421,6 +1422,7 @@ fn db_creature_slow_aura_retimes_active_chase_and_adjusts_swing_timer() {
         CreatureCombatState {
             attacker: creature_guid,
             victim: player_guid,
+            started_at: now,
             next_swing_at: now + Duration::from_millis(2000),
         },
     );
@@ -1525,6 +1527,7 @@ fn db_creature_slow_aura_expiration_restores_speed_and_attack_timer() {
         CreatureCombatState {
             attacker: creature_guid,
             victim: player_guid,
+            started_at: now,
             next_swing_at: now + Duration::from_millis(2500),
         },
     );
@@ -2047,6 +2050,116 @@ fn db_creature_chase_motion_advances_position_over_time_before_reach() {
 }
 
 #[test]
+fn db_creature_melee_reach_ignores_los_and_path_like_cmangos() {
+    let mut creature = test_creature_spawn(6);
+    creature.position_x = 0.0;
+    creature.position_y = 0.0;
+    creature.position_z = 0.0;
+    let attacker = creature_spawn_guid(&creature);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 2.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        movement: MovementSessionState {
+            db_creature_navigation: DbCreatureNavigationGuardrail {
+                line_of_sight_clear: false,
+                path_available: false,
+                ..DbCreatureNavigationGuardrail::default()
+            },
+            ..MovementSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), DbCreatureRuntime::new(creature));
+
+    assert!(
+        db_creature_can_reach_player(&session, attacker),
+        "CMaNGOS Unit::CanReachWithMeleeAttack is a reach check, not a path/LOS check"
+    );
+
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(
+        session
+            .visibility
+            .db_creatures
+            .values()
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    map.players.insert(
+        7,
+        test_player_runtime(7, SessionId(7), WorldPosition::new(0, 2.0, 0.0, 0.0, 0.0)),
+    );
+
+    assert!(map.db_creature_can_reach_player_with_navigation(
+        attacker,
+        player,
+        &session.movement.db_creature_navigation
+    ));
+}
+
+#[test]
+fn native_mmap_path_status_preserves_cmangos_incomplete_flag() {
+    let points = [
+        NativeMmapPathPoint {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        NativeMmapPathPoint {
+            x: 4.0,
+            y: 0.0,
+            z: 0.0,
+        },
+    ];
+
+    let path = native_mmap_path_from_count(0, 2, NATIVE_PATHFIND_INCOMPLETE, &points);
+
+    assert_eq!(path.status, NativeMmapPathStatus::Incomplete);
+    assert_eq!(path.points.len(), 2);
+}
+
+#[test]
+fn incomplete_chase_endpoint_must_reach_target_like_cmangos() {
+    let creature = DbCreatureRuntime::new(test_creature_spawn(6));
+    let target = WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0);
+
+    assert!(
+        db_creature_chase_endpoint_reaches_target(
+            &creature,
+            WorldPosition::new(0, 8.0, 0.0, 0.0, 0.0),
+            target
+        ),
+        "CMaNGOS accepts incomplete paths only when the final point is still in melee reach"
+    );
+    assert!(
+        !db_creature_chase_endpoint_reaches_target(
+            &creature,
+            WorldPosition::new(0, 4.0, 0.0, 0.0, 0.0),
+            target
+        ),
+        "a partial endpoint outside reach must not become a stable chase destination"
+    );
+}
+
+#[test]
 fn map_runtime_refuses_in_place_facing_while_creature_is_moving() {
     let mut creature = test_creature_spawn(6);
     creature.position_x = 0.0;
@@ -2108,6 +2221,7 @@ fn map_runtime_chase_destination_fans_out_same_victim_attackers() {
         CreatureCombatState {
             attacker: first_guid,
             victim: target,
+            started_at: Instant::now(),
             next_swing_at: Instant::now(),
         },
     );
@@ -2171,6 +2285,43 @@ fn db_creature_chase_motion_stop_distance_uses_combined_reach() {
     let destination = motion.path.last().unwrap();
 
     assert!((destination.x - (20.0 - expected_stop_distance)).abs() < 0.001);
+}
+
+#[test]
+fn db_creature_chase_near_point_retries_adjacent_angles_when_primary_los_fails() {
+    let target = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let primary = db_creature_chase_near_point(target, 2.0, 0.0);
+
+    let selected = db_creature_chase_near_point_with_cmangos_los_selector(
+        target,
+        2.0,
+        0.0,
+        DEFAULT_WORLD_OBJECT_SIZE,
+        |candidate| candidate.y > 0.0,
+    );
+
+    assert_ne!(selected.y, primary.y);
+    assert!(
+        selected.y > 0.0,
+        "CMaNGOS GetNearPointAt should try nearby angles instead of staying on the blocked original point"
+    );
+}
+
+#[test]
+fn db_creature_chase_near_point_keeps_primary_when_no_los_candidate_exists() {
+    let target = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let primary = db_creature_chase_near_point(target, 2.0, 0.0);
+
+    let selected = db_creature_chase_near_point_with_cmangos_los_selector(
+        target,
+        2.0,
+        0.0,
+        DEFAULT_WORLD_OBJECT_SIZE,
+        |_| false,
+    );
+
+    assert_eq!(selected.x, primary.x);
+    assert_eq!(selected.y, primary.y);
 }
 
 #[test]

@@ -2005,7 +2005,7 @@ pub async fn get_trainer_greeting(
 
 pub async fn is_tavern_area_trigger(pool: &MySqlPool, trigger_id: u32) -> Result<bool, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("tavern_area_trigger_lookup");
-    let found: Option<u8> =
+    let found: Option<i32> =
         sqlx::query_scalar("SELECT 1 FROM areatrigger_tavern WHERE id = ? LIMIT 1")
             .bind(trigger_id)
             .fetch_optional(pool)

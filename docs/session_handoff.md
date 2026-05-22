@@ -9,18 +9,15 @@ history belongs in `docs/rust_migration_plan.md`, gate status in
 - Branch: `codex/rusty-mangos`
 - Workspace: `C:\Users\subhe\Documents\New project`
 - Latest pushed checkpoint before the current uncommitted work:
-  `e3142f260 Stabilize inventory bag model and vendor bag flows`
-- Current uncommitted state implements a CMaNGOS-parity gameplay pass for:
-  - weapon trainer skill unlocks and skill/class gating,
-  - two-handed weapon/offhand equip conflicts,
-  - automatic Release Spirit after the six-minute death timer,
-  - tavern area-trigger resting for instant logout.
+  `0311b79b0 Implement trainer and rest parity fixes`
+- Current uncommitted state fixes a live Stormwind area-trigger disconnect:
+  - `is_tavern_area_trigger` now decodes `SELECT 1` as `i32` instead of `u8`
+    because MySQL returns integer literals as `INT`.
 
 ## Current Goal
 
-Latest user-directed priority: fix high-impact parity bugs in weapon training,
-equipment legality, death release, and rest-area logout before continuing wider
-playable gate work.
+Latest user-directed priority: fix a live-client disconnect when entering
+Stormwind after the tavern area-trigger rest implementation.
 
 ## What Changed Recently
 
@@ -45,11 +42,15 @@ playable gate work.
   instant in designated tavern rest areas.
 - The previous inventory/bag model and vendor fixes were committed and pushed as
   `e3142f260`.
+- Live Stormwind testing found that the tavern area-trigger DB lookup decoded
+  `SELECT 1` into `u8`, but MySQL exposes that literal as `INT`, ending the
+  world session with a SQLx type mismatch. The lookup now decodes into `i32`.
 
 ## Tests Run
 
 - `cargo fmt -p wow-network -p wow-proto -p wow-db`
 - `cargo check -p wow-network`
+- `.\scripts\restart-game-stack.cmd --release`
 - Focused Rust tests:
   - `cargo test -p wow-network trainer_spell_state_marks_known_level_and_requirement_gates -- --nocapture`
   - `cargo test -p wow-network two_handed_weapons_conflict_with_offhand_equipment_like_cmangos -- --nocapture`

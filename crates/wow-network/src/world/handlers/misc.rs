@@ -233,6 +233,7 @@ pub(in crate::world) async fn handle_zone_update(
     let Some(area) = world_data_files.area_tables.entry(request.zone_id) else {
         return Ok(());
     };
+    session.character.current_zone = Some(request.zone_id);
     if area.flags & AREA_FLAG_CAPITAL != 0 {
         return set_rest_type(stream, maps, session, header_crypto, RestType::InCity, None).await;
     }

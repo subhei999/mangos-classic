@@ -6,6 +6,7 @@ pub(in crate::world) enum GmDotCommand {
     Gm(Option<bool>),
     LevelUp(i32),
     LevelSet(u8),
+    Learn(u32),
     NpcAdd(u32),
     NpcDelete(Option<u32>),
     Die,
@@ -159,6 +160,15 @@ pub(in crate::world) async fn handle_gm_dot_command(
             }
             spawn_gm_creature_from_template(stream, deps, session, entry, header_crypto).await?;
         }
+        GmDotCommand::Learn(spell) => {
+            if !require_gm_security(stream, session, 3, header_crypto).await? {
+                return Ok(());
+            }
+            if !require_gm_mode(stream, session, header_crypto).await? {
+                return Ok(());
+            }
+            learn_gm_spell(stream, deps, session, spell, header_crypto).await?;
+        }
         GmDotCommand::LevelUp(delta) => {
             if !require_gm_security(stream, session, 3, header_crypto).await? {
                 return Ok(());
@@ -261,6 +271,15 @@ pub(in crate::world) fn parse_gm_dot_command(
     }
     if let Some(args) = normalized.strip_prefix("additem ") {
         return Some(parse_add_item_command(args));
+    }
+    if normalized == "learn" {
+        return Some(Err("Syntax: .learn #spellid".to_string()));
+    }
+    if let Some(args) = normalized.strip_prefix("learn ") {
+        return Some(match first_u32(args) {
+            Some(spell) => Ok(GmDotCommand::Learn(spell)),
+            None => Err("Syntax: .learn #spellid".to_string()),
+        });
     }
     if let Some(args) = normalized.strip_prefix("modify speed ") {
         return Some(match first_f32(args) {
@@ -1053,6 +1072,75 @@ pub(in crate::world) async fn modify_gm_run_speed(
     .await
 }
 
+pub(in crate::world) async fn learn_gm_spell(
+    stream: &mut WorldPacketSink,
+    deps: ChatDeps<'_>,
+    session: &mut WorldSessionState,
+    spell: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        warn!("Ignoring GM learn before character login");
+        return Ok(());
+    };
+    let character_guid = character.guid;
+
+    let Some(template) = wow_db::get_spell_template_query(deps.world_db_pool, spell).await? else {
+        send_system_message(
+            stream,
+            &format!("Spell {spell} was not found."),
+            header_crypto,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    if session.character.active_spells.contains(&spell) {
+        send_system_message(stream, "You already know that spell.", header_crypto).await?;
+        return Ok(());
+    }
+
+    let Some(_) =
+        wow_db::learn_character_spell(deps.character_db_pool, character_guid, spell, 0).await?
+    else {
+        send_system_message(stream, "Spell could not be learned.", header_crypto).await?;
+        return Ok(());
+    };
+
+    session.character.active_spells.insert(spell);
+
+    send_packet(
+        stream,
+        WorldOpcode::SmsgLearnedSpell as u16,
+        &build_learned_spell_body(spell),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+
+    let known_spells = wow_db::get_character_spells(deps.character_db_pool, character_guid).await?;
+    send_known_proficiencies(
+        stream,
+        deps.world_db_pool,
+        &known_spells,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgInitialSpells as u16,
+        &build_initial_spells_body(&known_spells),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+
+    send_system_message(
+        stream,
+        &format!("Learned spell {} ({}).", template.spell_name, spell),
+        header_crypto,
+    )
+    .await
+}
+
 pub(in crate::world) async fn add_gm_item(
     stream: &mut WorldPacketSink,
     deps: ChatDeps<'_>,
@@ -1124,6 +1212,7 @@ pub(in crate::world) async fn add_gm_item(
                     item_template: template.entry,
                     count: slot.count,
                     durability: template.max_durability,
+                    initial_flags: item_binding_flags_on_pickup(&template),
                     random_properties: random_properties.as_ref(),
                 },
             )

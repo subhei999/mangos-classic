@@ -1,168 +1,113 @@
 # Session Handoff
 
-Short operating brief for the next Rust migration session. Durable roadmap
-history belongs in `docs/rust_migration_plan.md`, gate status in
-`docs/playable_gate_board.md`, and focused feature plans in their own docs.
+Short operating brief for the next Rust gameplay-parity session. Keep this file
+concise; durable gate status belongs in `docs/playable_gate_board.md`.
 
 ## Current Branch And State
 
-- Branch: `codex/auctionhouse`
-- Workspace: `C:\Users\subhe\Documents\mangos-worktrees\auctionhouse`
-- Branch now contains the latest `codex/rusty-mangos` spell-system baseline
-  plus commit `95765e16b Implement auction house parity flow`.
-- Current state is the auction-house implementation rebased by merge onto the
-  current integration branch. The only manual merge touch was this handoff.
+- Branch: `codex/rusty-mangos`
+- Workspace: `C:\Users\subhe\Documents\New project`
+- Current state: workspace remains broadly dirty with many pre-existing spell,
+  combat, taxi, and progression edits. This pass added focused uncommitted gear
+  stat, random-property enchant stat, and item binding work on top. Inspect
+  `git status --short --branch` before editing and do not revert unrelated files.
 
 ## Current Goal
 
-Latest user-directed priority: bring the auction house branch into
-`codex/rusty-mangos`, test it on top of the current integration baseline, and
-merge it once the integrated result is good.
+User-directed priority: focused pass on gear/stats and BOE/BOP parity with
+CMaNGOS behavior.
+
+- Gear primary stats from `item_template` should affect character effective
+  stats, max health/mana, armor/AP/crit/dodge, and runtime updates.
+- Random-property / enchantment stats from `item_instance.enchantments` and
+  `SpellItemEnchantment.dbc` should affect equipped character stats.
+- Bind-on-pickup / quest items should be created soulbound.
+- Bind-on-equip items should become soulbound when equipped, and item object
+  update fields should expose the bound flag to the client.
 
 ## What Changed Recently
 
-- Inherited the current generic spell-system baseline from
-  `codex/rusty-mangos`, including the recent `SpellPlan` sweep, cone targeting,
-  absorb combat-log fixes, Evocation-style mana regen modifiers, and
-  Counterspell school lockout work.
-- Fixed the first live auction-create session crash after landing AH support:
-  `create_auction_from_inventory` now casts the `MAX(id) + 1` auction id query
-  to `UNSIGNED`, avoiding MySQL `DECIMAL` decode mismatch when the first create
-  request allocates a new auction row.
-- Fixed the next live cancel-auction session crash after create:
-  auction existence probes in the DB layer now decode `SELECT 1 ... LIMIT 1`
-  as integer presence checks instead of `u8`, avoiding MySQL `INT` vs
-  `TINYINT UNSIGNED` decode mismatches in cancel, bid, and expiry paths.
-- Fixed the next live mail-access session crash after auction cancel:
-  mail-item reads now cast signed `mail_items` ids/templates and `MAX(id)`
-  allocators to unsigned values where Rust expects unsigned ids, avoiding
-  `item_guid` decode mismatches when opening auction-generated mail.
-- Added Classic auction protocol coverage in `wow-proto` and `wow-network` for:
-  - `MSG_AUCTION_HELLO`
-  - `CMSG_AUCTION_LIST_ITEMS`
-  - `CMSG_AUCTION_LIST_OWNER_ITEMS`
-  - `CMSG_AUCTION_LIST_BIDDER_ITEMS`
-  - `CMSG_AUCTION_SELL_ITEM`
-  - `CMSG_AUCTION_REMOVE_ITEM`
-  - `CMSG_AUCTION_PLACE_BID`
-  - `SMSG_AUCTION_LIST_RESULT`
-  - `SMSG_AUCTION_OWNER_LIST_RESULT`
-  - `SMSG_AUCTION_BIDDER_LIST_RESULT`
-  - `SMSG_AUCTION_COMMAND_RESULT`
-  - `SMSG_AUCTION_REMOVED_NOTIFICATION`
-  - `SMSG_AUCTION_OWNER_NOTIFICATION`
-- Added a dedicated world auction handler that:
-  - validates auctioneer interaction against live creature snapshots,
-  - opens the AH from both direct `MSG_AUCTION_HELLO` and gossip service
-    selection,
-  - reads browse data from `auction` plus `item_instance`,
-  - pages owner, bidder, and search results with CMaNGOS-style list behavior.
-- Added auction mutation flows:
-  - sell/create with DBC-backed deposit data, inventory ownership transfer, and
-    auction row creation in one DB transaction,
-  - cancel/remove with bidder refund mail, owner return mail, cancel cut, and
-    online notifications,
-  - bid/buyout with increment validation, self-raise delta charging, outbid
-    refund mail, buyout settlement mail, and live owner/bidder notifications.
-- Added world-owned expiry processing:
-  - expired auctions settle once globally from the map tick,
-  - no-bid expirations return the item to the owner by mail,
-  - sold expirations mail owner profit and winner item delivery,
-  - online owners and bidders receive the same live notifications as direct
-    mutation paths.
-- Added `AuctionHouse.dbc` parsing so deposit and cut percentages are
-  data-backed instead of guessed.
-- Wired the missing CMaNGOS auction config knobs through `wow-config`,
-  `worldserver`, and world runtime state:
-  - `AllowTwoSide.Interaction.Auction`
-  - `Rate.Auction.Time`
-  - `Rate.Auction.Deposit`
-  - `Rate.Auction.Cut`
-  - `Auction.Deposit.Min`
-- Corrected market grouping behavior to match CMaNGOS ownership boundaries:
-  - DB rows keep the real entry `houseid`,
-  - alliance city houses share one market,
-  - horde city houses share one market,
-  - neutral goblin houses stay separate,
-  - when `AllowTwoSide.Interaction.Auction = true`, all houses share the global
-    market while still using the entry house id for UI and DBC rates.
+- `CharacterInventoryItem` now carries `item_instance.flags` so item create and
+  value updates can serialize `ITEM_FIELD_FLAGS`.
+- Added initial item flags to inventory creation requests and set BOP / quest
+  item flags from real `item_template.bonding` data in loot, vendor, quest,
+  GM additem, and create-item spell paths.
+- Equipment recomputation now folds CMaNGOS item stat ids:
+  mana, health, agility, strength, intellect, spirit, and stamina.
+- Login and equipment moves now compute effective world stats from DB base
+  stats plus equipped gear plus active auras.
+- Equipment swaps now refresh world-stat and combat-stat packets and update
+  map runtime stats; BOE/BOP/quest equipment binds the item in `item_instance`.
+- Mail attachments now reject soulbound items from `item_instance.flags`, in
+  line with CMaNGOS `Item::CanBeTraded`; wrapped items remain mailable except
+  for COD.
+- Auction sell validation now rejects soulbound, timed, conjured, and non-empty
+  container items without treating every unrelated item flag as unsellable.
+- Stack merges for bind-on-pickup / quest items now bind the surviving
+  destination stack, covering old unbound stacks without inventing data.
+- `WorldDataFiles` now loads `SpellItemEnchantment.dbc`; equipped item loading
+  folds stat and resistance enchantment effects from `item_instance.enchantments`
+  so random-property items such as "of Strength" / "of the Bear" affect world
+  stats on login and equipment changes.
+- Runtime aura recomputation now treats DB base stats plus equipped item/enchant
+  stats as the base stat line, so active aura refreshes do not drop gear stats.
 
 ## Tests Run
 
-- Pre-merge integration baseline in `codex/rusty-mangos`:
-  - `.\scripts\test-rust.cmd`
-- Auction branch before merge:
-  - `cargo fmt -p wow-config -p wow-db -p wow-network -p worldserver`
-  - `cargo check -p wow-network -p wow-config -p worldserver`
-  - `cargo test -p wow-config world_config -- --nocapture`
-  - `cargo test -p wow-network auction -- --nocapture`
-  - `cargo test -p wow-network parse_world_client_packet_decodes_control_requests -- --nocapture`
-- Still needed on the integrated branch after this merge-up:
-  - rerun focused auction/config coverage,
-  - rerun `.\scripts\test-rust.cmd`,
-  - perform live 1.12 client smoke for auction flows.
-- Post-landing auction-create hotfix validation:
-  - `cargo check -p wow-db -p wow-network -p worldserver`
-  - `cargo test -p wow-network auction -- --nocapture`
-  - `.\scripts\restart-game-stack.cmd --release`
-- Post-landing auction-cancel hotfix validation:
-  - `cargo check -p wow-db -p wow-network -p worldserver`
-  - `cargo test -p wow-network auction -- --nocapture`
-  - `.\scripts\restart-game-stack.cmd --release`
-- Post-landing auction-mail hotfix validation:
-  - `cargo check -p wow-db -p wow-network -p worldserver`
-  - `cargo test -p wow-network mail -- --nocapture`
-  - `cargo test -p wow-network auction -- --nocapture`
-  - `.\scripts\restart-game-stack.cmd --release`
+- `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex cargo test -p wow-network equipped_item_primary_stats_feed_world_and_combat_stats_like_cmangos -- --nocapture`
+- `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex cargo test -p wow-network random_property_stat_enchantments_feed_world_stats_like_cmangos -- --nocapture`
+- `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex cargo test -p wow-network spell_item_enchantment_dbc_parser_reads_stat_effects -- --nocapture`
+- `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex cargo test -p wow-network item_binding_rules_match_cmangos_pickup_and_equip_boundaries -- --nocapture`
+- `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex cargo test -p wow-network item_create_block_includes_soulbound_instance_flag -- --nocapture`
+- `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex cargo test -p wow-network inventory_recomputed_combat_stats_keep_passive_resistance_on_self_update -- --nocapture`
+- `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex cargo test -p wow-network mail_attachment_transfer_rejects_soulbound_like_cmangos_can_be_traded -- --nocapture`
+- `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex cargo test -p wow-network mail_attachment_transfer_allows_wrapped_items_except_cod -- --nocapture`
+- `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=target-codex cargo test -p wow-network auction_listing_rejects_soulbound_but_not_unrelated_instance_flags -- --nocapture`
+- `.\scripts\test-rust.cmd`
+  - failed in pre-existing dirty lanes on unrelated clippy/dead-code findings
+    such as `unit_bytes_1`, unused creature aura / periodic damage helpers,
+    gossip/spell packet `too_many_arguments`, and existing spell/combat clippy
+    warnings.
 
 ## Known Blockers / Unproven Areas
 
-- The merged code still needs post-integration validation on this branch before
-  it should be merged back into `codex/rusty-mangos`.
-- Full auction flow remains unproven against a live 1.12 client session:
-  browse, sell, cancel, bid, buyout, outbid mail, grouped markets, neutral
-  separation, optional global market, and expiry settlement all still need
-  smoke confirmation.
-- The previous first-create crash should now be fixed; re-test live auction
-  creation before chasing any later AH issues.
-- The previous cancel-auction crash should now be fixed; re-test live cancel
-  before chasing any later AH issues.
-- The previous mail-access crash after auction cancel should now be fixed;
-  re-test opening the generated mail before chasing any later AH issues.
-- Search `usable` filtering still does not include the extra CMaNGOS
-  recipe-known suppression path.
-- The unrelated local MySQL auth issue can still block the two known EventAI
-  immolate tests in broad DB-backed runs if those tests are exercised again.
+- Full `test-rust.cmd` is not green in this workspace because unrelated dirty
+  clippy warnings are promoted to errors.
+- This pass implements only `SpellItemEnchantment.dbc` stat/resistance effects
+  for equipped item enchantment slots. Enchantment equip spells, proc/combat
+  spells, damage/totem weapon modifiers, bound-by-enchant behavior, and
+  `ItemSet.dbc` bonuses remain future work.
+- Existing unbound BOP stacks are guarded on future stack merges, but a DB
+  cleanup/migration would still be needed for unmerged historical bad rows.
+- Trade has no implemented item exchange path yet beyond cancel plumbing, so
+  soulbound trade rejection remains future work with trade itself.
 
 ## Recommended Next Task
 
-Validate the integrated auction branch, then merge it into
-`codex/rusty-mangos` if clean:
+Continue gear parity by proving the real-client equip path:
 
-- run focused auction/config/protocol tests on this merged branch,
-- run `.\scripts\test-rust.cmd`,
-- smoke faction, neutral, and optional cross-faction auction access in a live
-  client,
-- fix any packet or UI mismatches directly on `codex/auctionhouse`,
-- merge `codex/auctionhouse` back into `codex/rusty-mangos` once the integrated
-  result is proven.
+- Equip a DB-backed stat item and confirm visible character stats, max
+  health/mana, AP/crit/dodge, and relog state.
+- Exercise a BOE item through backpack -> equip -> relog and confirm
+  `item_instance.flags` plus client tooltip state.
+- Add `ItemSet.dbc` loaders before attempting set bonuses or item set equip
+  spells, and add CMaNGOS-shaped enchantment apply support for equip spells /
+  proc spells / weapon damage modifiers when those systems are ready.
 
 ## Key Files
 
+- `crates/wow-db/src/character/inventory.rs`
+- `crates/wow-db/src/character/types.rs`
+- `crates/wow-network/src/world/entities/player.rs`
+- `crates/wow-network/src/world/entities/item.rs`
+- `crates/wow-network/src/world/entities/update_data.rs`
+- `crates/wow-network/src/world/handlers/inventory.rs`
+- `crates/wow-network/src/world/handlers/mail.rs`
 - `crates/wow-network/src/world/handlers/auction.rs`
-- `crates/wow-network/src/world/handlers/gossip.rs`
-- `crates/wow-network/src/world/handlers/npc.rs`
-- `crates/wow-network/src/world/server/map_update.rs`
+- `crates/wow-network/src/world/server/player_login.rs`
 - `crates/wow-network/src/world/map_runtime/world_data.rs`
-- `crates/wow-network/src/world/mod.rs`
-- `crates/wow-network/src/world/session_runtime.rs`
-- `crates/wow-proto/src/world_packets.rs`
-- `crates/wow-db/src/character/auction.rs`
-- `crates/wow-config/src/lib.rs`
-- `bins/worldserver/src/main.rs`
-- `crates/wow-network/src/world/spells/plan.rs`
-- `crates/wow-network/src/world/tests/spells.rs`
-- `crates/wow-network/src/world/tests/query_gossip_data.rs`
-- `src/game/AuctionHouse/AuctionHouseHandler.cpp`
-- `src/game/AuctionHouse/AuctionHouseMgr.cpp`
-- `src/game/World/World.cpp`
+- `crates/wow-network/src/world/map_runtime/map_manager/players.rs`
+- `crates/wow-network/src/world/map_runtime/systems/players.rs`
+- `crates/wow-network/src/world/tests/character_inventory_social.rs`
+- CMaNGOS reference: `src/game/Entities/Player.cpp::_ApplyItemMods`,
+  `_ApplyItemBonuses`, `ApplyEnchantment`, and `VisualizeItem`

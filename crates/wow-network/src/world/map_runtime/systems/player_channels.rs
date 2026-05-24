@@ -35,6 +35,7 @@ impl MapRuntime {
                 caster_character_guid,
                 spell_id,
                 target: None,
+                max_range: 0.0,
                 expires_at: now + Duration::from_millis(duration_millis as u64),
                 next_tick_at: None,
                 tick_millis: 0,
@@ -89,6 +90,7 @@ impl MapRuntime {
         target: ObjectGuid,
         duration_millis: u32,
         tick_millis: u32,
+        max_range: f32,
         channel_interrupt_flags: u32,
         triggered_spell_speed: f32,
         damage_effect: PlayerDirectDamageEffect,
@@ -118,6 +120,7 @@ impl MapRuntime {
                 caster_character_guid,
                 spell_id,
                 target: Some(target),
+                max_range,
                 expires_at: now + Duration::from_millis(duration_millis as u64),
                 next_tick_at: Some(now),
                 tick_millis,
@@ -365,12 +368,37 @@ impl MapRuntime {
                 continue;
             };
             if let Some(target) = channel.target {
-                let target_alive = self
-                    .creatures
-                    .get(&target.raw())
-                    .is_some_and(DbCreatureRuntime::is_alive);
+                let Some(caster_player) = self.players.get(&caster_character_guid) else {
+                    self.active_player_channels.remove(&caster_character_guid);
+                    if let Some(event) = self.player_channel_clear_event(channel)? {
+                        packets.extend(self.channel_event_packets(event));
+                    }
+                    continue;
+                };
+                let Some(target_creature) = self.creatures.get(&target.raw()).cloned() else {
+                    self.active_player_channels.remove(&caster_character_guid);
+                    if let Some(event) = self.player_channel_clear_event(channel)? {
+                        packets.extend(self.channel_event_packets(event));
+                    }
+                    continue;
+                };
+                let target_alive = target_creature.is_alive();
                 if !target_alive {
                     self.active_player_channels.remove(&caster_character_guid);
+                    if let Some(event) = self.player_channel_clear_event(channel)? {
+                        packets.extend(self.channel_event_packets(event));
+                    }
+                    continue;
+                }
+                if channel.max_range > 0.0
+                    && caster_player
+                        .position
+                        .distance_to(&target_creature.current_position)
+                        > channel.max_range * 1.5
+                {
+                    self.active_player_channels.remove(&caster_character_guid);
+                    self.pending_player_channel_impacts
+                        .retain(|impact| impact.caster_character_guid != caster_character_guid);
                     if let Some(event) = self.player_channel_clear_event(channel)? {
                         packets.extend(self.channel_event_packets(event));
                     }

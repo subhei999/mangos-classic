@@ -1,7 +1,7 @@
 use super::*;
 use wow_proto::{
-    ServerWorldPacket, SmsgCastResultResponse, SmsgSpellGoResponse, SmsgSpellStartResponse,
-    SpellAmmoVisual,
+    ServerWorldPacket, SmsgCastResultResponse, SmsgSpellGoMissTarget, SmsgSpellGoResponse,
+    SmsgSpellStartResponse, SpellAmmoVisual,
 };
 
 #[allow(dead_code)]
@@ -119,7 +119,45 @@ pub(in crate::world) fn build_spell_go_body_with_source_and_ammo(
         spell_id,
         cast_flags,
         targets: *targets,
-        miss_info,
+        hit_targets: targets
+            .unit_target
+            .or(targets.gameobject_target)
+            .filter(|_| miss_info.is_none())
+            .into_iter()
+            .collect(),
+        miss_targets: targets
+            .unit_target
+            .or(targets.gameobject_target)
+            .zip(miss_info)
+            .map(|(target, miss_info)| SmsgSpellGoMissTarget { target, miss_info })
+            .into_iter()
+            .collect(),
+        ammo,
+    }
+    .body())
+}
+
+pub(in crate::world) fn build_spell_go_body_for_targets(
+    source: ObjectGuid,
+    caster: ObjectGuid,
+    spell_id: u32,
+    cast_flags: u16,
+    targets: &SpellCastTargets,
+    hit_targets: Vec<ObjectGuid>,
+    miss_targets: Vec<(ObjectGuid, u8)>,
+    ammo: Option<SpellAmmoVisual>,
+) -> anyhow::Result<Vec<u8>> {
+    Ok(SmsgSpellGoResponse {
+        source,
+        caster,
+        spell_id,
+        cast_flags,
+        targets: *targets,
+        hit_targets,
+        miss_targets: miss_targets
+            .into_iter()
+            .map(|(target, miss_info)| SmsgSpellGoMissTarget { target, miss_info })
+            .collect(),
         ammo,
     }
     .body())

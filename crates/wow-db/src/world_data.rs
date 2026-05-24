@@ -58,13 +58,16 @@ pub struct CreatureTemplateQuery {
     pub unit_flags: u32,
     pub dynamic_flags: u32,
     pub static_flags2: u32,
+    pub extra_flags: u32,
     pub unit_class: u8,
+    pub base_strength: Option<u32>,
     pub rank: u32,
     pub health_multiplier: f32,
     pub power_multiplier: f32,
     pub damage_multiplier: f32,
     pub damage_variance: f32,
     pub armor_multiplier: f32,
+    pub strength_multiplier: f32,
     pub min_level_health: u32,
     pub max_level_health: u32,
     pub min_level_mana: u32,
@@ -577,13 +580,16 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
                 creature_template.UnitFlags AS template_unit_flags, \
                 creature_template.DynamicFlags AS template_dynamic_flags, \
                 creature_template.StaticFlags2 AS template_static_flags2, \
+                creature_template.ExtraFlags AS template_extra_flags, \
                 creature_template.UnitClass AS template_unit_class, \
+                CAST(cls.Strength AS UNSIGNED) AS template_base_strength, \
                 creature_template.Rank AS template_rank, \
                 creature_template.HealthMultiplier AS template_health_multiplier, \
                 creature_template.PowerMultiplier AS template_power_multiplier, \
                 creature_template.DamageMultiplier AS template_damage_multiplier, \
                 creature_template.DamageVariance AS template_damage_variance, \
                 creature_template.ArmorMultiplier AS template_armor_multiplier, \
+                creature_template.StrengthMultiplier AS template_strength_multiplier, \
                 creature_template.MinLevelHealth AS template_min_level_health, \
                 creature_template.MaxLevelHealth AS template_max_level_health, \
                 creature_template.MinLevelMana AS template_min_level_mana, \
@@ -635,6 +641,12 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
+         LEFT JOIN creature_template_classlevelstats AS cls \
+           ON cls.Class = creature_template.UnitClass \
+          AND cls.Level = CASE \
+                WHEN creature_template.MaxLevel > creature_template.MinLevel THEN creature_template.MaxLevel \
+                ELSE creature_template.MinLevel \
+              END \
          LEFT JOIN game_event_creature ON creature.guid = game_event_creature.guid \
          LEFT JOIN creature_addon ON creature.guid = creature_addon.guid \
          LEFT JOIN creature_template_addon ON creature.id = creature_template_addon.entry \
@@ -686,6 +698,8 @@ pub struct SpellTemplateQuery {
     pub interrupt_flags: u32,
     pub aura_interrupt_flags: u32,
     pub channel_interrupt_flags: u32,
+    pub caster_aura_state: u32,
+    pub target_aura_state: u32,
     pub casting_time_index: u32,
     pub range_index: u32,
     pub speed: f32,
@@ -747,9 +761,13 @@ pub struct SpellTemplateQuery {
     pub effect_implicit_target_b1: u32,
     pub effect_implicit_target_b2: u32,
     pub effect_implicit_target_b3: u32,
+    pub effect_chain_target1: u32,
+    pub effect_chain_target2: u32,
+    pub effect_chain_target3: u32,
     pub effect_radius_index1: u32,
     pub effect_radius_index2: u32,
     pub effect_radius_index3: u32,
+    pub max_affected_targets: u32,
     pub effect_item_type1: u32,
     pub effect_item_type2: u32,
     pub effect_item_type3: u32,
@@ -777,6 +795,13 @@ pub struct SpellGroupMembershipQuery {
     pub spell_id: u32,
     pub group_id: u32,
     pub rule: u32,
+}
+
+#[derive(Debug, Clone, Copy, FromRow, Serialize, Deserialize, PartialEq)]
+pub struct SpellProcEventQuery {
+    pub entry: u32,
+    pub proc_ex: u32,
+    pub custom_chance: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -899,10 +924,13 @@ pub async fn get_creature_template_query(
                 creature_template.NpcFlags AS npc_flags, \
                 creature_template.UnitFlags AS unit_flags, creature_template.DynamicFlags AS dynamic_flags, \
                 creature_template.StaticFlags2 AS static_flags2, \
+                creature_template.ExtraFlags AS extra_flags, \
                 creature_template.UnitClass AS unit_class, creature_template.Rank AS rank, \
+                CAST(cls.Strength AS UNSIGNED) AS base_strength, \
                 creature_template.HealthMultiplier AS health_multiplier, creature_template.PowerMultiplier AS power_multiplier, \
                 creature_template.DamageMultiplier AS damage_multiplier, creature_template.DamageVariance AS damage_variance, \
                 creature_template.ArmorMultiplier AS armor_multiplier, \
+                creature_template.StrengthMultiplier AS strength_multiplier, \
                 creature_template.MinLevelHealth AS min_level_health, creature_template.MaxLevelHealth AS max_level_health, \
                 creature_template.MinLevelMana AS min_level_mana, creature_template.MaxLevelMana AS max_level_mana, \
                 creature_template.MinMeleeDmg AS min_melee_dmg, creature_template.MaxMeleeDmg AS max_melee_dmg, \
@@ -945,6 +973,12 @@ pub async fn get_creature_template_query(
                 CAST(COALESCE(equip_3.sheath, 0) AS UNSIGNED) AS equip_sheath3, \
                 creature_template.ExperienceMultiplier AS experience_multiplier \
          FROM creature_template \
+         LEFT JOIN creature_template_classlevelstats AS cls \
+           ON cls.Class = creature_template.UnitClass \
+          AND cls.Level = CASE \
+                WHEN creature_template.MaxLevel > creature_template.MinLevel THEN creature_template.MaxLevel \
+                ELSE creature_template.MinLevel \
+              END \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
          LEFT JOIN creature_model_info AS cmi1 ON cmi1.modelid = creature_template.DisplayId1 \
@@ -983,6 +1017,7 @@ pub async fn get_spell_template_query(
                 AttributesServerside AS attributes_serverside, \
                 InterruptFlags AS interrupt_flags, AuraInterruptFlags AS aura_interrupt_flags, \
                 ChannelInterruptFlags AS channel_interrupt_flags, \
+                CasterAuraState AS caster_aura_state, TargetAuraState AS target_aura_state, \
                 RecoveryTime AS recovery_time, Category AS category, CategoryRecoveryTime AS category_recovery_time, \
                 StartRecoveryCategory AS start_recovery_category, StartRecoveryTime AS start_recovery_time, \
                 MaxLevel AS max_level, BaseLevel AS base_level, SpellLevel AS spell_level, \
@@ -1025,9 +1060,13 @@ pub async fn get_spell_template_query(
                 EffectImplicitTargetB1 AS effect_implicit_target_b1, \
                 EffectImplicitTargetB2 AS effect_implicit_target_b2, \
                 EffectImplicitTargetB3 AS effect_implicit_target_b3, \
+                EffectChainTarget1 AS effect_chain_target1, \
+                EffectChainTarget2 AS effect_chain_target2, \
+                EffectChainTarget3 AS effect_chain_target3, \
                 EffectRadiusIndex1 AS effect_radius_index1, \
                 EffectRadiusIndex2 AS effect_radius_index2, \
                 EffectRadiusIndex3 AS effect_radius_index3, \
+                MaxAffectedTargets AS max_affected_targets, \
                 EffectItemType1 AS effect_item_type1, \
                 EffectItemType2 AS effect_item_type2, \
                 EffectItemType3 AS effect_item_type3, \
@@ -1037,6 +1076,21 @@ pub async fn get_spell_template_query(
                 DmgClass AS dmg_class, procFlags AS proc_flags, procChance AS proc_chance, \
                 procCharges AS proc_charges \
          FROM spell_template WHERE Id = ?",
+    )
+    .bind(spell)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_spell_proc_event_query(
+    pool: &MySqlPool,
+    spell: u32,
+) -> Result<Option<SpellProcEventQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("spell_proc_event_load");
+    sqlx::query_as::<_, SpellProcEventQuery>(
+        "SELECT entry, procEx AS proc_ex, CustomChance AS custom_chance \
+         FROM spell_proc_event WHERE entry = ?",
     )
     .bind(spell)
     .fetch_optional(pool)
@@ -2348,13 +2402,16 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.UnitFlags AS template_unit_flags, \
                 creature_template.DynamicFlags AS template_dynamic_flags, \
                 creature_template.StaticFlags2 AS template_static_flags2, \
+                creature_template.ExtraFlags AS template_extra_flags, \
                 creature_template.UnitClass AS template_unit_class, \
+                CAST(cls.Strength AS UNSIGNED) AS template_base_strength, \
                 creature_template.Rank AS template_rank, \
                 creature_template.HealthMultiplier AS template_health_multiplier, \
                 creature_template.PowerMultiplier AS template_power_multiplier, \
                 creature_template.DamageMultiplier AS template_damage_multiplier, \
                 creature_template.DamageVariance AS template_damage_variance, \
                 creature_template.ArmorMultiplier AS template_armor_multiplier, \
+                creature_template.StrengthMultiplier AS template_strength_multiplier, \
                 creature_template.MinLevelHealth AS template_min_level_health, \
                 creature_template.MaxLevelHealth AS template_max_level_health, \
                 creature_template.MinLevelMana AS template_min_level_mana, \
@@ -2406,6 +2463,12 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
          JOIN creature_template ON creature.id = creature_template.Entry \
+         LEFT JOIN creature_template_classlevelstats AS cls \
+           ON cls.Class = creature_template.UnitClass \
+          AND cls.Level = CASE \
+                WHEN creature_template.MaxLevel > creature_template.MinLevel THEN creature_template.MaxLevel \
+                ELSE creature_template.MinLevel \
+              END \
          LEFT JOIN game_event_creature ON creature.guid = game_event_creature.guid \
          LEFT JOIN creature_addon ON creature.guid = creature_addon.guid \
          LEFT JOIN creature_template_addon ON creature.id = creature_template_addon.entry \
@@ -3225,13 +3288,16 @@ mod world_data_tests {
                 unit_flags: 0,
                 dynamic_flags: 0,
                 static_flags2: 0,
+                extra_flags: 0,
                 unit_class: 1,
+                base_strength: Some(20),
                 rank: 0,
                 health_multiplier: 1.0,
                 power_multiplier: 1.0,
                 damage_multiplier: 1.0,
                 damage_variance: 1.0,
                 armor_multiplier: 1.0,
+                strength_multiplier: 1.0,
                 min_level_health: 42,
                 max_level_health: 42,
                 min_level_mana: 0,
@@ -3919,13 +3985,16 @@ struct CreatureSpawnRow {
     template_unit_flags: u32,
     template_dynamic_flags: u32,
     template_static_flags2: u32,
+    template_extra_flags: u32,
     template_unit_class: u8,
+    template_base_strength: Option<u32>,
     template_rank: u32,
     template_health_multiplier: f32,
     template_power_multiplier: f32,
     template_damage_multiplier: f32,
     template_damage_variance: f32,
     template_armor_multiplier: f32,
+    template_strength_multiplier: f32,
     template_min_level_health: u32,
     template_max_level_health: u32,
     template_min_level_mana: u32,
@@ -4038,13 +4107,16 @@ impl CreatureSpawnRow {
                 unit_flags: self.template_unit_flags,
                 dynamic_flags: self.template_dynamic_flags,
                 static_flags2: self.template_static_flags2,
+                extra_flags: self.template_extra_flags,
                 unit_class: self.template_unit_class,
+                base_strength: self.template_base_strength,
                 rank: self.template_rank,
                 health_multiplier: self.template_health_multiplier,
                 power_multiplier: self.template_power_multiplier,
                 damage_multiplier: self.template_damage_multiplier,
                 damage_variance: self.template_damage_variance,
                 armor_multiplier: self.template_armor_multiplier,
+                strength_multiplier: self.template_strength_multiplier,
                 min_level_health: self.template_min_level_health,
                 max_level_health: self.template_max_level_health,
                 min_level_mana: self.template_min_level_mana,

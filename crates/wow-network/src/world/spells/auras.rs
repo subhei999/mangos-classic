@@ -9,13 +9,30 @@ pub(in crate::world) enum AuraOwnerKind {
     DbCreature,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(in crate::world) struct VisibleAuraSlot<'a> {
+    pub(in crate::world) slot: usize,
+    pub(in crate::world) aura: &'a ActiveAura,
+    pub(in crate::world) applications: u8,
+}
+
 pub(in crate::world) fn visible_aura_slots(
     active_auras: &[ActiveAura],
-) -> Vec<(usize, &ActiveAura)> {
+) -> Vec<VisibleAuraSlot<'_>> {
     let mut positive_slot = 0;
     let mut negative_slot = MAX_POSITIVE_AURA_SLOTS;
-    let mut slots = Vec::new();
+    let mut slots: Vec<VisibleAuraSlot<'_>> = Vec::new();
     for aura in active_auras.iter().filter(|aura| aura.visible) {
+        if let Some(existing) = slots.iter_mut().find(|existing| {
+            existing.aura.positive == aura.positive
+                && existing.aura.spell_id == aura.spell_id
+                && aura_supports_visible_applications(existing.aura)
+                && aura_supports_visible_applications(aura)
+                && existing.aura.stat_modifiers == aura.stat_modifiers
+        }) {
+            existing.applications = existing.applications.saturating_add(1);
+            continue;
+        }
         let slot = if aura.positive {
             if positive_slot >= MAX_POSITIVE_AURA_SLOTS {
                 continue;
@@ -31,9 +48,17 @@ pub(in crate::world) fn visible_aura_slots(
             negative_slot += 1;
             slot
         };
-        slots.push((slot, aura));
+        slots.push(VisibleAuraSlot {
+            slot,
+            aura,
+            applications: 0,
+        });
     }
     slots
+}
+
+fn aura_supports_visible_applications(aura: &ActiveAura) -> bool {
+    aura.periodic_damage.is_none() && aura.periodic_regen.is_none() && aura.proc_triggers.is_empty()
 }
 
 pub(in crate::world) fn build_aura_duration_update_body(
@@ -53,7 +78,9 @@ pub(in crate::world) fn build_player_aura_duration_update_packets(
 ) -> Vec<OutboundWorldPacket> {
     visible_aura_slots(active_auras)
         .into_iter()
-        .filter_map(|(slot, aura)| {
+        .filter_map(|visible| {
+            let slot = visible.slot;
+            let aura = visible.aura;
             aura.remaining_duration_millis(now)
                 .map(|remaining_millis| OutboundWorldPacket {
                     opcode: WorldOpcode::SmsgUpdateAuraDuration as u16,

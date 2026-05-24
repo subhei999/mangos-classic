@@ -5,7 +5,6 @@ pub async fn create_character(
     world_pool: &MySqlPool,
     character: NewCharacter,
 ) -> Result<CreatedCharacter, DbError> {
-    let guid = next_character_guid(character_pool).await?;
     let create_info = get_player_create_info(world_pool, character.race, character.class).await?;
     let world_stats =
         get_player_world_stats(world_pool, character.race, character.class, 1).await?;
@@ -17,6 +16,7 @@ pub async fn create_character(
     );
     let player_bytes2 = character.facial_hair as u32 | ((REST_STATE_NORMAL as u32) << 24);
     let mut tx = character_pool.begin().await?;
+    let guid = next_character_guid_tx(&mut tx).await?;
 
     sqlx::query(
         "INSERT INTO characters \

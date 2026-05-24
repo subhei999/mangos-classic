@@ -432,6 +432,11 @@ fn test_character(race: u8, class: u8) -> CharacterEnumEntry {
         position_y: -132.493,
         position_z: 83.5312,
         orientation: 0.0,
+        homebind_zone: 12,
+        homebind_map: 0,
+        homebind_position_x: -8949.95,
+        homebind_position_y: -132.493,
+        homebind_position_z: 83.5312,
         guildid: None,
         player_flags: 0,
         at_login: 0,
@@ -536,7 +541,12 @@ fn test_item_template(
 }
 
 fn equipped_template(slot: u8, template: ItemTemplateQuery) -> EquippedItemTemplate {
-    EquippedItemTemplate { slot, template }
+    EquippedItemTemplate {
+        slot,
+        template,
+        enchantment_stat_bonuses: [0; ITEM_MOD_STAT_FIELD_COUNT],
+        enchantment_resistance_bonuses: [0; MAX_SPELL_SCHOOL],
+    }
 }
 
 fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
@@ -584,13 +594,16 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         unit_flags: 0x20,
         dynamic_flags: 0,
         static_flags2: 0,
+        extra_flags: 0,
         unit_class: 1,
+        base_strength: Some(20),
         rank: 1,
         health_multiplier: 1.0,
         power_multiplier: 1.0,
         damage_multiplier: 1.0,
         damage_variance: 1.0,
         armor_multiplier: 1.0,
+        strength_multiplier: 1.0,
         min_level_health: 80,
         max_level_health: 120,
         min_level_mana: 0,

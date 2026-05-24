@@ -26,8 +26,10 @@ pub(in crate::world) async fn dispatch_npc_packet(
         packets::ParsedWorldClientPacket::GossipHello(_) => {
             handle_gossip_hello(
                 &mut *ctx.stream,
+                ctx.character_db_pool,
                 &ctx.runtime_state.object_mgr,
                 ctx.world_db_pool,
+                ctx.runtime_state.world_data_files.as_ref(),
                 &ctx.runtime_state.maps,
                 packet.gossip_hello()?,
                 &mut *ctx.session,
@@ -147,6 +149,59 @@ pub(in crate::world) async fn dispatch_npc_packet(
                 ctx.world_db_pool,
                 &ctx.runtime_state.vendor_stock,
                 packet.buy_item_in_slot()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::TaxiNodeStatusQuery(_) => {
+            handle_taxi_node_status_query(
+                &mut *ctx.stream,
+                ctx.character_db_pool,
+                ctx.world_db_pool,
+                ctx.runtime_state.world_data_files.as_ref(),
+                packet.taxi_node_status_query()?,
+                &*ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::TaxiQueryAvailableNodes(_) => {
+            handle_taxi_query_available_nodes(
+                &mut *ctx.stream,
+                ctx.character_db_pool,
+                ctx.world_db_pool,
+                ctx.runtime_state.world_data_files.as_ref(),
+                packet.taxi_query_available_nodes()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::ActivateTaxi(_) => {
+            handle_activate_taxi(
+                &mut *ctx.stream,
+                TaxiDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    world_data_files: ctx.runtime_state.world_data_files.as_ref(),
+                    maps: &ctx.runtime_state.maps,
+                    sessions: &ctx.runtime_state.sessions,
+                    account_id: ctx.account_id,
+                },
+                packet.activate_taxi()?,
+                &mut *ctx.session,
+                &mut *ctx.header_crypto,
+            )
+            .await
+        }
+        packets::ParsedWorldClientPacket::BinderActivate(_) => {
+            handle_binder_activate(
+                &mut *ctx.stream,
+                ctx.character_db_pool,
+                ctx.world_db_pool,
+                &ctx.runtime_state.maps,
+                packet.binder_activate()?,
                 &mut *ctx.session,
                 &mut *ctx.header_crypto,
             )

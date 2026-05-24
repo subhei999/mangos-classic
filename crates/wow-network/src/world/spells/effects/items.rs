@@ -175,6 +175,7 @@ pub(in crate::world) async fn apply_player_create_item_effects(
                         item_template: template.entry,
                         count: slot.count,
                         durability: template.max_durability,
+                        initial_flags: item_binding_flags_on_pickup(&template),
                         random_properties: random_properties.as_ref(),
                     },
                 )
@@ -496,6 +497,14 @@ pub(in crate::world) async fn apply_item_aura_effect(
     } else {
         update_bodies.push(build_player_aura_update_body(
             caster,
+            character_snapshot.class,
+            session.character.player_stand_state,
+            deps.shared_world
+                .maps
+                .player_runtime_snapshot(map_id, character_guid)
+                .await
+                .map(|snapshot| snapshot.aura_state)
+                .unwrap_or(0),
             &session.auras.active_auras,
         )?);
         for packet in build_player_aura_duration_update_packets(&session.auras.active_auras, now) {

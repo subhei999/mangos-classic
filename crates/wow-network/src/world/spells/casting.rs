@@ -117,7 +117,7 @@ pub(in crate::world) async fn handle_cast_spell(
         &targets,
         now,
     )
-    .await
+    .await?
     {
         return send_spell_cast_failure(stream, caster, packet.spell_id, failure, header_crypto)
             .await;

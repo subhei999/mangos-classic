@@ -1,7 +1,8 @@
-async fn next_character_guid(pool: &MySqlPool) -> Result<u32, DbError> {
-    let max_guid: Option<u32> = sqlx::query_scalar("SELECT MAX(guid) FROM characters")
-        .fetch_one(pool)
-        .await?;
+async fn next_character_guid_tx(tx: &mut Transaction<'_, MySql>) -> Result<u32, DbError> {
+    let max_guid: Option<u32> =
+        sqlx::query_scalar("SELECT guid FROM characters ORDER BY guid DESC LIMIT 1 FOR UPDATE")
+            .fetch_optional(&mut **tx)
+            .await?;
 
     Ok(max_guid.unwrap_or(0).saturating_add(1))
 }
@@ -296,18 +297,11 @@ async fn get_item_template(
     Ok(row)
 }
 
-async fn next_item_guid(pool: &MySqlPool) -> Result<u32, DbError> {
-    let max_guid: Option<u32> = sqlx::query_scalar("SELECT MAX(guid) FROM item_instance")
-        .fetch_one(pool)
-        .await?;
-
-    Ok(max_guid.unwrap_or(0).saturating_add(1))
-}
-
 async fn next_item_guid_tx(tx: &mut Transaction<'_, MySql>) -> Result<u32, DbError> {
-    let max_guid: Option<u32> = sqlx::query_scalar("SELECT MAX(guid) FROM item_instance")
-        .fetch_one(&mut **tx)
-        .await?;
+    let max_guid: Option<u32> =
+        sqlx::query_scalar("SELECT guid FROM item_instance ORDER BY guid DESC LIMIT 1 FOR UPDATE")
+            .fetch_optional(&mut **tx)
+            .await?;
 
     Ok(max_guid.unwrap_or(0).saturating_add(1))
 }

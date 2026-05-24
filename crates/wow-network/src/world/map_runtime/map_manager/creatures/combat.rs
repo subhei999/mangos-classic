@@ -25,6 +25,32 @@ impl MapRuntimeManager {
         Some((combat, creature))
     }
 
+    pub(in crate::world) async fn apply_db_creature_taunt_threat(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        taunter: ObjectGuid,
+    ) {
+        let map = self.get_or_create_map(map_id, 0).await;
+        map.lock()
+            .await
+            .apply_db_creature_taunt_threat(attacker, taunter);
+    }
+
+    pub(in crate::world) async fn switch_db_creature_threat_victim_if_needed(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        exclude_character_guid: Option<u32>,
+    ) -> anyhow::Result<Option<DbCreatureThreatTargetSwitchEvent>> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let event = map
+            .lock()
+            .await
+            .switch_db_creature_threat_victim_if_needed(attacker, exclude_character_guid);
+        event
+    }
+
     #[allow(dead_code)]
     pub(in crate::world) async fn clear_db_creature_combat(
         &self,
@@ -180,6 +206,7 @@ impl MapRuntimeManager {
                 attacker,
                 damage_taken: event.damage,
                 victim_health: event.victim_health,
+                aura_changed: event.aura_changed,
                 rage_gain: rage_gain_from_damage_taken(event.damage, player_level),
                 player_died: event.victim_health == 0,
             });
@@ -575,6 +602,7 @@ impl MapRuntimeManager {
                                         target,
                                         spell_id: plan.spell_id,
                                         school_mask: spell_school_mask_from_school(template.school),
+                                        mechanic: template.mechanic,
                                         requires_behind: plan.requires_behind,
                                         effect,
                                         aura,

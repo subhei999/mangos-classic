@@ -233,10 +233,21 @@ pub(in crate::world) async fn send_active_db_creature_attack(
                 attacker,
                 damage_taken,
                 victim_health,
+                aura_changed,
                 rage_gain,
                 player_died,
             } => {
                 session.character.player_health = victim_health;
+                if aura_changed {
+                    if let Some(snapshot) = context
+                        .shared_world
+                        .maps
+                        .player_runtime_snapshot(map_id, character_guid)
+                        .await
+                    {
+                        session.auras.active_auras = snapshot.active_auras;
+                    }
+                }
                 let advanced_skill = try_advance_combat_skill_value(
                     character_level,
                     SKILL_DEFENSE,
@@ -305,8 +316,13 @@ pub(in crate::world) async fn send_active_db_creature_attack(
                     .await?;
                     apply_player_taken_melee_proc_auras(
                         stream,
-                        context.world_db_pool,
-                        context.shared_world,
+                        SpellCastDeps {
+                            character_db_pool: context.character_db_pool,
+                            world_db_pool: context.world_db_pool,
+                            account_id: 0,
+                            shared_world: context.shared_world,
+                            parties: context.parties,
+                        },
                         session,
                         map_id,
                         character_guid,
@@ -405,6 +421,7 @@ pub(in crate::world) struct ActiveDbCreatureAttackContext<'a> {
     pub(in crate::world) character_db_pool: &'a MySqlPool,
     pub(in crate::world) world_db_pool: &'a MySqlPool,
     pub(in crate::world) shared_world: SharedWorldDeps<'a>,
+    pub(in crate::world) parties: &'a PartyManager,
     pub(in crate::world) session_id: SessionId,
 }
 
@@ -495,8 +512,7 @@ pub(in crate::world) async fn collect_db_creature_spell_unit_condition(
 #[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn apply_player_taken_melee_proc_auras(
     stream: &mut WorldPacketSink,
-    world_db_pool: &MySqlPool,
-    shared_world: SharedWorldDeps<'_>,
+    deps: SpellCastDeps<'_>,
     session: &mut WorldSessionState,
     map_id: u32,
     character_guid: u32,
@@ -514,59 +530,35 @@ pub(in crate::world) async fn apply_player_taken_melee_proc_auras(
         return Ok(());
     }
 
+    let character_level = session
+        .character
+        .active_character
+        .as_ref()
+        .map(|character| character.level)
+        .unwrap_or(1);
+    let targets = SpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_UNIT,
+        unit_target: Some(attacker),
+        gameobject_target: None,
+        source_location: None,
+        destination: None,
+    };
+
     for spell_id in trigger_spell_ids {
-        let Some(template) = shared_world
-            .object_mgr
-            .spell_template(world_db_pool, spell_id)
-            .await?
-        else {
-            warn!(
-                spell_id,
-                "Skipping aura proc because triggered spell_template row is missing"
-            );
-            continue;
-        };
-        let aura = build_active_aura(
-            &template,
+        apply_player_trigger_spell_by_id(
+            stream,
+            deps,
+            session,
             player,
-            session
-                .character
-                .active_character
-                .as_ref()
-                .map(|character| character.level)
-                .unwrap_or(1),
-            player_spell_effect_value_context(
-                shared_world.maps,
-                &template,
-                &session.character.character_skills,
-                0,
-            ),
+            character_guid,
+            character_level,
+            map_id,
+            spell_id,
+            &targets,
             now,
-            shared_world.maps.spell_duration(template.duration_index),
-        );
-        if let Some(event) = shared_world
-            .maps
-            .apply_db_creature_aura(map_id, attacker, character_guid, aura, now)
-            .await?
-        {
-            send_packet(
-                stream,
-                WorldOpcode::SmsgUpdateObject as u16,
-                &event.update_body,
-                Some(&mut *header_crypto),
-            )
-            .await?;
-            for packet in event.direct_packets {
-                send_packet(
-                    stream,
-                    packet.opcode,
-                    &packet.body,
-                    Some(&mut *header_crypto),
-                )
-                .await?;
-            }
-            shared_world.sessions.dispatch(event.observer_packets).await;
-        }
+            header_crypto,
+        )
+        .await?;
     }
 
     Ok(())
@@ -870,9 +862,22 @@ pub(in crate::world) fn player_unit_flags(in_combat: bool) -> u32 {
 }
 
 pub(in crate::world) fn player_unit_flags_with_looting(in_combat: bool, looting: bool) -> u32 {
+    player_unit_flags_with_looting_and_auras(in_combat, looting, &[])
+}
+
+pub(in crate::world) fn player_unit_flags_with_looting_and_auras(
+    in_combat: bool,
+    looting: bool,
+    active_auras: &[ActiveAura],
+) -> u32 {
     UNIT_FLAG_PLAYER_CONTROLLED
         | (if looting { UNIT_FLAG_LOOTING } else { 0 })
         | (if in_combat { UNIT_FLAG_IN_COMBAT } else { 0 })
+        | (if active_aura_has_disarm(active_auras) {
+            UNIT_FLAG_DISARMED
+        } else {
+            0
+        })
 }
 
 pub(in crate::world) fn db_creature_unit_flags(

@@ -6,6 +6,7 @@ pub(in crate::world) const PLAYER_RANGED_AUTO_ATTACK_WINDUP_MILLIS: u64 = 500;
 // CMaNGOS reference: src/game/Maps/Map.cpp player enter, movement, visibility, and nearby broadcast.
 pub(in crate::world) const PLAYER_MANA_REGEN_INTERRUPT: Duration = Duration::from_secs(5);
 pub(in crate::world) const PLAYER_ENERGY_REGEN_PER_TICK: u32 = 20;
+pub(in crate::world) const PLAYER_REACTIVE_DEFENSE_DURATION: Duration = Duration::from_millis(4000);
 pub(in crate::world) const CMANGOS_DISCONNECTED_PLAYER_LINGER: Duration = Duration::from_secs(60);
 pub(in crate::world) const PLAYER_ENVIRONMENT_ACTIVE_FLAGS_REFRESH_INTERVAL: Duration =
     Duration::from_millis(750);
@@ -72,6 +73,66 @@ fn applied_player_movement(
 }
 
 impl MapRuntime {
+    pub(in crate::world) fn activate_player_reactive_defense(
+        &mut self,
+        character_guid: u32,
+        now: Instant,
+    ) -> bool {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return false;
+        };
+        let previous_state = player.aura_state;
+        player.aura_state |= spell_aura_state_mask(AURA_STATE_DEFENSE);
+        player.reactive_defense_expires_at = Some(now + PLAYER_REACTIVE_DEFENSE_DURATION);
+        player.aura_state != previous_state
+    }
+
+    pub(in crate::world) fn clear_player_reactive_defense(&mut self, character_guid: u32) -> bool {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return false;
+        };
+        let previous_state = player.aura_state;
+        player.aura_state &= !spell_aura_state_mask(AURA_STATE_DEFENSE);
+        player.reactive_defense_expires_at = None;
+        player.aura_state != previous_state
+    }
+
+    pub(in crate::world) fn activate_player_reactive_overpower(
+        &mut self,
+        character_guid: u32,
+        target: ObjectGuid,
+        now: Instant,
+    ) -> Option<PlayerComboPointsEvent> {
+        if !self
+            .players
+            .get(&character_guid)
+            .is_some_and(|player| player.class == 1)
+        {
+            return None;
+        }
+        let event = self.add_player_combo_points(character_guid, target, 1)?;
+        self.players
+            .get_mut(&character_guid)?
+            .reactive_overpower_expires_at = Some(now + PLAYER_REACTIVE_DEFENSE_DURATION);
+        Some(event)
+    }
+
+    pub(in crate::world) fn clear_player_reactive_overpower(
+        &mut self,
+        character_guid: u32,
+    ) -> Option<PlayerComboPointsEvent> {
+        let player = self.players.get_mut(&character_guid)?;
+        player.reactive_overpower_expires_at = None;
+        let target = player.combo_target?;
+        player.combo_points = 0;
+        player.combo_target = None;
+        Some(PlayerComboPointsEvent {
+            combo_target: target,
+            combo_points: 0,
+            player_bytes: player.player_bytes,
+        })
+    }
+
     fn set_player_environment_tick_tracked(&mut self, character_guid: u32, tracked: bool) {
         if tracked {
             self.active_player_environment_guids.insert(character_guid);
@@ -413,6 +474,9 @@ impl MapRuntime {
                                 opcode: WorldOpcode::SmsgUpdateObject as u16,
                                 body: build_player_aura_update_body(
                                     player_guid,
+                                    player.class,
+                                    player.stand_state,
+                                    player.aura_state,
                                     &player.active_auras,
                                 )?,
                             };
@@ -422,6 +486,7 @@ impl MapRuntime {
                                     character_guid,
                                     player.class,
                                     player.stand_state,
+                                    &player.active_auras,
                                 )?,
                             };
                             if let Some(packet) = player.packet_to_client(aura_packet.clone()) {
@@ -647,27 +712,35 @@ impl MapRuntime {
             let mut unsuppressed_health_gain = 0u32;
             let mut unsuppressed_mana_gain = 0u32;
             let mut periodic_regen_events = Vec::new();
+            let active_auras_snapshot = player.active_auras.clone();
 
             for aura in &mut player.active_auras {
                 let Some(regen) = aura.periodic_regen.as_mut() else {
                     continue;
                 };
                 while regen.next_tick_at <= now {
+                    let health_amount = apply_flat_spell_bonus(
+                        regen.health_amount,
+                        active_aura_spell_healing_taken_bonus(
+                            &active_auras_snapshot,
+                            regen.school_mask,
+                        ),
+                    );
                     if regen.suppresses_recent_damage {
                         suppressible_health_gain =
-                            suppressible_health_gain.saturating_add(regen.health_amount);
+                            suppressible_health_gain.saturating_add(health_amount);
                         suppressible_mana_gain =
                             suppressible_mana_gain.saturating_add(regen.mana_amount);
                     } else {
                         unsuppressed_health_gain =
-                            unsuppressed_health_gain.saturating_add(regen.health_amount);
+                            unsuppressed_health_gain.saturating_add(health_amount);
                         unsuppressed_mana_gain =
                             unsuppressed_mana_gain.saturating_add(regen.mana_amount);
                     }
                     periodic_regen_events.push((
                         aura.caster,
                         aura.spell_id,
-                        regen.health_amount,
+                        health_amount,
                         regen.mana_amount,
                     ));
                     regen.next_tick_at += Duration::from_millis(regen.tick_millis as u64);
@@ -1665,6 +1738,7 @@ impl MapRuntime {
         character_guid: u32,
     ) -> Option<PlayerComboPointsEvent> {
         let player = self.players.get_mut(&character_guid)?;
+        player.reactive_overpower_expires_at = None;
         let target = player.combo_target?;
         player.combo_points = 0;
         player.combo_target = None;
@@ -1775,6 +1849,7 @@ impl MapRuntime {
             power2: player.power2,
             power4: player.power4,
             max_power4: player.max_power4,
+            aura_state: player.aura_state,
             combo_target: player.combo_target,
             combo_points: player.combo_points,
             active_spells: player.active_spells.clone(),
@@ -2012,6 +2087,49 @@ impl MapRuntime {
             .collect())
     }
 
+    pub(in crate::world) fn update_player_world_stats(
+        &mut self,
+        character_guid: u32,
+        base_world_stats: PlayerWorldStats,
+        effective_world_stats: PlayerWorldStats,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let player = self
+            .players
+            .get_mut(&character_guid)
+            .ok_or_else(|| anyhow::anyhow!("player {character_guid} is not in map runtime"))?;
+        player.base_world_stats = base_world_stats;
+        player.effective_world_stats = effective_world_stats;
+        player.spirit = player.effective_world_stats.stats[4];
+        player.max_health = player.effective_world_stats.max_health().max(1);
+        player.health = player.health.min(player.max_health);
+        player.max_power1 = player.effective_world_stats.max_mana();
+        player.power1 = player.power1.min(player.max_power1);
+        let position = player.position;
+        let packet = OutboundWorldPacket {
+            opcode: WorldOpcode::SmsgUpdateObject as u16,
+            body: build_player_world_stats_update_body(
+                character_guid,
+                &player.base_world_stats,
+                &player.effective_world_stats,
+                player.health,
+                player.power1,
+            )?,
+        };
+        Ok(self
+            .nearby_player_guids(
+                position,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .filter_map(|observer_guid| {
+                self.players
+                    .get(&observer_guid)
+                    .and_then(|observer| observer.packet_to_client(packet.clone()))
+            })
+            .collect())
+    }
+
     pub(in crate::world) fn player_combat_stats(
         &self,
         character_guid: u32,
@@ -2080,6 +2198,37 @@ impl MapRuntime {
         }))
     }
 
+    pub(in crate::world) fn remove_player_auras_by_spell_ids(
+        &mut self,
+        character_guid: u32,
+        spell_ids: &[u32],
+        now: Instant,
+    ) -> anyhow::Result<Option<PlayerAuraDispelEvent>> {
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(None);
+        };
+        let was_rooted = active_aura_has_root(&player.active_auras);
+        let removed_spell_ids =
+            remove_active_auras_by_spell_ids(&mut player.active_auras, spell_ids);
+        if removed_spell_ids.is_empty() {
+            return Ok(None);
+        }
+        let is_rooted = active_aura_has_root(&player.active_auras);
+        refresh_player_runtime_stats_from_auras(player);
+        player.combat_stats =
+            combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
+        let mut aura_update = self.build_player_aura_update_event(character_guid, now)?;
+        if let Some(packet) =
+            build_player_root_transition_packet(character_guid, was_rooted, is_rooted)?
+        {
+            aura_update.direct_packets.push(packet);
+        }
+        Ok(Some(PlayerAuraDispelEvent {
+            removed_spell_ids,
+            aura_update,
+        }))
+    }
+
     pub(in crate::world) fn apply_player_aura(
         &mut self,
         character_guid: u32,
@@ -2098,6 +2247,7 @@ impl MapRuntime {
             failure: None,
             replace_spell_ids: replace_spell_ids.to_vec(),
             replace_any_caster_spell_ids: Vec::new(),
+            stack_limit: 1,
         };
         self.apply_player_aura_replacing_conflicts(character_guid, aura, &resolution)
     }
@@ -2225,6 +2375,40 @@ impl MapRuntime {
             let mut direct_death_packets = Vec::new();
             let mut observer_death_packets = Vec::new();
             let mut pending_damage_ticks = Vec::new();
+            let reactive_defense_expired = self
+                .players
+                .get(&character_guid)
+                .and_then(|player| player.reactive_defense_expires_at)
+                .is_some_and(|expires_at| now >= expires_at);
+            let reactive_overpower_expired = self
+                .players
+                .get(&character_guid)
+                .and_then(|player| player.reactive_overpower_expires_at)
+                .is_some_and(|expires_at| now >= expires_at);
+            let aura_state_changed =
+                reactive_defense_expired && self.clear_player_reactive_defense(character_guid);
+            if reactive_overpower_expired {
+                if let Some(event) = self.clear_player_reactive_overpower(character_guid) {
+                    if let Some(session_id) = self
+                        .players
+                        .get(&character_guid)
+                        .and_then(PlayerRuntime::client_session_id)
+                    {
+                        packets.push((
+                            session_id,
+                            OutboundWorldPacket {
+                                opcode: WorldOpcode::SmsgUpdateObject as u16,
+                                body: build_player_combo_points_update_body(
+                                    player_guid,
+                                    event.combo_target,
+                                    event.combo_points,
+                                    event.player_bytes,
+                                )?,
+                            },
+                        ));
+                    }
+                }
+            }
             let Some(player) = self.players.get_mut(&character_guid) else {
                 continue;
             };
@@ -2234,6 +2418,7 @@ impl MapRuntime {
             let before = player.active_auras.len();
             let target_snapshot =
                 player_spell_snapshot(player.level, player.class, &player.combat_stats);
+            let active_auras_snapshot = player.active_auras.clone();
             for aura in &mut player.active_auras {
                 let Some(periodic) = aura.periodic_damage.as_mut() else {
                     continue;
@@ -2255,10 +2440,11 @@ impl MapRuntime {
                     .or_else(|| creature_snapshots.get(&aura.caster.raw()))
                     .copied()
                     .unwrap_or(periodic.caster_snapshot);
-                let tick = calculate_periodic_damage_tick(
+                let tick = calculate_periodic_damage_tick_with_target_auras(
                     periodic,
                     caster_snapshot,
                     target_snapshot,
+                    &active_auras_snapshot,
                     player.health,
                 );
                 if tick.dealt_damage == 0 {
@@ -2317,7 +2503,11 @@ impl MapRuntime {
             if player_died {
                 self.active_player_spell_casts.remove(&character_guid);
             }
-            if player.active_auras.len() == before && !health_changed && tick_packets.is_empty() {
+            if player.active_auras.len() == before
+                && !aura_state_changed
+                && !health_changed
+                && tick_packets.is_empty()
+            {
                 continue;
             }
             refresh_player_runtime_stats_from_auras(player);
@@ -2411,11 +2601,25 @@ impl MapRuntime {
         let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
         let aura_packet = OutboundWorldPacket {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
-            body: build_player_aura_update_body(player_guid, &player.active_auras)?,
+            body: build_player_aura_update_body(
+                player_guid,
+                player.class,
+                player.stand_state,
+                player.aura_state,
+                &player.active_auras,
+            )?,
         };
         let combat_stats_packet = OutboundWorldPacket {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
-            body: build_player_combat_stats_update_body(character_guid, &player.combat_stats)?,
+            body: build_player_combat_stats_update_body_with_flags(
+                character_guid,
+                &player.combat_stats,
+                Some(player_unit_flags_with_looting_and_auras(
+                    player.in_combat,
+                    player.looting,
+                    &player.active_auras,
+                )),
+            )?,
         };
         let world_stats_packet = OutboundWorldPacket {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
@@ -2754,16 +2958,21 @@ impl MapRuntime {
     pub(in crate::world) fn player_spell_cast_failure(
         &self,
         character_guid: u32,
+        spell_template: Option<&wow_db::SpellTemplateQuery>,
         spell_profile: &SpellCastProfile,
+        requires_main_hand_weapon: bool,
         now: Instant,
     ) -> Option<u8> {
         let player = self.players.get(&character_guid)?;
         if self.active_player_spell_casts.contains_key(&character_guid) {
             return Some(SPELL_FAILED_SPELL_IN_PROGRESS);
         }
-        if let Some(failure) =
-            active_aura_player_spell_cast_failure(&player.active_auras, spell_profile)
-        {
+        if let Some(failure) = active_aura_player_spell_cast_failure(
+            &player.active_auras,
+            spell_template,
+            spell_profile,
+            requires_main_hand_weapon,
+        ) {
             return Some(failure);
         }
         if player
@@ -3049,7 +3258,11 @@ impl MapRuntime {
                     opcode: WorldOpcode::SmsgUpdateObject as u16,
                     body: build_unit_flags_update_body(
                         player_guid,
-                        player_unit_flags_with_looting(false, looting),
+                        player_unit_flags_with_looting_and_auras(
+                            false,
+                            looting,
+                            &player.active_auras,
+                        ),
                     )?,
                 });
             }
@@ -3260,7 +3473,7 @@ impl MapRuntime {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
             body: build_unit_flags_update_body(
                 ObjectGuid::new(HighGuid::Player, 0, character_guid),
-                player_unit_flags_with_looting(in_combat, looting),
+                player_unit_flags_with_looting_and_auras(in_combat, looting, &player.active_auras),
             )?,
         };
         Ok(self
@@ -3294,6 +3507,7 @@ impl MapRuntime {
                 character_guid,
                 player.class,
                 stand_state,
+                &player.active_auras,
             )?,
         };
         Ok(self

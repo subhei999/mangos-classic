@@ -105,9 +105,9 @@ pub(in crate::world) async fn item_use_spell_failure(
         gcd_only.cooldown_category = 0;
         gcd_only.category_cooldown_millis = 0;
         return maps
-            .player_spell_cast_failure(map_id, character_guid, &gcd_only, now)
+            .player_spell_cast_failure(map_id, character_guid, None, &gcd_only, false, now)
             .await;
     }
-    maps.player_spell_cast_failure(map_id, character_guid, item_spell, now)
+    maps.player_spell_cast_failure(map_id, character_guid, None, item_spell, false, now)
         .await
 }

@@ -132,6 +132,7 @@ impl MapRuntimeManager {
         target: ObjectGuid,
         duration_millis: u32,
         tick_millis: u32,
+        max_range: f32,
         damage_effect: PlayerDirectDamageEffect,
         channel_interrupt_flags: u32,
         triggered_spell_speed: f32,
@@ -145,6 +146,7 @@ impl MapRuntimeManager {
             target,
             duration_millis,
             tick_millis,
+            max_range,
             channel_interrupt_flags,
             triggered_spell_speed,
             damage_effect,
@@ -359,15 +361,20 @@ impl MapRuntimeManager {
         &self,
         map_id: u32,
         character_guid: u32,
+        spell_template: Option<&wow_db::SpellTemplateQuery>,
         spell_profile: &SpellCastProfile,
+        requires_main_hand_weapon: bool,
         now: Instant,
     ) -> Option<u8> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
-        let failure =
-            map.lock()
-                .await
-                .player_spell_cast_failure(character_guid, spell_profile, now);
+        let failure = map.lock().await.player_spell_cast_failure(
+            character_guid,
+            spell_template,
+            spell_profile,
+            requires_main_hand_weapon,
+            now,
+        );
         failure
     }
 
@@ -540,6 +547,7 @@ impl MapRuntimeManager {
             failure: None,
             replace_spell_ids: replace_spell_ids.to_vec(),
             replace_any_caster_spell_ids: Vec::new(),
+            stack_limit: 1,
         };
         self.apply_player_aura_replacing_conflicts(map_id, character_guid, aura, &resolution)
             .await
@@ -585,6 +593,24 @@ impl MapRuntimeManager {
         event
     }
 
+    pub(in crate::world) async fn remove_player_auras_by_spell_ids(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        spell_ids: &[u32],
+        now: Instant,
+    ) -> anyhow::Result<Option<PlayerAuraDispelEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event =
+            map.lock()
+                .await
+                .remove_player_auras_by_spell_ids(character_guid, spell_ids, now);
+        event
+    }
+
     pub(in crate::world) async fn apply_db_creature_aura(
         &self,
         map_id: u32,
@@ -622,6 +648,7 @@ impl MapRuntimeManager {
             failure: None,
             replace_spell_ids: replace_spell_ids.to_vec(),
             replace_any_caster_spell_ids: Vec::new(),
+            stack_limit: 1,
         };
         self.apply_db_creature_aura_replacing_conflicts(
             map_id,
@@ -700,6 +727,27 @@ impl MapRuntimeManager {
             caster_character_guid,
             dispel_type,
             count,
+            now,
+        );
+        event
+    }
+
+    pub(in crate::world) async fn remove_db_creature_auras_by_spell_ids(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+        caster_character_guid: u32,
+        spell_ids: &[u32],
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureAuraDispelEvent>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        let event = map.lock().await.remove_db_creature_auras_by_spell_ids(
+            creature_guid,
+            caster_character_guid,
+            spell_ids,
             now,
         );
         event

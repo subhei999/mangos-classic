@@ -10,5 +10,6 @@ include!("map_runtime_creatures.rs");
 include!("player_runtime_auras.rs");
 include!("navigation_motion.rs");
 include!("loot_vendor_trainer.rs");
+include!("spell_blink.rs");
 include!("spells.rs");
 include!("character_inventory_social.rs");

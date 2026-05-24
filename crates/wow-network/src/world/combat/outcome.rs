@@ -32,6 +32,11 @@ pub(in crate::world) const SKILL_POLEARMS: u16 = 229;
 pub(in crate::world) const SKILL_SPEARS: u16 = 253;
 pub(in crate::world) const SKILL_FISHING: u16 = 356;
 pub(in crate::world) const SKILL_FIST_WEAPONS: u16 = 473;
+pub(in crate::world) const CREATURE_EXTRA_FLAG_NO_PARRY: u32 = 0x0000_0004;
+pub(in crate::world) const CREATURE_EXTRA_FLAG_NO_BLOCK: u32 = 0x0000_0010;
+const CMANGOS_CREATURE_BASE_DODGE_PERCENT: f32 = 5.0;
+const CMANGOS_CREATURE_BASE_PARRY_PERCENT: f32 = 5.0;
+const CMANGOS_CREATURE_BASE_BLOCK_PERCENT: f32 = 5.0;
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::world) struct MeleeRollChances {
@@ -765,23 +770,46 @@ pub(in crate::world) fn creature_melee_input_against_player(
     creature: &DbCreatureRuntime,
     defense: PlayerMeleeDefenseInput,
 ) -> MeleeDamageInput {
-    let level = creature
-        .spawn
-        .template
-        .max_level
-        .max(creature.spawn.template.min_level);
+    let level = db_creature_combat_level(creature);
     let attacker_skill = u16::from(level.max(1)).saturating_mul(5);
     let damage_done = active_aura_physical_damage_done(&creature.active_auras) as f32;
+    let attack_power_delta = active_aura_attack_power_delta(&creature.active_auras);
+    let effective_attack_power_delta = effective_attack_power_delta(
+        creature.spawn.template.melee_attack_power,
+        attack_power_delta,
+    );
+    let attack_power_damage_delta = attack_power_damage_delta(
+        effective_attack_power_delta,
+        creature.spawn.template.melee_base_attack_time,
+        creature.spawn.template.max_melee_dmg > 0.0,
+    );
     MeleeDamageInput {
         attacker_level: level.max(1),
         attacker_skill,
         victim_defense: defense.defense_skill,
-        min_damage: (creature.spawn.template.min_melee_dmg + damage_done).max(1.0),
-        max_damage: (creature.spawn.template.max_melee_dmg + damage_done).max(1.0),
+        min_damage: (creature.spawn.template.min_melee_dmg
+            + damage_done
+            + attack_power_damage_delta)
+            .max(1.0),
+        max_damage: (creature.spawn.template.max_melee_dmg
+            + damage_done
+            + attack_power_damage_delta)
+            .max(1.0),
         victim_armor: defense.armor,
         victim_block_value: defense.block_value,
         chances: starter_player_defense_chances(level, defense),
     }
+}
+
+fn active_aura_attack_power_delta(active_auras: &[ActiveAura]) -> i32 {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .map(|modifier| match modifier {
+            AuraStatModifier::AttackPower { amount } => *amount,
+            _ => 0,
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -797,6 +825,71 @@ pub(in crate::world) fn calculate_player_main_hand_melee_damage(
         damage_roll,
     );
     armor_reduced_damage(attacker_level, victim_armor, damage)
+}
+
+pub(in crate::world) fn effective_db_creature_armor(creature: &DbCreatureRuntime) -> u32 {
+    let mut armor = creature.spawn.template.armor;
+    for modifier in creature
+        .active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+    {
+        let AuraStatModifier::Resistance {
+            school_mask,
+            amount,
+        } = modifier
+        else {
+            continue;
+        };
+        if school_mask & SPELL_SCHOOL_MASK_NORMAL == 0 {
+            continue;
+        }
+        armor = apply_flat_modifier(armor, *amount);
+    }
+    for modifier in creature
+        .active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+    {
+        let AuraStatModifier::ResistancePercent {
+            school_mask,
+            percent,
+        } = modifier
+        else {
+            continue;
+        };
+        if school_mask & SPELL_SCHOOL_MASK_NORMAL == 0 {
+            continue;
+        }
+        armor = apply_percent_modifier(armor, *percent);
+    }
+    armor
+}
+
+pub(in crate::world) fn db_creature_combat_level(creature: &DbCreatureRuntime) -> u8 {
+    creature
+        .spawn
+        .template
+        .max_level
+        .max(creature.spawn.template.min_level)
+        .max(1)
+}
+
+pub(in crate::world) fn effective_db_creature_strength(
+    creature: &DbCreatureRuntime,
+) -> Option<u32> {
+    let base_strength = creature.spawn.template.base_strength?;
+    if creature.spawn.template.strength_multiplier < 0.0 {
+        return Some(0);
+    }
+    Some((base_strength as f32 * creature.spawn.template.strength_multiplier) as u32)
+}
+
+pub(in crate::world) fn db_creature_shield_block_value(creature: &DbCreatureRuntime) -> u32 {
+    let Some(strength) = effective_db_creature_strength(creature) else {
+        return 0;
+    };
+    u32::from(db_creature_combat_level(creature)) / 2 + strength / 20
 }
 
 pub(in crate::world) fn player_main_hand_melee_outcome_against_db_creature(
@@ -824,13 +917,10 @@ pub(in crate::world) fn calculate_player_main_hand_melee_outcome_against_db_crea
     damage_roll: u32,
     outcome_roll: u32,
 ) -> MeleeDamageOutcome {
-    let level = creature
-        .spawn
-        .template
-        .max_level
-        .max(creature.spawn.template.min_level)
-        .max(1);
+    let level = db_creature_combat_level(creature);
     let creature_defense = u16::from(level).saturating_mul(5);
+    let creature_armor = effective_db_creature_armor(creature);
+    let creature_block_value = db_creature_shield_block_value(creature);
     calculate_melee_damage(
         MeleeDamageInput {
             attacker_level: attacker_level.max(1),
@@ -838,13 +928,14 @@ pub(in crate::world) fn calculate_player_main_hand_melee_outcome_against_db_crea
             victim_defense: creature_defense,
             min_damage: combat_stats.main_min_damage,
             max_damage: combat_stats.main_max_damage,
-            victim_armor: creature.spawn.template.armor,
-            victim_block_value: 0,
+            victim_armor: creature_armor,
+            victim_block_value: creature_block_value,
             chances: player_main_hand_chances_against_db_creature(
                 combat_stats,
                 attacker_skill,
                 creature_defense,
                 level,
+                creature.spawn.template.extra_flags,
             ),
         },
         damage_roll,
@@ -858,14 +949,10 @@ pub(in crate::world) fn player_ranged_outcome_against_db_creature(
     attacker_skill: u16,
     creature: &DbCreatureRuntime,
 ) -> MeleeDamageOutcome {
-    let level = creature
-        .spawn
-        .template
-        .max_level
-        .max(creature.spawn.template.min_level)
-        .max(1);
+    let level = db_creature_combat_level(creature);
     let creature_defense = u16::from(level).saturating_mul(5);
     let skill_delta = i32::from(attacker_skill) - i32::from(creature_defense);
+    let creature_armor = effective_db_creature_armor(creature);
     calculate_melee_damage(
         MeleeDamageInput {
             attacker_level: attacker_level.max(1),
@@ -873,7 +960,7 @@ pub(in crate::world) fn player_ranged_outcome_against_db_creature(
             victim_defense: creature_defense,
             min_damage: combat_stats.ranged_min_damage,
             max_damage: combat_stats.ranged_max_damage,
-            victim_armor: creature.spawn.template.armor,
+            victim_armor: creature_armor,
             victim_block_value: 0,
             chances: MeleeRollChances {
                 miss: cmangos_melee_miss_chance(
@@ -900,6 +987,7 @@ pub(in crate::world) fn player_main_hand_chances_against_db_creature(
     attacker_skill: u16,
     creature_defense: u16,
     creature_level: u8,
+    creature_extra_flags: u32,
 ) -> MeleeRollChances {
     let attacker_skill = i32::from(attacker_skill);
     let creature_defense = i32::from(creature_defense);
@@ -908,9 +996,17 @@ pub(in crate::world) fn player_main_hand_chances_against_db_creature(
     let crit = combat_stats.crit_percent + crit_difference as f32 * 0.2;
     MeleeRollChances {
         miss: miss.clamp(0.0, 100.0),
-        dodge: 0.0,
-        parry: 0.0,
-        block: 0.0,
+        dodge: effective_creature_dodge_chance(attacker_skill, creature_defense),
+        parry: effective_creature_parry_chance(
+            attacker_skill,
+            creature_defense,
+            creature_extra_flags,
+        ),
+        block: effective_creature_block_chance(
+            attacker_skill,
+            creature_defense,
+            creature_extra_flags,
+        ),
         glancing: if creature_level > 10 {
             (10.0 + ((creature_defense - attacker_skill) as f32 * 2.0)).clamp(0.0, 100.0)
         } else {
@@ -919,6 +1015,47 @@ pub(in crate::world) fn player_main_hand_chances_against_db_creature(
         crit: crit.clamp(0.0, 100.0),
         crushing: 0.0,
     }
+}
+
+pub(in crate::world) fn effective_creature_dodge_chance(
+    attacker_skill: i32,
+    creature_defense: i32,
+) -> f32 {
+    let difference = creature_defense - attacker_skill;
+    let factor = if difference > 0 { 0.1 } else { 0.04 };
+    (CMANGOS_CREATURE_BASE_DODGE_PERCENT + difference as f32 * factor).clamp(0.0, 100.0)
+}
+
+pub(in crate::world) fn effective_creature_parry_chance(
+    attacker_skill: i32,
+    creature_defense: i32,
+    creature_extra_flags: u32,
+) -> f32 {
+    if creature_extra_flags & CREATURE_EXTRA_FLAG_NO_PARRY != 0 {
+        return 0.0;
+    }
+    let difference = creature_defense - attacker_skill;
+    let factor = if difference > 10 {
+        0.6
+    } else if difference > 0 {
+        0.1
+    } else {
+        0.04
+    };
+    (CMANGOS_CREATURE_BASE_PARRY_PERCENT + difference as f32 * factor).clamp(0.0, 100.0)
+}
+
+pub(in crate::world) fn effective_creature_block_chance(
+    attacker_skill: i32,
+    creature_defense: i32,
+    creature_extra_flags: u32,
+) -> f32 {
+    if creature_extra_flags & CREATURE_EXTRA_FLAG_NO_BLOCK != 0 {
+        return 0.0;
+    }
+    let difference = creature_defense - attacker_skill;
+    let factor = if difference > 0 { 0.0 } else { 0.04 };
+    (CMANGOS_CREATURE_BASE_BLOCK_PERCENT + difference as f32 * factor).clamp(0.0, 100.0)
 }
 
 pub(in crate::world) fn starter_player_defense_chances(

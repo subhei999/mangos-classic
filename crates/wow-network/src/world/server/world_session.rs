@@ -179,11 +179,11 @@ pub(in crate::world) fn build_login_verify_world_body(character: &CharacterEnumE
 
 pub(in crate::world) fn build_bindpoint_update_body(character: &CharacterEnumEntry) -> Vec<u8> {
     SmsgBindpointUpdateResponse {
-        x: character.position_x,
-        y: character.position_y,
-        z: character.position_z,
-        map: character.map,
-        zone: character.zone,
+        x: character.homebind_position_x,
+        y: character.homebind_position_y,
+        z: character.homebind_position_z,
+        map: character.homebind_map,
+        zone: character.homebind_zone,
     }
     .body()
 }

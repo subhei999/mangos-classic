@@ -221,6 +221,22 @@ pub(in crate::world) fn build_item_stack_count_update_block(
     Ok(block)
 }
 
+pub(in crate::world) fn build_item_flags_update_block(
+    item_guid: u32,
+    flags: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let item_guid = ObjectGuid::new(HighGuid::Item, 0, item_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, item_guid)?;
+
+    let mut values = vec![None; ITEM_END_FIELDS];
+    set_update_value(&mut values, ITEM_FIELD_FLAGS, flags)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(block)
+}
+
 pub(in crate::world) fn build_player_money_update_body(
     character_guid: u32,
     money: u32,
@@ -408,6 +424,9 @@ pub(in crate::world) fn build_item_create_update_block(
                 charge_value as u32,
             )?;
         }
+    }
+    if item.flags != 0 {
+        set_update_value(&mut values, ITEM_FIELD_FLAGS, item.flags)?;
     }
     for (offset, enchantment_value) in parse_item_enchantment_fields(&item.enchantments)
         .into_iter()

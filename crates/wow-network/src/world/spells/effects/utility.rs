@@ -72,6 +72,24 @@ pub(in crate::world) async fn apply_player_direct_energize_effect(
     Ok(())
 }
 
+pub(in crate::world) async fn apply_player_taunt_effect(
+    deps: SpellCastDeps<'_>,
+    caster: ObjectGuid,
+    map_id: u32,
+    targets: &SpellCastTargets,
+) -> anyhow::Result<()> {
+    let Some(target) = targets.unit_target.filter(|target| target.is_creature()) else {
+        return Ok(());
+    };
+
+    deps.shared_world
+        .maps
+        .apply_db_creature_taunt_threat(map_id, target, caster)
+        .await;
+
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn apply_player_dispel_effect(
     stream: &mut WorldPacketSink,
@@ -202,9 +220,219 @@ pub(in crate::world) async fn apply_player_dispel_effect(
             .sessions
             .dispatch(event.aura_update.observer_packets)
             .await;
+
+        let target_switch = deps
+            .shared_world
+            .maps
+            .switch_db_creature_threat_victim_if_needed(map_id, target, Some(character_guid))
+            .await?;
+
+        send_db_creature_threat_target_switch(
+            stream,
+            deps.shared_world,
+            session,
+            target_switch,
+            header_crypto,
+        )
+        .await?;
     }
 
     debug!(spell_id, dispel_type, count, "Applied player dispel effect");
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_dispel_mechanic_effect(
+    stream: &mut WorldPacketSink,
+
+    deps: SpellCastDeps<'_>,
+
+    session: &mut WorldSessionState,
+
+    caster: ObjectGuid,
+
+    character_guid: u32,
+
+    map_id: u32,
+
+    spell_id: u32,
+
+    effect: SpellInfoEffect,
+
+    value_context: SpellEffectValueContext,
+
+    targets: &SpellCastTargets,
+
+    now: Instant,
+
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Ok(mechanic) = u32::try_from(effect.misc_value) else {
+        return Ok(());
+    };
+
+    if mechanic == 0 {
+        return Ok(());
+    }
+
+    let count = spell_effect_calculated_u32(effect, value_context)
+        .unwrap_or(1)
+        .max(1);
+
+    let target = targets.unit_target.unwrap_or(caster);
+
+    if target.is_player() {
+        let target_character_guid = target.counter();
+        let active_auras = if target_character_guid == character_guid {
+            session.auras.active_auras.clone()
+        } else {
+            let Some(snapshot) = deps
+                .shared_world
+                .maps
+                .player_runtime_snapshot(map_id, target_character_guid)
+                .await
+            else {
+                return Ok(());
+            };
+            snapshot.active_auras
+        };
+
+        let removed_spell_ids = active_aura_spell_ids_with_mechanic(
+            deps.shared_world.object_mgr,
+            deps.world_db_pool,
+            &active_auras,
+            mechanic,
+            count,
+        )
+        .await?;
+        if removed_spell_ids.is_empty() {
+            return Ok(());
+        }
+
+        if target_character_guid == character_guid {
+            remove_session_auras_by_spell_ids(&mut session.auras.active_auras, &removed_spell_ids);
+        }
+
+        let Some(event) = deps
+            .shared_world
+            .maps
+            .remove_player_auras_by_spell_ids(
+                map_id,
+                target_character_guid,
+                &removed_spell_ids,
+                now,
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+
+        send_packet(
+            stream,
+            WorldOpcode::SmsgSpellDispelLog as u16,
+            &build_spell_dispel_log_body(target, caster, &event.removed_spell_ids)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+
+        send_or_dispatch_player_aura_event(
+            stream,
+            deps.shared_world,
+            character_guid,
+            target_character_guid,
+            event.aura_update,
+            header_crypto,
+        )
+        .await?;
+    } else if target.is_creature() {
+        let Some(snapshot) = deps
+            .shared_world
+            .maps
+            .db_creature_snapshot(map_id, target)
+            .await
+        else {
+            return Ok(());
+        };
+
+        let removed_spell_ids = active_aura_spell_ids_with_mechanic(
+            deps.shared_world.object_mgr,
+            deps.world_db_pool,
+            &snapshot.active_auras,
+            mechanic,
+            count,
+        )
+        .await?;
+        if removed_spell_ids.is_empty() {
+            return Ok(());
+        }
+
+        let Some(event) = deps
+            .shared_world
+            .maps
+            .remove_db_creature_auras_by_spell_ids(
+                map_id,
+                target,
+                character_guid,
+                &removed_spell_ids,
+                now,
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+
+        send_packet(
+            stream,
+            WorldOpcode::SmsgSpellDispelLog as u16,
+            &build_spell_dispel_log_body(target, caster, &event.removed_spell_ids)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+
+        send_packet(
+            stream,
+            WorldOpcode::SmsgUpdateObject as u16,
+            &event.aura_update.update_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+
+        for packet in event.aura_update.direct_packets {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+
+        deps.shared_world
+            .sessions
+            .dispatch(event.aura_update.observer_packets)
+            .await;
+
+        let target_switch = deps
+            .shared_world
+            .maps
+            .switch_db_creature_threat_victim_if_needed(map_id, target, Some(character_guid))
+            .await?;
+
+        send_db_creature_threat_target_switch(
+            stream,
+            deps.shared_world,
+            session,
+            target_switch,
+            header_crypto,
+        )
+        .await?;
+    }
+
+    debug!(
+        spell_id,
+        mechanic, count, "Applied player dispel mechanic effect"
+    );
 
     Ok(())
 }
@@ -233,6 +461,13 @@ pub(in crate::world) fn remove_session_auras_by_dispel_type(
     });
 
     removed
+}
+
+pub(in crate::world) fn remove_session_auras_by_spell_ids(
+    active_auras: &mut Vec<ActiveAura>,
+    spell_ids: &[u32],
+) -> Vec<u32> {
+    remove_active_auras_by_spell_ids(active_auras, spell_ids)
 }
 
 pub(in crate::world) fn build_spell_dispel_log_body(
@@ -279,6 +514,36 @@ pub(in crate::world) async fn apply_player_trigger_spell_effect(
 
     now: Instant,
 
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    apply_player_trigger_spell_by_id(
+        stream,
+        deps,
+        session,
+        caster,
+        character_guid,
+        character_level,
+        map_id,
+        triggered_spell_id,
+        targets,
+        now,
+        header_crypto,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_trigger_spell_by_id(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    triggered_spell_id: u32,
+    targets: &SpellCastTargets,
+    now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
     let Some(triggered_template) = deps
@@ -334,26 +599,51 @@ pub(in crate::world) async fn apply_player_trigger_spell_effect(
         }
 
         SpellCastKind::InstantDamage => {
+            let mut weapon_damage_applied = false;
             for effect in triggered_info.effects {
-                if let Some(damage_effect) = player_direct_damage_effect(
-                    &triggered_template,
-                    &triggered_profile,
-                    effect,
-                    triggered_value_context,
-                ) {
-                    apply_player_direct_damage_effect(
-                        stream,
-                        deps,
-                        session,
-                        caster,
-                        character_guid,
-                        map_id,
-                        damage_effect,
-                        targets,
-                        None,
-                        header_crypto,
-                    )
-                    .await?;
+                match effect.dispatch {
+                    SpellEffectDispatch::SchoolDamage => {
+                        if let Some(damage_effect) = player_direct_damage_effect(
+                            &triggered_template,
+                            &triggered_profile,
+                            effect,
+                            triggered_value_context,
+                        ) {
+                            apply_player_direct_damage_effect(
+                                stream,
+                                deps,
+                                session,
+                                caster,
+                                character_guid,
+                                map_id,
+                                damage_effect,
+                                targets,
+                                None,
+                                header_crypto,
+                            )
+                            .await?;
+                        }
+                    }
+                    SpellEffectDispatch::WeaponDamage
+                    | SpellEffectDispatch::WeaponPercentDamage
+                        if !weapon_damage_applied =>
+                    {
+                        apply_player_direct_damage_effect(
+                            stream,
+                            deps,
+                            session,
+                            caster,
+                            character_guid,
+                            map_id,
+                            player_weapon_damage_effect(&triggered_profile),
+                            targets,
+                            None,
+                            header_crypto,
+                        )
+                        .await?;
+                        weapon_damage_applied = true;
+                    }
+                    _ => {}
                 }
             }
         }

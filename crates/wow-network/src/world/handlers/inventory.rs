@@ -193,12 +193,50 @@ pub(in crate::world) const ITEM_SUBCLASS_WEAPON_GUN: u32 = 3;
 pub(in crate::world) const ITEM_SUBCLASS_WEAPON_CROSSBOW: u32 = 18;
 pub(in crate::world) const INVTYPE_HOLDABLE: u32 = 23;
 pub(in crate::world) const INVTYPE_RELIC: u32 = 28;
+pub(in crate::world) const ITEM_DYNFLAG_BINDED: u32 = 0x0000_0001;
+pub(in crate::world) const BIND_WHEN_PICKED_UP: u32 = 1;
+pub(in crate::world) const BIND_WHEN_EQUIPPED: u32 = 2;
+pub(in crate::world) const BIND_QUEST_ITEM: u32 = 4;
+pub(in crate::world) const BIND_QUEST_ITEM1: u32 = 5;
 pub(in crate::world) const BAG_FAMILY_ARROWS: i32 = 1;
 pub(in crate::world) const BAG_FAMILY_BULLETS: i32 = 2;
 pub(in crate::world) const BAG_FAMILY_SOUL_SHARDS: i32 = 3;
 pub(in crate::world) const BAG_FAMILY_HERBS: i32 = 6;
 pub(in crate::world) const BAG_FAMILY_ENCHANTING_SUPP: i32 = 7;
 pub(in crate::world) const BAG_FAMILY_ENGINEERING_SUPP: i32 = 8;
+
+pub(in crate::world) fn item_binding_flags_on_pickup(template: &ItemTemplateQuery) -> u32 {
+    if item_binds_when_picked_up(template) {
+        ITEM_DYNFLAG_BINDED
+    } else {
+        0
+    }
+}
+
+pub(in crate::world) fn item_instance_is_soulbound(flags: u32) -> bool {
+    flags & ITEM_DYNFLAG_BINDED != 0
+}
+
+pub(in crate::world) fn item_binds_when_picked_up(template: &ItemTemplateQuery) -> bool {
+    matches!(
+        template.bonding,
+        BIND_WHEN_PICKED_UP | BIND_QUEST_ITEM | BIND_QUEST_ITEM1
+    )
+}
+
+pub(in crate::world) fn merged_destination_stack_needs_pickup_bind(
+    template: &ItemTemplateQuery,
+    destination_flags: u32,
+) -> bool {
+    item_binds_when_picked_up(template) && !item_instance_is_soulbound(destination_flags)
+}
+
+pub(in crate::world) fn item_binds_when_equipped(template: &ItemTemplateQuery) -> bool {
+    matches!(
+        template.bonding,
+        BIND_WHEN_EQUIPPED | BIND_WHEN_PICKED_UP | BIND_QUEST_ITEM | BIND_QUEST_ITEM1
+    )
+}
 
 pub(in crate::world) async fn handle_inventory_swap(
     stream: &mut WorldPacketSink,
@@ -656,6 +694,61 @@ pub(in crate::world) async fn handle_inventory_swap(
         return Ok(());
     };
     let moved_is_swap = matches!(moved, wow_db::InventoryMoveResult::Swapped);
+    let mut bound_item_guids = Vec::new();
+    if moved_is_swap {
+        if move_request.dst_bag == INVENTORY_SLOT_BAG_0
+            && move_request.dst_slot < EQUIPMENT_SLOT_END
+            && item_binds_when_equipped(&src_template)
+            && !item_instance_is_soulbound(src_item.flags)
+            && wow_db::bind_character_inventory_item(
+                deps.character_db_pool,
+                character_guid,
+                src_item.item,
+            )
+            .await?
+        {
+            bound_item_guids.push(src_item.item);
+        }
+        if move_request.src_bag == INVENTORY_SLOT_BAG_0
+            && move_request.src_slot < EQUIPMENT_SLOT_END
+        {
+            if let Some((dst_item, dst_template)) = dst_item.zip(dst_template.as_ref()) {
+                if item_binds_when_equipped(dst_template)
+                    && !item_instance_is_soulbound(dst_item.flags)
+                    && wow_db::bind_character_inventory_item(
+                        deps.character_db_pool,
+                        character_guid,
+                        dst_item.item,
+                    )
+                    .await?
+                {
+                    bound_item_guids.push(dst_item.item);
+                }
+            }
+        }
+    }
+    if let wow_db::InventoryMoveResult::Merged {
+        destination_item, ..
+    } = moved
+    {
+        if session
+            .inventory
+            .items
+            .iter()
+            .find(|item| item.item == destination_item)
+            .is_some_and(|item| {
+                merged_destination_stack_needs_pickup_bind(&src_template, item.flags)
+            })
+            && wow_db::bind_character_inventory_item(
+                deps.character_db_pool,
+                character_guid,
+                destination_item,
+            )
+            .await?
+        {
+            bound_item_guids.push(destination_item);
+        }
+    }
 
     session.inventory.items =
         wow_db::get_character_inventory_items(deps.character_db_pool, character_guid).await?;
@@ -674,6 +767,7 @@ pub(in crate::world) async fn handle_inventory_swap(
         .filter(|slot| *slot < EQUIPMENT_SLOT_END)
         .collect::<Vec<_>>();
     let mut combat_stats_update_body = None;
+    let mut world_stats_update_body = None;
     if !changed_equipment_slots.is_empty() {
         if let Some(character) = session.character.active_character.clone() {
             let in_combat = session.combat.player_in_combat;
@@ -694,8 +788,16 @@ pub(in crate::world) async fn handle_inventory_swap(
                 character.level,
             )
             .await?;
-            let equipped_templates =
-                load_equipped_item_templates(deps.world_db_pool, &session.inventory.items).await?;
+            let equipped_templates = load_equipped_item_templates_with_enchantments(
+                deps.world_db_pool,
+                &session.inventory.items,
+                &session
+                    .movement
+                    .db_creature_navigation
+                    .world_data_files
+                    .spell_item_enchantments,
+            )
+            .await?;
             let ammo_template = load_selected_ammo_template(
                 deps.world_db_pool,
                 &session.inventory.items,
@@ -710,10 +812,42 @@ pub(in crate::world) async fn handle_inventory_swap(
                 ammo_template.as_ref(),
                 &session.auras.active_auras,
             );
+            let equipped_world_stats =
+                player_world_stats_with_equipment(world_stats, &equipped_templates);
+            let effective_world_stats = player_world_stats_with_active_auras(
+                equipped_world_stats,
+                &session.auras.active_auras,
+            );
+            world_stats_update_body = Some(build_player_world_stats_update_body(
+                character_guid,
+                &world_stats,
+                &effective_world_stats,
+                session.character.player_health,
+                session.character.player_mana,
+            )?);
+            session.character.player_health = session
+                .character
+                .player_health
+                .min(effective_world_stats.max_health().max(1));
+            session.character.player_mana = session
+                .character
+                .player_mana
+                .min(effective_world_stats.max_mana());
             combat_stats_update_body = Some(build_player_combat_stats_update_body(
                 character_guid,
                 &combat_stats,
             )?);
+            let packets = deps
+                .shared_world
+                .maps
+                .update_player_world_stats(
+                    character.position.map_id,
+                    character_guid,
+                    equipped_world_stats,
+                    effective_world_stats,
+                )
+                .await?;
+            deps.shared_world.sessions.dispatch(packets).await;
             let next_main_hand_swing_at = should_reset_main_hand_swing
                 .then(|| player_main_hand_next_swing_at(Instant::now(), &combat_stats));
             let packets = deps
@@ -772,11 +906,21 @@ pub(in crate::world) async fn handle_inventory_swap(
     }
     match moved {
         wow_db::InventoryMoveResult::Swapped => {
-            let blocks = build_inventory_move_update_blocks(
+            let mut blocks = build_inventory_move_update_blocks(
                 character_guid,
                 &session.inventory.items,
                 &move_request,
             )?;
+            for item_guid in &bound_item_guids {
+                if let Some(item) = session
+                    .inventory
+                    .items
+                    .iter()
+                    .find(|item| item.item == *item_guid)
+                {
+                    blocks.push(build_item_flags_update_block(item.item, item.flags)?);
+                }
+            }
             let body = build_update_object_body(&blocks);
             send_packet(
                 stream,
@@ -786,6 +930,15 @@ pub(in crate::world) async fn handle_inventory_swap(
             )
             .await?;
             if let Some(body) = combat_stats_update_body {
+                send_packet(
+                    stream,
+                    WorldOpcode::SmsgUpdateObject as u16,
+                    &body,
+                    Some(header_crypto),
+                )
+                .await?;
+            }
+            if let Some(body) = world_stats_update_body {
                 send_packet(
                     stream,
                     WorldOpcode::SmsgUpdateObject as u16,
@@ -820,6 +973,16 @@ pub(in crate::world) async fn handle_inventory_swap(
                 destination_item,
                 destination_count,
             )?);
+            for item_guid in &bound_item_guids {
+                if let Some(item) = session
+                    .inventory
+                    .items
+                    .iter()
+                    .find(|item| item.item == *item_guid)
+                {
+                    blocks.push(build_item_flags_update_block(item.item, item.flags)?);
+                }
+            }
             let body = build_update_object_body(&blocks);
             send_packet(
                 stream,
@@ -829,6 +992,15 @@ pub(in crate::world) async fn handle_inventory_swap(
             )
             .await?;
             if let Some(body) = combat_stats_update_body {
+                send_packet(
+                    stream,
+                    WorldOpcode::SmsgUpdateObject as u16,
+                    &body,
+                    Some(header_crypto),
+                )
+                .await?;
+            }
+            if let Some(body) = world_stats_update_body {
                 send_packet(
                     stream,
                     WorldOpcode::SmsgUpdateObject as u16,
@@ -1367,8 +1539,16 @@ pub(in crate::world) async fn apply_player_ammo_selection(
         character.level,
     )
     .await?;
-    let equipped_templates =
-        load_equipped_item_templates(deps.world_db_pool, &session.inventory.items).await?;
+    let equipped_templates = load_equipped_item_templates_with_enchantments(
+        deps.world_db_pool,
+        &session.inventory.items,
+        &session
+            .movement
+            .db_creature_navigation
+            .world_data_files
+            .spell_item_enchantments,
+    )
+    .await?;
     let ammo_template =
         load_selected_ammo_template(deps.world_db_pool, &session.inventory.items, ammo_id).await?;
     let (base_combat_stats, combat_stats) = inventory_recomputed_combat_stats(
@@ -2431,7 +2611,9 @@ pub(in crate::world) fn inventory_recomputed_combat_stats(
     ammo_template: Option<&ItemTemplateQuery>,
     active_auras: &[ActiveAura],
 ) -> (PlayerCombatStats, PlayerCombatStats) {
-    let effective_world_stats = player_world_stats_with_active_auras(world_stats, active_auras);
+    let equipped_world_stats = player_world_stats_with_equipment(world_stats, equipped_templates);
+    let effective_world_stats =
+        player_world_stats_with_active_auras(equipped_world_stats, active_auras);
     let base_combat_stats = player_combat_stats_for_values_with_ammo(
         class,
         level,

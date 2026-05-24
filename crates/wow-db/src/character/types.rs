@@ -1,4 +1,3 @@
-
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct CharacterEnumEntry {
     pub guid: u32,
@@ -21,6 +20,11 @@ pub struct CharacterEnumEntry {
     pub position_y: f32,
     pub position_z: f32,
     pub orientation: f32,
+    pub homebind_zone: u32,
+    pub homebind_map: u32,
+    pub homebind_position_x: f32,
+    pub homebind_position_y: f32,
+    pub homebind_position_z: f32,
     pub guildid: Option<u32>,
     #[sqlx(rename = "playerFlags")]
     pub player_flags: u32,
@@ -177,6 +181,7 @@ pub struct CharacterInventoryItem {
     pub item: u32,
     pub item_template: u32,
     pub count: u32,
+    pub flags: u32,
     #[sqlx(rename = "randomPropertyId")]
     pub random_property_id: i32,
     pub charges: String,
@@ -399,4 +404,3 @@ impl PlayerWorldStats {
         self.base_mana + mana_bonus_from_intellect(self.stats[3])
     }
 }
-

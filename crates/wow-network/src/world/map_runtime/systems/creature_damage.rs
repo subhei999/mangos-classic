@@ -43,6 +43,7 @@ impl MapRuntime {
             failure: None,
             replace_spell_ids: replace_spell_ids.to_vec(),
             replace_any_caster_spell_ids: Vec::new(),
+            stack_limit: 1,
         };
         self.apply_db_creature_aura_replacing_conflicts(
             creature_guid,
@@ -287,6 +288,124 @@ impl MapRuntime {
             remaining -= 1;
             false
         });
+        if removed_spell_ids.is_empty() {
+            return Ok(None);
+        }
+        let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
+        let is_stunned = active_aura_has_stun(&creature.active_auras);
+        let is_confused = active_aura_has_confuse(&creature.active_auras);
+        refresh_db_creature_aura_display_override(creature);
+        sync_db_creature_confused_motion(creature, was_confused, is_confused, now);
+        let previous_speeds = creature.refresh_move_speeds();
+        debug_assert_eq!(old_speeds, previous_speeds);
+        let stop_packet = if was_movement_blocked
+            && !is_movement_blocked
+            && !was_confused
+            && matches!(creature.motion, CreatureMotionState::Idle)
+        {
+            None
+        } else if ((was_confused && !is_confused) || (!was_movement_blocked && is_movement_blocked))
+            && !matches!(creature.motion, CreatureMotionState::Idle)
+        {
+            let stop = stop_db_creature_motion_runtime(creature);
+            Some(OutboundWorldPacket {
+                opcode: WorldOpcode::SmsgMonsterMove as u16,
+                body: build_monster_move_stop_body(creature_guid, stop.position, stop.spline_id)?,
+            })
+        } else {
+            None
+        };
+        let new_attack_duration = creature.base_attack_duration();
+        let active_auras = creature.active_auras.clone();
+        let mut direct_packets =
+            db_creature_aura_runtime_packets(creature_guid, creature, old_speeds, now)?;
+        if let Some(packet) = stop_packet {
+            direct_packets.push(packet);
+        }
+        let new_display_id = db_creature_effective_display_id(creature);
+        if old_display_id != new_display_id {
+            direct_packets.push(OutboundWorldPacket {
+                opcode: WorldOpcode::SmsgUpdateObject as u16,
+                body: build_db_creature_display_update_body(creature_guid, new_display_id)?,
+            });
+        }
+        if was_stunned != is_stunned || was_confused != is_confused {
+            direct_packets.push(OutboundWorldPacket {
+                opcode: WorldOpcode::SmsgUpdateObject as u16,
+                body: build_unit_flags_update_body(
+                    creature_guid,
+                    db_creature_unit_flags(creature, in_combat),
+                )?,
+            });
+        }
+        let position = creature.current_position;
+        self.adjust_db_creature_attack_timer_for_base_time_change(
+            creature_guid,
+            old_attack_duration,
+            new_attack_duration,
+            now,
+        );
+        let update_body = build_db_creature_aura_update_body(creature_guid, &active_auras)?;
+        if was_confused != is_confused {
+            self.invalidate_idle_motion_start_schedule();
+            self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
+        }
+        let mut aura_update = DbCreatureAuraUpdateEvent {
+            update_body: update_body.clone(),
+            direct_packets: direct_packets.clone(),
+            observer_packets: self
+                .nearby_player_guids(
+                    position,
+                    CREATURE_SPAWN_RADIUS_YARDS,
+                    Some(caster_character_guid),
+                )
+                .into_iter()
+                .filter_map(|player_guid| {
+                    self.players.get(&player_guid).and_then(|player| {
+                        player.packet_to_client(OutboundWorldPacket {
+                            opcode: WorldOpcode::SmsgUpdateObject as u16,
+                            body: update_body.clone(),
+                        })
+                    })
+                })
+                .collect(),
+        };
+        aura_update.observer_packets.extend(
+            self.cancel_player_channels_for_removed_target_auras(
+                creature_guid,
+                &removed_spell_ids,
+            )?,
+        );
+        Ok(Some(DbCreatureAuraDispelEvent {
+            removed_spell_ids,
+            aura_update,
+        }))
+    }
+
+    pub(in crate::world) fn remove_db_creature_auras_by_spell_ids(
+        &mut self,
+        creature_guid: ObjectGuid,
+        caster_character_guid: u32,
+        spell_ids: &[u32],
+        now: Instant,
+    ) -> anyhow::Result<Option<DbCreatureAuraDispelEvent>> {
+        let in_combat = self
+            .active_creature_combats
+            .contains_key(&creature_guid.raw());
+        let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
+            return Ok(None);
+        };
+        if !creature.is_alive() {
+            return Ok(None);
+        }
+        let old_attack_duration = creature.base_attack_duration();
+        let old_speeds = creature.move_speeds;
+        let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
+        let was_stunned = active_aura_has_stun(&creature.active_auras);
+        let was_confused = active_aura_has_confuse(&creature.active_auras);
+        let old_display_id = db_creature_effective_display_id(creature);
+        let removed_spell_ids =
+            remove_active_auras_by_spell_ids(&mut creature.active_auras, spell_ids);
         if removed_spell_ids.is_empty() {
             return Ok(None);
         }
@@ -640,6 +759,7 @@ impl MapRuntime {
         let mut packets = Vec::new();
         let mut threat_updates = Vec::new();
         let mut attack_timer_adjustments = Vec::new();
+        let mut threat_switch_guids = Vec::new();
         for raw_guid in creature_guids {
             let creature_guid = ObjectGuid::from_raw(raw_guid);
             let in_combat = self.active_creature_combats.contains_key(&raw_guid);
@@ -651,6 +771,7 @@ impl MapRuntime {
                 observer_update,
                 died_from_aura,
                 invalidated_motion_schedule,
+                expired_auras,
             ) = {
                 let Some(creature) = self.creatures.get_mut(&raw_guid) else {
                     continue;
@@ -673,10 +794,20 @@ impl MapRuntime {
                 let mut died_from_pending_tick = false;
                 let mut tracking_active_auras = None;
                 let mut invalidated_motion_schedule = false;
+                let active_auras_snapshot = creature.active_auras.clone();
                 for aura in &mut creature.active_auras {
                     if let Some(regen) = aura.periodic_regen.as_mut() {
                         while regen.next_tick_at <= now {
-                            pending_regen_ticks.push((regen.health_amount, regen.mana_amount));
+                            pending_regen_ticks.push((
+                                apply_flat_spell_bonus(
+                                    regen.health_amount,
+                                    active_aura_spell_healing_taken_bonus(
+                                        &active_auras_snapshot,
+                                        regen.school_mask,
+                                    ),
+                                ),
+                                regen.mana_amount,
+                            ));
                             regen.next_tick_at += Duration::from_millis(regen.tick_millis as u64);
                         }
                     }
@@ -698,10 +829,11 @@ impl MapRuntime {
                     let caster_snapshot =
                         periodic_spell_caster_snapshot(&self.players, aura.caster)
                             .unwrap_or(periodic.caster_snapshot);
-                    let tick = calculate_periodic_damage_tick(
+                    let tick = calculate_periodic_damage_tick_with_target_auras(
                         periodic,
                         caster_snapshot,
                         target_snapshot,
+                        &active_auras_snapshot,
                         creature.health,
                     );
                     if tick.dealt_damage == 0 {
@@ -769,7 +901,12 @@ impl MapRuntime {
                         continue;
                     };
                     if applied.remaining_health > 0 {
-                        threat_updates.push((creature_guid, caster, tick.threat));
+                        threat_updates.push((
+                            creature_guid,
+                            caster,
+                            tick.threat,
+                            spell_school_mask_from_school(tick.school),
+                        ));
                     }
                     tick_packets.push((
                         caster,
@@ -889,6 +1026,7 @@ impl MapRuntime {
                     observer_update,
                     died_from_aura,
                     invalidated_motion_schedule,
+                    expired_auras,
                 )
             };
             if invalidated_motion_schedule {
@@ -939,9 +1077,17 @@ impl MapRuntime {
             if let Some(active_auras) = tracking_active_auras {
                 self.reconcile_target_aura_trackers(creature_guid, &active_auras, now);
             }
+            if expired_auras && !died_from_aura {
+                threat_switch_guids.push(creature_guid);
+            }
         }
-        for (creature_guid, victim, threat) in threat_updates {
-            self.add_db_creature_threat(creature_guid, victim, threat);
+        for (creature_guid, victim, threat, school_mask) in threat_updates {
+            self.add_db_creature_threat_with_school_mask(
+                creature_guid,
+                victim,
+                threat,
+                school_mask,
+            );
         }
         for (creature_guid, old_duration, new_duration) in attack_timer_adjustments {
             self.adjust_db_creature_attack_timer_for_base_time_change(
@@ -950,6 +1096,13 @@ impl MapRuntime {
                 new_duration,
                 now,
             );
+        }
+        for creature_guid in threat_switch_guids {
+            if let Some(event) =
+                self.switch_db_creature_threat_victim_if_needed(creature_guid, None)?
+            {
+                packets.extend(event.observer_packets);
+            }
         }
         Ok(packets)
     }
@@ -1056,7 +1209,35 @@ impl MapRuntime {
             return Ok(None);
         };
         self.sync_db_creature_lifecycle_tracking(creature_guid.raw());
-        self.add_db_creature_threat(creature_guid, request.killer, damage as f32);
+        self.add_db_creature_threat_with_school_mask(
+            creature_guid,
+            request.killer,
+            damage as f32,
+            spell_school_mask_from_school(u32::from(request.spell_school)),
+        );
+        let reactive_overpower_packet = if request.melee_outcome.is_some_and(|outcome| {
+            request.killer.is_player() && matches!(outcome.outcome, MeleeHitOutcome::Dodge)
+        }) {
+            if let Some(event) = self.activate_player_reactive_overpower(
+                request.killer.counter(),
+                creature_guid,
+                request.now,
+            ) {
+                Some(OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgUpdateObject as u16,
+                    body: build_player_combo_points_update_body(
+                        request.killer,
+                        event.combo_target,
+                        event.combo_points,
+                        event.player_bytes,
+                    )?,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         if !is_dead
             && self
                 .active_creature_combats
@@ -1324,6 +1505,9 @@ impl MapRuntime {
         if let Some(packet) = wounded_motion_packet {
             direct_packets.push(packet);
         }
+        if let Some(packet) = reactive_overpower_packet {
+            direct_packets.push(packet);
+        }
         Ok(Some(DbCreatureDamageEvent {
             damage,
             attacker_rage_damage,
@@ -1435,11 +1619,22 @@ pub(in crate::world) fn calculate_periodic_damage_tick(
     target: SpellCombatUnitSnapshot,
     target_health: u32,
 ) -> PeriodicDamageTick {
+    calculate_periodic_damage_tick_with_target_auras(periodic, caster, target, &[], target_health)
+}
+
+pub(in crate::world) fn calculate_periodic_damage_tick_with_target_auras(
+    periodic: &PeriodicDamageAura,
+    caster: SpellCombatUnitSnapshot,
+    target: SpellCombatUnitSnapshot,
+    target_active_auras: &[ActiveAura],
+    target_health: u32,
+) -> PeriodicDamageTick {
     let mut rng = rand::thread_rng();
-    calculate_periodic_damage_tick_with_rolls(
+    calculate_periodic_damage_tick_with_target_auras_and_rolls(
         periodic,
         caster,
         target,
+        target_active_auras,
         target_health,
         SpellDamageOutcomeRolls {
             hit_roll: rng.gen_range(1..=10_000),
@@ -1456,7 +1651,31 @@ pub(in crate::world) fn calculate_periodic_damage_tick_with_rolls(
     target_health: u32,
     rolls: SpellDamageOutcomeRolls,
 ) -> PeriodicDamageTick {
-    let requested_damage = periodic.amount.max(1);
+    calculate_periodic_damage_tick_with_target_auras_and_rolls(
+        periodic,
+        caster,
+        target,
+        &[],
+        target_health,
+        rolls,
+    )
+}
+
+pub(in crate::world) fn calculate_periodic_damage_tick_with_target_auras_and_rolls(
+    periodic: &PeriodicDamageAura,
+    caster: SpellCombatUnitSnapshot,
+    target: SpellCombatUnitSnapshot,
+    target_active_auras: &[ActiveAura],
+    target_health: u32,
+    rolls: SpellDamageOutcomeRolls,
+) -> PeriodicDamageTick {
+    let requested_damage = apply_flat_spell_bonus(
+        periodic.amount.max(1),
+        active_aura_spell_damage_taken_bonus(
+            target_active_auras,
+            spell_school_mask_from_school(u32::from(periodic.school)),
+        ),
+    );
     let outcome = calculate_spell_damage_outcome(
         spell_damage_outcome_input(
             requested_damage,

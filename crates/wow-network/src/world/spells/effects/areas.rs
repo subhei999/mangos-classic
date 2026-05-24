@@ -268,6 +268,13 @@ pub(in crate::world) async fn apply_player_periodic_trigger_channel_effect(
         return Ok(());
     };
 
+    let max_range = deps
+        .shared_world
+        .maps
+        .spell_range(spell_template.range_index)
+        .map(|range| range.max_range)
+        .unwrap_or(0.0);
+
     let Some(triggered_template) = deps
         .shared_world
         .object_mgr
@@ -333,6 +340,7 @@ pub(in crate::world) async fn apply_player_periodic_trigger_channel_effect(
             target,
             duration as u32,
             tick_millis,
+            max_range,
             damage_effect,
             interrupt_flags,
             triggered_template.speed,

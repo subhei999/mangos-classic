@@ -1483,6 +1483,14 @@ pub(in crate::world) async fn grant_quest_source_item_if_needed(
                     plan.item_id,
                 )
                 .await?;
+                let Some(template) =
+                    wow_db::get_item_template_query(world_db_pool, plan.item_id).await?
+                else {
+                    anyhow::bail!(
+                        "Quest source item {} has no item_template row",
+                        plan.item_id
+                    );
+                };
                 let item = wow_db::add_character_inventory_item_with_random_properties(
                     character_db_pool,
                     wow_db::AddCharacterInventoryItemRequest {
@@ -1492,6 +1500,7 @@ pub(in crate::world) async fn grant_quest_source_item_if_needed(
                         item_template: plan.item_id,
                         count,
                         durability: plan.max_durability,
+                        initial_flags: item_binding_flags_on_pickup(&template),
                         random_properties: random_properties.as_ref(),
                     },
                 )
@@ -1811,6 +1820,7 @@ pub(in crate::world) fn apply_store_plan_to_planned_inventory(
             item: 0,
             item_template: 0,
             count: slot.count,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -1864,6 +1874,7 @@ pub(in crate::world) async fn grant_quest_reward_items(
                         item_template: reward.item,
                         count: slot.count,
                         durability: reward.max_durability,
+                        initial_flags: item_binding_flags_on_pickup(&reward.template),
                         random_properties: random_properties.as_ref(),
                     },
                 )

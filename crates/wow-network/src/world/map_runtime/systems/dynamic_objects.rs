@@ -253,10 +253,18 @@ impl MapRuntime {
             else {
                 continue;
             };
-            let tick = calculate_periodic_damage_tick(
+            let Some(target_active_auras) = self
+                .creatures
+                .get(&target.raw())
+                .map(|creature| creature.active_auras.clone())
+            else {
+                continue;
+            };
+            let tick = calculate_periodic_damage_tick_with_target_auras(
                 periodic,
                 caster_snapshot,
                 target_snapshot,
+                &target_active_auras,
                 target_health,
             );
             if tick.dealt_damage == 0 {
@@ -297,7 +305,12 @@ impl MapRuntime {
                     target,
                     now,
                 )?);
-                self.add_db_creature_threat(target, dynamic_object.caster, tick.threat);
+                self.add_db_creature_threat_with_school_mask(
+                    target,
+                    dynamic_object.caster,
+                    tick.threat,
+                    spell_school_mask_from_school(tick.school),
+                );
             } else {
                 packets.extend(self.clear_player_melee_state_for_dead_target(target, None)?);
                 packets.extend(self.interrupt_player_spell_work_targeting_unit(target)?);

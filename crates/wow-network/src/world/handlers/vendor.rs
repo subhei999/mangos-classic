@@ -368,6 +368,7 @@ pub(in crate::world) async fn handle_buy_item(
                     item_template: buy.item,
                     count: slot.count,
                     durability: 0,
+                    initial_flags: item_binding_flags_on_pickup(&template),
                     random_properties: random_properties.as_ref(),
                 },
             )
@@ -585,6 +586,7 @@ pub(in crate::world) async fn handle_buy_item_in_slot(
                     item_template: buy.item,
                     count: slot.count,
                     durability: 0,
+                    initial_flags: item_binding_flags_on_pickup(&template),
                     random_properties: random_properties.as_ref(),
                 },
             )

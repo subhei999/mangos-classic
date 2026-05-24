@@ -146,6 +146,7 @@ pub enum WorldOpcode {
     SmsgSpellHealLog = 0x0150,
     SmsgSpellEnergizeLog = 0x0151,
     SmsgBindpointUpdate = 0x0155,
+    SmsgPlayerBound = 0x0158,
     CmsgRepopRequest = 0x015A,
     CmsgLoot = 0x015D,
     CmsgLootMoney = 0x015E,
@@ -189,11 +190,19 @@ pub enum WorldOpcode {
     CmsgBuyItemInSlot = 0x01A3,
     SmsgBuyItem = 0x01A4,
     SmsgBuyFailed = 0x01A5,
+    SmsgShowTaxiNodes = 0x01A9,
+    CmsgTaxiNodeStatusQuery = 0x01AA,
+    SmsgTaxiNodeStatus = 0x01AB,
+    CmsgTaxiQueryAvailableNodes = 0x01AC,
+    CmsgActivateTaxi = 0x01AD,
+    SmsgActivateTaxiReply = 0x01AE,
+    SmsgNewTaxiPath = 0x01AF,
     CmsgTrainerList = 0x01B0,
     SmsgTrainerList = 0x01B1,
     CmsgTrainerBuySpell = 0x01B2,
     SmsgTrainerBuySucceeded = 0x01B3,
     SmsgTrainerBuyFailed = 0x01B4,
+    CmsgBinderActivate = 0x01B5,
     CmsgBankerActivate = 0x01B7,
     SmsgShowBank = 0x01B8,
     CmsgBuyBankSlot = 0x01B9,
@@ -283,6 +292,7 @@ pub enum WorldOpcode {
     SmsgInitWorldStates = 0x02C2,
     CmsgItemNameQuery = 0x02C4,
     SmsgItemNameQueryResponse = 0x02C5,
+    CmsgMoveSplineDone = 0x02C9,
     CmsgMoveFallReset = 0x02CA,
     CmsgRequestRaidInfo = 0x02CD,
     CmsgMoveTimeSkipped = 0x02CE,
@@ -293,6 +303,7 @@ pub enum WorldOpcode {
     SmsgSplineSetSwimSpeed = 0x0300,
     SmsgSplineSetWalkSpeed = 0x0301,
     SmsgSplineSetSwimBackSpeed = 0x0302,
+    SmsgBinderConfirm = 0x02EB,
 }
 
 impl TryFrom<u32> for WorldOpcode {
@@ -436,6 +447,7 @@ impl TryFrom<u32> for WorldOpcode {
             0x0150 => Ok(Self::SmsgSpellHealLog),
             0x0151 => Ok(Self::SmsgSpellEnergizeLog),
             0x0155 => Ok(Self::SmsgBindpointUpdate),
+            0x0158 => Ok(Self::SmsgPlayerBound),
             0x015A => Ok(Self::CmsgRepopRequest),
             0x015D => Ok(Self::CmsgLoot),
             0x015E => Ok(Self::CmsgLootMoney),
@@ -479,11 +491,19 @@ impl TryFrom<u32> for WorldOpcode {
             0x01A3 => Ok(Self::CmsgBuyItemInSlot),
             0x01A4 => Ok(Self::SmsgBuyItem),
             0x01A5 => Ok(Self::SmsgBuyFailed),
+            0x01A9 => Ok(Self::SmsgShowTaxiNodes),
+            0x01AA => Ok(Self::CmsgTaxiNodeStatusQuery),
+            0x01AB => Ok(Self::SmsgTaxiNodeStatus),
+            0x01AC => Ok(Self::CmsgTaxiQueryAvailableNodes),
+            0x01AD => Ok(Self::CmsgActivateTaxi),
+            0x01AE => Ok(Self::SmsgActivateTaxiReply),
+            0x01AF => Ok(Self::SmsgNewTaxiPath),
             0x01B0 => Ok(Self::CmsgTrainerList),
             0x01B1 => Ok(Self::SmsgTrainerList),
             0x01B2 => Ok(Self::CmsgTrainerBuySpell),
             0x01B3 => Ok(Self::SmsgTrainerBuySucceeded),
             0x01B4 => Ok(Self::SmsgTrainerBuyFailed),
+            0x01B5 => Ok(Self::CmsgBinderActivate),
             0x01B7 => Ok(Self::CmsgBankerActivate),
             0x01B8 => Ok(Self::SmsgShowBank),
             0x01B9 => Ok(Self::CmsgBuyBankSlot),
@@ -573,11 +593,13 @@ impl TryFrom<u32> for WorldOpcode {
             0x02C2 => Ok(Self::SmsgInitWorldStates),
             0x02C4 => Ok(Self::CmsgItemNameQuery),
             0x02C5 => Ok(Self::SmsgItemNameQueryResponse),
+            0x02C9 => Ok(Self::CmsgMoveSplineDone),
             0x02CA => Ok(Self::CmsgMoveFallReset),
             0x02CD => Ok(Self::CmsgRequestRaidInfo),
             0x02CE => Ok(Self::CmsgMoveTimeSkipped),
             0x02D3 => Ok(Self::CmsgBattlefieldStatus),
             0x02F2 => Ok(Self::SmsgPartyMemberStatsFull),
+            0x02EB => Ok(Self::SmsgBinderConfirm),
             0x02FE => Ok(Self::SmsgSplineSetRunSpeed),
             0x02FF => Ok(Self::SmsgSplineSetRunBackSpeed),
             0x0300 => Ok(Self::SmsgSplineSetSwimSpeed),
@@ -664,6 +686,7 @@ impl WorldOpcode {
                 | Self::SmsgSpellHealLog
                 | Self::SmsgSpellEnergizeLog
                 | Self::SmsgBindpointUpdate
+                | Self::SmsgPlayerBound
                 | Self::SmsgLootResponse
                 | Self::SmsgLootReleaseResponse
                 | Self::SmsgLootRemoved
@@ -687,9 +710,14 @@ impl WorldOpcode {
                 | Self::SmsgSellItem
                 | Self::SmsgBuyItem
                 | Self::SmsgBuyFailed
+                | Self::SmsgShowTaxiNodes
+                | Self::SmsgTaxiNodeStatus
+                | Self::SmsgActivateTaxiReply
+                | Self::SmsgNewTaxiPath
                 | Self::SmsgTrainerList
                 | Self::SmsgTrainerBuySucceeded
                 | Self::SmsgTrainerBuyFailed
+                | Self::SmsgBinderConfirm
                 | Self::SmsgShowBank
                 | Self::SmsgBuyBankSlotResult
                 | Self::SmsgQueryTimeResponse
@@ -1504,6 +1532,12 @@ guid_request!(GossipHelloRequest, "CMSG_GOSSIP_HELLO");
 guid_request!(QuestgiverStatusQueryRequest, "CMSG_QUESTGIVER_STATUS_QUERY");
 guid_request!(QuestgiverHelloRequest, "CMSG_QUESTGIVER_HELLO");
 guid_request!(ListInventoryRequest, "CMSG_LIST_INVENTORY");
+guid_request!(TaxiNodeStatusQueryRequest, "CMSG_TAXINODE_STATUS_QUERY");
+guid_request!(
+    TaxiQueryAvailableNodesRequest,
+    "CMSG_TAXIQUERYAVAILABLENODES"
+);
+guid_request!(BinderActivateRequest, "CMSG_BINDER_ACTIVATE");
 guid_request!(TrainerListRequest, "CMSG_TRAINER_LIST");
 guid_request!(GroupUninviteGuidRequest, "CMSG_GROUP_UNINVITE_GUID");
 guid_request!(GroupSetLeaderRequest, "CMSG_GROUP_SET_LEADER");
@@ -2997,6 +3031,7 @@ pub struct SmsgMonsterMovePathResponse {
     pub move_type_facing_target: u8,
     pub run_spline_flag: u32,
     pub run: bool,
+    pub catmull_rom: bool,
 }
 
 impl ServerWorldPacket for SmsgMonsterMovePathResponse {
@@ -3016,6 +3051,15 @@ impl ServerWorldPacket for SmsgMonsterMovePathResponse {
         }
         buf.put_u32_le(if self.run { self.run_spline_flag } else { 0 });
         buf.put_u32_le(self.duration_ms);
+        if self.catmull_rom {
+            buf.put_u32_le(self.path.len() as u32);
+            for point in &self.path {
+                buf.put_f32_le(point.x);
+                buf.put_f32_le(point.y);
+                buf.put_f32_le(point.z);
+            }
+            return;
+        }
         let Some(destination) = self.path.last().copied() else {
             buf.put_u32_le(0);
             return;
@@ -3478,13 +3522,20 @@ pub struct SpellAmmoVisual {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SmsgSpellGoMissTarget {
+    pub target: ObjectGuid,
+    pub miss_info: u8,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SmsgSpellGoResponse {
     pub source: ObjectGuid,
     pub caster: ObjectGuid,
     pub spell_id: u32,
     pub cast_flags: u16,
     pub targets: SpellCastTargets,
-    pub miss_info: Option<u8>,
+    pub hit_targets: Vec<ObjectGuid>,
+    pub miss_targets: Vec<SmsgSpellGoMissTarget>,
     pub ammo: Option<SpellAmmoVisual>,
 }
 
@@ -3496,24 +3547,14 @@ impl ServerWorldPacket for SmsgSpellGoResponse {
         put_packed_guid(buf, self.caster);
         buf.put_u32_le(self.spell_id);
         buf.put_u16_le(self.cast_flags);
-        if let Some(miss_info) = self.miss_info {
-            if let Some(target) = self.targets.unit_target.or(self.targets.gameobject_target) {
-                buf.put_u8(0);
-                buf.put_u8(1);
-                buf.put_u64_le(target.raw());
-                buf.put_u8(miss_info);
-            } else {
-                buf.put_u8(0);
-                buf.put_u8(0);
-            }
-        } else {
-            if let Some(target) = self.targets.unit_target.or(self.targets.gameobject_target) {
-                buf.put_u8(1);
-                buf.put_u64_le(target.raw());
-            } else {
-                buf.put_u8(0);
-            }
-            buf.put_u8(0);
+        buf.put_u8(self.hit_targets.len() as u8);
+        for target in &self.hit_targets {
+            buf.put_u64_le(target.raw());
+        }
+        buf.put_u8(self.miss_targets.len() as u8);
+        for miss in &self.miss_targets {
+            buf.put_u64_le(miss.target.raw());
+            buf.put_u8(miss.miss_info);
         }
         write_spell_cast_targets_body(buf, &self.targets);
         if let Some(ammo) = self.ammo {
@@ -3955,6 +3996,21 @@ impl ServerWorldPacket for SmsgBindpointUpdateResponse {
         buf.put_f32_le(self.z);
         buf.put_u32_le(self.map);
         buf.put_u32_le(self.zone);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgPlayerBoundResponse {
+    pub caster: ObjectGuid,
+    pub area: u32,
+}
+
+impl ServerWorldPacket for SmsgPlayerBoundResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgPlayerBound;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.caster.raw());
+        buf.put_u32_le(self.area);
     }
 }
 
@@ -4779,6 +4835,100 @@ impl ServerWorldPacket for SmsgBuyFailedResponse {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActivateTaxiRequest {
+    pub raw_guid: u64,
+    pub source_node: u32,
+    pub destination_node: u32,
+}
+
+impl ActivateTaxiRequest {
+    pub fn read(buf: &mut impl Buf) -> io::Result<Self> {
+        ensure_exact_remaining(buf, 16, "CMSG_ACTIVATETAXI")?;
+        Ok(Self {
+            raw_guid: buf.get_u64_le(),
+            source_node: buf.get_u32_le(),
+            destination_node: buf.get_u32_le(),
+        })
+    }
+
+    pub fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.raw_guid);
+        buf.put_u32_le(self.source_node);
+        buf.put_u32_le(self.destination_node);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgTaxiNodeStatusResponse {
+    pub taxi_master: ObjectGuid,
+    pub known: bool,
+}
+
+impl ServerWorldPacket for SmsgTaxiNodeStatusResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgTaxiNodeStatus;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.taxi_master.raw());
+        buf.put_u8(u8::from(self.known));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgShowTaxiNodesResponse {
+    pub taxi_master: ObjectGuid,
+    pub current_node: u32,
+    pub taximask: [u32; 8],
+}
+
+impl ServerWorldPacket for SmsgShowTaxiNodesResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgShowTaxiNodes;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(1);
+        buf.put_u64_le(self.taxi_master.raw());
+        buf.put_u32_le(self.current_node);
+        for mask in self.taximask {
+            buf.put_u32_le(mask);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgActivateTaxiReplyResponse {
+    pub reply: u32,
+}
+
+impl ServerWorldPacket for SmsgActivateTaxiReplyResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgActivateTaxiReply;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u32_le(self.reply);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgNewTaxiPathResponse;
+
+impl ServerWorldPacket for SmsgNewTaxiPathResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgNewTaxiPath;
+
+    fn write_body(&self, _buf: &mut impl BufMut) {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsgBinderConfirmResponse {
+    pub innkeeper: ObjectGuid,
+}
+
+impl ServerWorldPacket for SmsgBinderConfirmResponse {
+    const OPCODE: WorldOpcode = WorldOpcode::SmsgBinderConfirm;
+
+    fn write_body(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.innkeeper.raw());
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmsgSellItemResponse {
     pub vendor_guid: ObjectGuid,
     pub item_guid: ObjectGuid,
@@ -5404,6 +5554,75 @@ mod tests {
     }
 
     #[test]
+    fn taxi_packets_match_cmangos_layouts() {
+        let taxi_master = ObjectGuid::from_raw(0x1122_3344_5566_7788);
+        let request = ActivateTaxiRequest {
+            raw_guid: taxi_master.raw(),
+            source_node: 2,
+            destination_node: 3,
+        };
+        let mut bytes = BytesMut::new();
+        request.write(&mut bytes);
+        assert_eq!(ActivateTaxiRequest::read(&mut &bytes[..]).unwrap(), request);
+
+        let mut expected_status = Vec::new();
+        expected_status.extend_from_slice(&taxi_master.raw().to_le_bytes());
+        expected_status.push(1);
+        assert_eq!(
+            SmsgTaxiNodeStatusResponse {
+                taxi_master,
+                known: true
+            }
+            .body(),
+            expected_status
+        );
+
+        let menu = SmsgShowTaxiNodesResponse {
+            taxi_master,
+            current_node: 2,
+            taximask: [1, 2, 3, 4, 5, 6, 7, 8],
+        };
+        let mut expected_menu = Vec::new();
+        expected_menu.extend_from_slice(&1u32.to_le_bytes());
+        expected_menu.extend_from_slice(&taxi_master.raw().to_le_bytes());
+        expected_menu.extend_from_slice(&2u32.to_le_bytes());
+        for mask in 1u32..=8 {
+            expected_menu.extend_from_slice(&mask.to_le_bytes());
+        }
+        assert_eq!(menu.body(), expected_menu);
+
+        assert_eq!(SmsgNewTaxiPathResponse.body(), Vec::<u8>::new());
+        assert_eq!(
+            SmsgActivateTaxiReplyResponse { reply: 6 }.body(),
+            6u32.to_le_bytes()
+        );
+        assert_eq!(
+            SmsgBinderConfirmResponse {
+                innkeeper: taxi_master
+            }
+            .body(),
+            {
+                let mut expected = Vec::new();
+                expected.extend_from_slice(&taxi_master.raw().to_le_bytes());
+                expected
+            }
+        );
+        assert_eq!(
+            SmsgPlayerBoundResponse {
+                caster: taxi_master,
+                area: 87,
+            }
+            .body(),
+            {
+                let mut expected = Vec::new();
+                expected.extend_from_slice(&taxi_master.raw().to_le_bytes());
+                expected.extend_from_slice(&87u32.to_le_bytes());
+                expected
+            }
+        );
+    }
+
+    #[test]
     fn mail_result_response_matches_cmangos_optional_payloads() {
         let ok = SmsgSendMailResultResponse {
             mail_id: 7,
@@ -5778,6 +5997,55 @@ mod tests {
         expected_stop.push(1);
         assert_eq!(stop.body(), expected_stop);
 
+        let taxi_path = SmsgMonsterMovePathResponse {
+            guid,
+            start: WorldLocationResponse {
+                map_id: 0,
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+                orientation: 0.0,
+            },
+            path: vec![
+                WorldLocationResponse {
+                    map_id: 0,
+                    x: 4.0,
+                    y: 5.0,
+                    z: 6.0,
+                    orientation: 0.0,
+                },
+                WorldLocationResponse {
+                    map_id: 0,
+                    x: 7.0,
+                    y: 8.0,
+                    z: 9.0,
+                    orientation: 0.0,
+                },
+            ],
+            spline_id: 77,
+            duration_ms: 1234,
+            facing_target: None,
+            move_type_normal: 0,
+            move_type_facing_target: 3,
+            run_spline_flag: 0x300,
+            run: true,
+            catmull_rom: true,
+        };
+        let mut expected_taxi = Vec::new();
+        put_packed_guid(&mut expected_taxi, guid);
+        for value in [1.0f32, 2.0, 3.0] {
+            expected_taxi.extend_from_slice(&value.to_le_bytes());
+        }
+        expected_taxi.extend_from_slice(&77u32.to_le_bytes());
+        expected_taxi.push(0);
+        expected_taxi.extend_from_slice(&0x300u32.to_le_bytes());
+        expected_taxi.extend_from_slice(&1234u32.to_le_bytes());
+        expected_taxi.extend_from_slice(&2u32.to_le_bytes());
+        for value in [4.0f32, 5.0, 6.0, 7.0, 8.0, 9.0] {
+            expected_taxi.extend_from_slice(&value.to_le_bytes());
+        }
+        assert_eq!(taxi_path.body(), expected_taxi);
+
         let corpse = MsgCorpseQueryResponse {
             corpse_position: Some(WorldLocationResponse {
                 map_id: 0,
@@ -5850,7 +6118,8 @@ mod tests {
             spell_id: 78,
             cast_flags: 0x0100,
             targets,
-            miss_info: None,
+            hit_targets: vec![target],
+            miss_targets: Vec::new(),
             ammo: None,
         };
         let mut expected_go = Vec::new();
@@ -5878,7 +6147,8 @@ mod tests {
             spell_id: 78,
             cast_flags: 0x0100,
             targets: hostile_targets,
-            miss_info: None,
+            hit_targets: vec![target],
+            miss_targets: Vec::new(),
             ammo: None,
         };
         let hostile_body = hostile_go.body();

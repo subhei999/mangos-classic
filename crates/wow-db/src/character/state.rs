@@ -47,6 +47,78 @@ pub async fn get_character_homebind(
     }))
 }
 
+pub async fn update_character_homebind(
+    pool: &MySqlPool,
+    guid: u32,
+    map: u32,
+    zone: u32,
+    position: WorldPosition,
+) -> Result<u64, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_homebind_save");
+    let result = sqlx::query(
+        "INSERT INTO character_homebind (guid, map, zone, position_x, position_y, position_z) \
+         VALUES (?, ?, ?, ?, ?, ?) \
+         ON DUPLICATE KEY UPDATE map = VALUES(map), zone = VALUES(zone), \
+             position_x = VALUES(position_x), position_y = VALUES(position_y), \
+             position_z = VALUES(position_z)",
+    )
+    .bind(guid)
+    .bind(map)
+    .bind(zone)
+    .bind(position.x)
+    .bind(position.y)
+    .bind(position.z)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
+pub async fn get_character_taximask(pool: &MySqlPool, guid: u32) -> Result<[u32; 8], DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_taximask_load");
+    let taximask: Option<String> =
+        sqlx::query_scalar("SELECT taximask FROM characters WHERE guid = ?")
+            .bind(guid)
+            .fetch_optional(pool)
+            .await?;
+
+    Ok(parse_character_taximask(taximask.as_deref().unwrap_or_default()))
+}
+
+pub async fn save_character_taximask(
+    pool: &MySqlPool,
+    guid: u32,
+    taximask: [u32; 8],
+) -> Result<u64, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_taximask_save");
+    let serialized = serialize_character_taximask(taximask);
+    let result = sqlx::query("UPDATE characters SET taximask = ? WHERE guid = ?")
+        .bind(serialized)
+        .bind(guid)
+        .execute(pool)
+        .await?;
+
+    Ok(result.rows_affected())
+}
+
+pub fn parse_character_taximask(data: &str) -> [u32; 8] {
+    let mut mask = [0u32; 8];
+    for (slot, token) in data.split_whitespace().take(mask.len()).enumerate() {
+        if let Ok(value) = token.parse::<u32>() {
+            mask[slot] = value;
+        }
+    }
+    mask
+}
+
+pub fn serialize_character_taximask(taximask: [u32; 8]) -> String {
+    taximask
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub async fn update_character_position_and_vitals(
     pool: &MySqlPool,
     account_id: u32,

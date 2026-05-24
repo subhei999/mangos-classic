@@ -50,6 +50,14 @@ pub(in crate::world) async fn load_equipped_item_templates(
     world_db_pool: &MySqlPool,
     inventory: &[CharacterInventoryItem],
 ) -> anyhow::Result<Vec<EquippedItemTemplate>> {
+    load_equipped_item_templates_with_enchantments(world_db_pool, inventory, &HashMap::new()).await
+}
+
+pub(in crate::world) async fn load_equipped_item_templates_with_enchantments(
+    world_db_pool: &MySqlPool,
+    inventory: &[CharacterInventoryItem],
+    spell_item_enchantments: &HashMap<u32, SpellItemEnchantmentEntry>,
+) -> anyhow::Result<Vec<EquippedItemTemplate>> {
     let mut templates = Vec::new();
     for item in inventory {
         if item.bag != INVENTORY_SLOT_BAG_0 as u32 || item.slot >= EQUIPMENT_SLOT_END {
@@ -60,9 +68,13 @@ pub(in crate::world) async fn load_equipped_item_templates(
         else {
             continue;
         };
+        let (enchantment_stat_bonuses, enchantment_resistance_bonuses) =
+            item_enchantment_bonuses(&item.enchantments, spell_item_enchantments);
         templates.push(EquippedItemTemplate {
             slot: item.slot,
             template,
+            enchantment_stat_bonuses,
+            enchantment_resistance_bonuses,
         });
     }
     Ok(templates)

@@ -1,4 +1,5 @@
 use super::*;
+use wow_proto::world::WorldOpcode;
 
 pub(in crate::world) async fn dispatch_movement_packet(
     ctx: &mut WorldPacketDispatchContext<'_>,
@@ -10,6 +11,26 @@ pub(in crate::world) async fn dispatch_movement_packet(
     }
     if matches!(packet, packets::ParsedWorldClientPacket::MoveTeleportAck(_)) {
         return handle_move_teleport_ack(packet.move_teleport_ack()?, &*ctx.session);
+    }
+    if packet.opcode() == WorldOpcode::CmsgMoveSplineDone as u32 {
+        return handle_taxi_spline_done(
+            &mut *ctx.stream,
+            TaxiDeps {
+                character_db_pool: ctx.character_db_pool,
+                world_db_pool: ctx.world_db_pool,
+                world_data_files: ctx.runtime_state.world_data_files.as_ref(),
+                maps: &ctx.runtime_state.maps,
+                sessions: &ctx.runtime_state.sessions,
+                account_id: ctx.account_id,
+            },
+            body,
+            &mut *ctx.session,
+            &mut *ctx.header_crypto,
+        )
+        .await;
+    }
+    if ctx.session.movement.active_taxi.is_some() {
+        return Ok(());
     }
 
     let opcode = packet.opcode();

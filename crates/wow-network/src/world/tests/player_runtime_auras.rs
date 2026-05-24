@@ -94,6 +94,9 @@ fn test_player_runtime_with_controller(
         max_power4: POWER_ENERGY_DEFAULT,
         player_bytes: 0,
         player_bytes2: 0,
+        aura_state: 0,
+        reactive_defense_expires_at: None,
+        reactive_overpower_expires_at: None,
         combo_target: None,
         combo_points: 0,
         stand_state: PLAYER_STAND_STATE_STAND,
@@ -1120,12 +1123,15 @@ fn sinister_strike_spell_power_checks_and_spends_energy() {
     let profile = player_spell_cast_profile(&sinister_strike_spell_template()).unwrap();
 
     assert_eq!(
-        map.player_spell_cast_failure(7, &profile, now),
+        map.player_spell_cast_failure(7, None, &profile, false, now),
         Some(SPELL_FAILED_NO_POWER)
     );
 
     map.players.get_mut(&7).unwrap().power4 = 100;
-    assert_eq!(map.player_spell_cast_failure(7, &profile, now), None);
+    assert_eq!(
+        map.player_spell_cast_failure(7, None, &profile, false, now),
+        None
+    );
     assert_eq!(
         map.spend_player_spell_power(7, &profile, now, false),
         Ok(())
@@ -1506,6 +1512,7 @@ fn spell_aura_mod_stat_and_resistance_use_generic_template_metadata() {
         vec![AuraProcTrigger {
             triggered_spell_id: 6136,
             proc_flags: PROC_FLAG_TAKE_MELEE_SWING,
+            proc_ex: 0,
             proc_chance: 100,
             remaining_charges: None,
         }]
@@ -1712,11 +1719,441 @@ fn tracking_auras_update_player_tracking_fields() {
     );
 
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
-    let body = build_player_aura_update_body(player, &[aura]).unwrap();
+    let body = build_player_aura_update_body(
+        player,
+        1,
+        PLAYER_STAND_STATE_STAND,
+        spell_aura_state_mask(AURA_STATE_DEFENSE),
+        &[aura],
+    )
+    .unwrap();
     let (values, trailing) = decode_values_update_block(&body[5..], player);
     assert!(trailing.is_empty());
+    assert_eq!(
+        values[UNIT_FIELD_AURASTATE],
+        Some(spell_aura_state_mask(AURA_STATE_DEFENSE))
+    );
     assert_eq!(values[PLAYER_TRACK_CREATURES], Some((1 << 0) | (1 << 7)));
     assert_eq!(values[PLAYER_TRACK_RESOURCES], Some(1 << 1));
+}
+
+#[test]
+fn defensive_stance_template_builds_shapeshift_modifier() {
+    let mut stance = test_spell_template(71);
+    stance.spell_name = "Defensive Stance".to_string();
+    stance.effect1 = SPELL_EFFECT_APPLY_AURA;
+    stance.effect_apply_aura_name1 = SPELL_AURA_MOD_SHAPESHIFT;
+    stance.effect_misc_value1 = i32::from(FORM_DEFENSIVESTANCE);
+
+    let aura = build_active_aura(
+        &stance,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        10,
+        test_spell_effect_value_context(&stance),
+        Instant::now(),
+        None,
+    );
+
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![AuraStatModifier::Shapeshift {
+            form: FORM_DEFENSIVESTANCE,
+        }]
+    );
+    assert!(matches!(
+        spell_aura_support(SPELL_AURA_MOD_SHAPESHIFT),
+        SpellMechanicSupport::Implemented
+    ));
+}
+
+#[test]
+fn defensive_stance_passive_template_builds_combat_modifiers() {
+    let mut passive = test_spell_template(7376);
+    passive.spell_name = "Defensive Stance Passive".to_string();
+    passive.effect1 = SPELL_EFFECT_APPLY_AURA;
+    passive.effect_apply_aura_name1 = SPELL_AURA_MOD_DAMAGE_PERCENT_TAKEN;
+    passive.effect_base_points1 = -11;
+    passive.effect_misc_value1 = 127;
+    passive.effect2 = SPELL_EFFECT_APPLY_AURA;
+    passive.effect_apply_aura_name2 = SPELL_AURA_MOD_DAMAGE_PERCENT_DONE;
+    passive.effect_base_points2 = -11;
+    passive.effect_misc_value2 = 127;
+    passive.effect3 = SPELL_EFFECT_APPLY_AURA;
+    passive.effect_apply_aura_name3 = SPELL_AURA_MOD_THREAT;
+    passive.effect_base_points3 = 29;
+    passive.effect_misc_value3 = 127;
+
+    let aura = build_active_aura(
+        &passive,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        10,
+        test_spell_effect_value_context(&passive),
+        Instant::now(),
+        None,
+    );
+
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![
+            AuraStatModifier::DamageTakenPercent {
+                school_mask: 127,
+                percent: -10,
+            },
+            AuraStatModifier::DamageDonePercent {
+                school_mask: 127,
+                percent: -10,
+            },
+            AuraStatModifier::ThreatPercent {
+                school_mask: 127,
+                percent: 30,
+            },
+        ]
+    );
+    assert!(matches!(
+        spell_aura_support(SPELL_AURA_MOD_DAMAGE_PERCENT_TAKEN),
+        SpellMechanicSupport::Implemented
+    ));
+    assert!(matches!(
+        spell_aura_support(SPELL_AURA_MOD_DAMAGE_PERCENT_DONE),
+        SpellMechanicSupport::Implemented
+    ));
+    assert!(matches!(
+        spell_aura_support(SPELL_AURA_MOD_THREAT),
+        SpellMechanicSupport::Implemented
+    ));
+}
+
+#[test]
+fn defensive_stance_passive_updates_damage_fields_damage_taken_and_threat() {
+    let mut map = MapRuntime::new(0, 0);
+    map.add_player(test_player_runtime(
+        7,
+        SessionId(7),
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+    ))
+    .unwrap();
+
+    let base = map.players.get(&7).unwrap().base_combat_stats;
+    let aura = ActiveAura {
+        spell_id: 7376,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 10,
+        interrupt_flags: 0,
+        positive: true,
+        visible: false,
+        duration_millis: None,
+        expires_at: None,
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![
+            AuraStatModifier::DamageTakenPercent {
+                school_mask: 127,
+                percent: -10,
+            },
+            AuraStatModifier::DamageDonePercent {
+                school_mask: 127,
+                percent: -10,
+            },
+            AuraStatModifier::ThreatPercent {
+                school_mask: 127,
+                percent: 30,
+            },
+        ],
+        proc_triggers: Vec::new(),
+    };
+
+    let event = map.apply_player_aura(7, aura).unwrap().unwrap();
+    let player = map.players.get(&7).unwrap();
+    assert!((player.combat_stats.main_min_damage - base.main_min_damage * 0.9).abs() < 0.001);
+    assert!((player.combat_stats.main_max_damage - base.main_max_damage * 0.9).abs() < 0.001);
+
+    let combat_update = event
+        .direct_packets
+        .iter()
+        .filter(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+        .map(|packet| {
+            decode_values_update_block(&packet.body[5..], ObjectGuid::new(HighGuid::Player, 0, 7)).0
+        })
+        .find(|values| values[UNIT_FIELD_MINDAMAGE].is_some())
+        .expect("passive aura should send combat-stat refresh");
+    assert_eq!(
+        combat_update[UNIT_FIELD_MINDAMAGE],
+        Some(player.combat_stats.main_min_damage.to_bits())
+    );
+    assert_eq!(
+        combat_update[UNIT_FIELD_MAXDAMAGE],
+        Some(player.combat_stats.main_max_damage.to_bits())
+    );
+
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let applied = map
+        .apply_player_world_damage(
+            player_guid,
+            Some(ObjectGuid::new(HighGuid::Unit, 0, 42)),
+            10,
+            WorldDamageKind::Melee,
+            Instant::now(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(applied.applied_damage, 9);
+
+    let creature_guid = ObjectGuid::new(HighGuid::Unit, 0, 99);
+    map.add_db_creature_threat(creature_guid, player_guid, 10.0);
+    let threats = map.db_creature_threat_entries(creature_guid);
+    assert_eq!(threats.len(), 1);
+    assert!((threats[0].threat - 13.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn shield_wall_aura_reduces_player_world_damage_by_seventy_five_percent() {
+    let mut map = MapRuntime::new(0, 0);
+    map.add_player(test_player_runtime(
+        7,
+        SessionId(7),
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+    ))
+    .unwrap();
+
+    let aura = ActiveAura {
+        spell_id: 871,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 28,
+        interrupt_flags: 0,
+        positive: true,
+        visible: false,
+        duration_millis: Some(10_000),
+        expires_at: Some(Instant::now() + Duration::from_secs(10)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::DamageTakenPercent {
+            school_mask: 127,
+            percent: -75,
+        }],
+        proc_triggers: Vec::new(),
+    };
+
+    map.apply_player_aura(7, aura).unwrap().unwrap();
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+
+    let melee = map
+        .apply_player_world_damage(
+            player_guid,
+            Some(ObjectGuid::new(HighGuid::Unit, 0, 42)),
+            20,
+            WorldDamageKind::Melee,
+            Instant::now(),
+    )
+        .unwrap()
+        .unwrap();
+    assert_eq!(melee.applied_damage, 5);
+    assert_eq!(melee.remaining_health, 15);
+}
+
+#[test]
+fn berserker_stance_passive_template_builds_combat_modifiers() {
+    let mut passive = test_spell_template(7381);
+    passive.spell_name = "Berserker Stance Passive".to_string();
+    passive.effect1 = SPELL_EFFECT_APPLY_AURA;
+    passive.effect_apply_aura_name1 = SPELL_AURA_MOD_CRIT_PERCENT;
+    passive.effect_base_points1 = 2;
+    passive.effect_misc_value1 = 127;
+    passive.effect2 = SPELL_EFFECT_APPLY_AURA;
+    passive.effect_apply_aura_name2 = SPELL_AURA_MOD_DAMAGE_PERCENT_TAKEN;
+    passive.effect_base_points2 = 9;
+    passive.effect_misc_value2 = 127;
+    passive.effect3 = SPELL_EFFECT_APPLY_AURA;
+    passive.effect_apply_aura_name3 = SPELL_AURA_MOD_THREAT;
+    passive.effect_base_points3 = -21;
+    passive.effect_misc_value3 = 0;
+
+    let aura = build_active_aura(
+        &passive,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        30,
+        test_spell_effect_value_context(&passive),
+        Instant::now(),
+        None,
+    );
+
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![
+            AuraStatModifier::CritPercent { percent: 3 },
+            AuraStatModifier::DamageTakenPercent {
+                school_mask: 127,
+                percent: 10,
+            },
+            AuraStatModifier::ThreatPercent {
+                school_mask: 0,
+                percent: -20,
+            },
+        ]
+    );
+    assert!(matches!(
+        spell_aura_support(SPELL_AURA_MOD_CRIT_PERCENT),
+        SpellMechanicSupport::Implemented
+    ));
+    assert!(matches!(
+        spell_aura_support(SPELL_AURA_MOD_DAMAGE_PERCENT_TAKEN),
+        SpellMechanicSupport::Implemented
+    ));
+    assert!(matches!(
+        spell_aura_support(SPELL_AURA_MOD_THREAT),
+        SpellMechanicSupport::Implemented
+    ));
+}
+
+#[test]
+fn berserker_stance_passive_updates_player_crit_fields() {
+    let mut map = MapRuntime::new(0, 0);
+    map.add_player(test_player_runtime(
+        7,
+        SessionId(7),
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+    ))
+    .unwrap();
+
+    let base = map.players.get(&7).unwrap().base_combat_stats;
+    let aura = ActiveAura {
+        spell_id: 7381,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 30,
+        interrupt_flags: 0,
+        positive: true,
+        visible: false,
+        duration_millis: None,
+        expires_at: None,
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![
+            AuraStatModifier::CritPercent { percent: 3 },
+            AuraStatModifier::DamageTakenPercent {
+                school_mask: 127,
+                percent: 10,
+            },
+            AuraStatModifier::ThreatPercent {
+                school_mask: 0,
+                percent: -20,
+            },
+        ],
+        proc_triggers: Vec::new(),
+    };
+
+    let event = map.apply_player_aura(7, aura).unwrap().unwrap();
+    let player = map.players.get(&7).unwrap();
+    assert!((player.combat_stats.crit_percent - (base.crit_percent + 3.0)).abs() < 0.001);
+    assert!(
+        (player.combat_stats.ranged_crit_percent - (base.ranged_crit_percent + 3.0)).abs()
+            < 0.001
+    );
+
+    let combat_update = event
+        .direct_packets
+        .iter()
+        .filter(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+        .map(|packet| {
+            decode_values_update_block(&packet.body[5..], ObjectGuid::new(HighGuid::Player, 0, 7)).0
+        })
+        .find(|values| values[PLAYER_CRIT_PERCENTAGE].is_some())
+        .expect("passive aura should send crit-stat refresh");
+    assert_eq!(
+        combat_update[PLAYER_CRIT_PERCENTAGE],
+        Some(player.combat_stats.crit_percent.to_bits())
+    );
+    assert_eq!(
+        combat_update[PLAYER_RANGED_CRIT_PERCENTAGE],
+        Some(player.combat_stats.ranged_crit_percent.to_bits())
+    );
+}
+
+#[test]
+fn shapeshift_aura_updates_player_form_bytes_and_replaces_previous_form() {
+    let mut map = MapRuntime::new(0, 0);
+    map.add_player(test_player_runtime(
+        7,
+        SessionId(7),
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+    ))
+    .unwrap();
+
+    let now = Instant::now();
+    let battle = ActiveAura {
+        spell_id: 2457,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 1,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: None,
+        expires_at: None,
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::Shapeshift {
+            form: FORM_BATTLESTANCE,
+        }],
+        proc_triggers: Vec::new(),
+    };
+    map.apply_player_aura(7, battle).unwrap().unwrap();
+
+    let defensive = ActiveAura {
+        spell_id: 71,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 10,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: Some(1_000),
+        expires_at: Some(now + Duration::from_secs(1)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::Shapeshift {
+            form: FORM_DEFENSIVESTANCE,
+        }],
+        proc_triggers: Vec::new(),
+    };
+
+    let event = map.apply_player_aura(7, defensive).unwrap().unwrap();
+    assert_eq!(map.players.get(&7).unwrap().active_auras.len(), 1);
+    assert_eq!(
+        active_aura_shapeshift_form(&map.players.get(&7).unwrap().active_auras),
+        Some(FORM_DEFENSIVESTANCE)
+    );
+
+    let update = event
+        .direct_packets
+        .iter()
+        .find_map(|packet| {
+            (packet.opcode == WorldOpcode::SmsgUpdateObject as u16).then(|| {
+                decode_values_update_block(&packet.body[5..], ObjectGuid::new(HighGuid::Player, 0, 7))
+                    .0
+            })
+        })
+        .expect("shapeshift aura should emit a values update");
+    assert_eq!(
+        update[UNIT_FIELD_BYTES_1],
+        Some(
+            player_unit_bytes_1_with_auras(
+                1,
+                PLAYER_STAND_STATE_STAND,
+                &map.players.get(&7).unwrap().active_auras,
+            ),
+        )
+    );
+
+    let packets = map
+        .advance_player_aura_expirations(now + Duration::from_secs(1))
+        .unwrap();
+    assert!(map.players.get(&7).unwrap().active_auras.is_empty());
+    assert!(packets.iter().any(|(_, packet)| {
+        if packet.opcode != WorldOpcode::SmsgUpdateObject as u16 {
+            return false;
+        }
+        let (values, _) =
+            decode_values_update_block(&packet.body[5..], ObjectGuid::new(HighGuid::Player, 0, 7));
+        values[UNIT_FIELD_BYTES_1]
+            == Some(player_unit_bytes_1_with_auras(1, PLAYER_STAND_STATE_STAND, &[]))
+    }));
 }
 
 #[test]
@@ -1786,6 +2223,7 @@ fn active_aura_proc_trigger_spell_ids_filter_flags_and_expiration() {
         proc_triggers: vec![AuraProcTrigger {
             triggered_spell_id: 6136,
             proc_flags: PROC_FLAG_TAKE_MELEE_SWING,
+            proc_ex: 0,
             proc_chance: 100,
             remaining_charges: None,
         }],
@@ -1849,6 +2287,7 @@ fn map_owned_consumable_regen_aura_ticks_health_and_mana() {
             periodic_regen: Some(PeriodicRegenAura {
                 health_amount: 7,
                 mana_amount: 9,
+                school_mask: 0,
                 tick_millis: 2_000,
                 next_tick_at: now,
                 interrupts_on_move_and_stand: false,
@@ -1878,6 +2317,70 @@ fn map_owned_consumable_regen_aura_ticks_health_and_mana() {
     assert!(packets
         .iter()
         .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellEnergizeLog as u16));
+}
+
+#[test]
+fn map_runtime_periodic_regen_applies_healing_taken_bonus() {
+    let mut map = MapRuntime::new(0, 0);
+    let now = Instant::now();
+    let mut player = test_player_runtime(
+        7,
+        SessionId::next(),
+        WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+    );
+    player.class = 5;
+    player.health = 10;
+    player.max_health = 30;
+    player.environment.last_damage_at = Some(now);
+    player.active_auras.push(ActiveAura {
+        spell_id: 604,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 22,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: Some(600_000),
+        expires_at: None,
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::HealingTaken {
+            school_mask: spell_school_mask_from_school(1),
+            amount: -5,
+        }],
+        proc_triggers: Vec::new(),
+    });
+    player.active_auras.push(ActiveAura {
+        spell_id: 139,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 8,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: Some(15_000),
+        expires_at: Some(now + Duration::from_secs(15)),
+        periodic_damage: None,
+        periodic_regen: Some(PeriodicRegenAura {
+            health_amount: 7,
+            mana_amount: 0,
+            school_mask: spell_school_mask_from_school(1),
+            tick_millis: 2_000,
+            next_tick_at: now,
+            interrupts_on_move_and_stand: false,
+            suppresses_recent_damage: false,
+            makes_player_sit: false,
+        }),
+        stat_modifiers: Vec::new(),
+        proc_triggers: Vec::new(),
+    });
+    map.add_player(player).unwrap();
+    map.next_player_regen_tick_at = Some(now);
+
+    let packets = map.advance_player_regen_tick(now).unwrap();
+    let player = map.players.get(&7).unwrap();
+    assert_eq!(player.health, 12);
+    assert!(packets
+        .iter()
+        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellHealLog as u16));
 }
 
 fn decode_other_player_create_values(block: &[u8], guid: ObjectGuid) -> Vec<Option<u32>> {
@@ -2623,6 +3126,44 @@ fn player_looting_state_sets_unit_flag_for_observers_and_late_visibility() {
     assert_eq!(
         values[UNIT_FIELD_FLAGS],
         Some(UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_LOOTING)
+    );
+}
+
+#[test]
+fn disarm_aura_sets_player_unit_flags_in_runtime_updates() {
+    let now = Instant::now();
+    let mut map = MapRuntime::new(0, 0);
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let observer_position = WorldPosition::new(0, -8952.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), player_position))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), observer_position))
+        .unwrap();
+
+    let event = map
+        .apply_player_aura(1, test_control_aura(AuraStatModifier::Disarm, now))
+        .unwrap()
+        .expect("disarm aura should apply");
+    let player = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let combat_update = event
+        .observer_packets
+        .iter()
+        .filter(|(_, packet)| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+        .map(|(_, packet)| decode_values_update_block(&packet.body[5..], player).0)
+        .find(|values| values[UNIT_FIELD_FLAGS].is_some())
+        .expect("observer should receive disarm unit flag update");
+    assert_eq!(
+        combat_update[UNIT_FIELD_FLAGS],
+        Some(UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_DISARMED)
+    );
+
+    let values = decode_other_player_create_values(
+        &build_other_player_create_block(&map.players[&1]).unwrap(),
+        player,
+    );
+    assert_eq!(
+        values[UNIT_FIELD_FLAGS],
+        Some(UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_DISARMED)
     );
 }
 
@@ -4098,6 +4639,7 @@ fn map_runtime_environmental_damage_interrupts_regen() {
         periodic_regen: Some(PeriodicRegenAura {
             health_amount: 30,
             mana_amount: 0,
+            school_mask: 0,
             tick_millis: 2_000,
             next_tick_at: now + Duration::from_secs(60),
             interrupts_on_move_and_stand: true,
@@ -4466,6 +5008,7 @@ fn map_runtime_player_gameplay_sync_owns_session_mutable_state() {
         item: 100,
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -4606,6 +5149,7 @@ async fn session_cache_refresh_preserves_map_owned_regen_before_session_sync() {
         periodic_regen: Some(PeriodicRegenAura {
             health_amount: 0,
             mana_amount: 9,
+            school_mask: 0,
             tick_millis: 2_000,
             next_tick_at: now + Duration::from_secs(2),
             interrupts_on_move_and_stand: false,

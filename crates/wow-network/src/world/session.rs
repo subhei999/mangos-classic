@@ -375,6 +375,7 @@ pub(in crate::world) struct CharacterSessionState {
     pub(in crate::world) spell_cooldown_item_ids: HashMap<u32, u32>,
     pub(in crate::world) character_skills: Vec<CharacterSkill>,
     pub(in crate::world) character_reputations: Vec<CharacterReputation>,
+    pub(in crate::world) current_zone: Option<u32>,
 }
 
 #[derive(Debug, Default)]
@@ -382,6 +383,13 @@ pub(in crate::world) struct MovementSessionState {
     pub(in crate::world) movement_client_time_delay: Option<u32>,
     pub(in crate::world) next_position_status_update_at: Option<Instant>,
     pub(in crate::world) db_creature_navigation: DbCreatureNavigationGuardrail,
+    pub(in crate::world) active_taxi: Option<TaxiFlightSession>,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::world) struct TaxiFlightSession {
+    pub(in crate::world) spline_id: u32,
+    pub(in crate::world) destination_position: WorldPosition,
 }
 
 #[derive(Debug, Default)]
@@ -516,6 +524,7 @@ pub(in crate::world) struct PeriodicDamageAura {
 pub(in crate::world) struct PeriodicRegenAura {
     pub(in crate::world) health_amount: u32,
     pub(in crate::world) mana_amount: u32,
+    pub(in crate::world) school_mask: u32,
     pub(in crate::world) tick_millis: u32,
     pub(in crate::world) next_tick_at: Instant,
     pub(in crate::world) interrupts_on_move_and_stand: bool,
@@ -527,6 +536,7 @@ pub(in crate::world) struct PeriodicRegenAura {
 pub(in crate::world) struct AuraProcTrigger {
     pub(in crate::world) triggered_spell_id: u32,
     pub(in crate::world) proc_flags: u32,
+    pub(in crate::world) proc_ex: u32,
     pub(in crate::world) proc_chance: u32,
     pub(in crate::world) remaining_charges: Option<u32>,
 }
@@ -536,9 +546,32 @@ pub(in crate::world) enum AuraStatModifier {
     AttackPower {
         amount: i32,
     },
+    BlockPercent {
+        percent: i32,
+    },
+    CritPercent {
+        percent: i32,
+    },
     DamageDone {
         school_mask: u32,
         amount: i32,
+    },
+    DamageTaken {
+        school_mask: u32,
+        amount: i32,
+    },
+    ThreatPercent {
+        school_mask: u32,
+        percent: i32,
+    },
+    Taunt,
+    DamageDonePercent {
+        school_mask: u32,
+        percent: i32,
+    },
+    DamageTakenPercent {
+        school_mask: u32,
+        percent: i32,
     },
     Resistance {
         school_mask: u32,
@@ -547,6 +580,10 @@ pub(in crate::world) enum AuraStatModifier {
     ResistancePercent {
         school_mask: u32,
         percent: i32,
+    },
+    HealingTaken {
+        school_mask: u32,
+        amount: i32,
     },
     Skill {
         skill_id: u16,
@@ -559,10 +596,17 @@ pub(in crate::world) enum AuraStatModifier {
     MeleeAttackTimePercent {
         percent: i32,
     },
+    Disarm,
+    Shapeshift {
+        form: u8,
+    },
     Root,
     Stun,
     Confuse,
     Fear,
+    MechanicImmunity {
+        mechanic: u32,
+    },
     Transform {
         display_id: u32,
         creature_entry: u32,

@@ -500,6 +500,25 @@ impl MapRuntimeManager {
         packets
     }
 
+    pub(in crate::world) async fn update_player_world_stats(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        base_world_stats: PlayerWorldStats,
+        effective_world_stats: PlayerWorldStats,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Ok(Vec::new());
+        };
+        let packets = map.lock().await.update_player_world_stats(
+            character_guid,
+            base_world_stats,
+            effective_world_stats,
+        );
+        packets
+    }
+
     pub(in crate::world) async fn player_combat_stats(
         &self,
         map_id: u32,

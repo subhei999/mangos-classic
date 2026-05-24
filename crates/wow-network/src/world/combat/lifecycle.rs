@@ -83,6 +83,7 @@ pub(in crate::world) async fn handle_combat_tick(
             character_db_pool: deps.character_db_pool,
             world_db_pool: deps.world_db_pool,
             shared_world: deps.shared_world,
+            parties: deps.parties,
             session_id: deps.session_id,
         },
         session,
@@ -150,6 +151,101 @@ pub(in crate::world) async fn send_queued_next_melee_spell_cast_success(
         Some(header_crypto),
     )
     .await
+}
+
+#[derive(Debug)]
+struct QueuedNextMeleeCreatureEvent {
+    target: ObjectGuid,
+    miss_info: Option<u8>,
+    event: DbCreatureDamageEvent,
+}
+
+pub(in crate::world) fn queued_next_melee_hostile_chain_target_count(
+    template: &wow_db::SpellTemplateQuery,
+) -> usize {
+    let effect_chain_targets = SpellInfo::from_template(template)
+        .effects
+        .into_iter()
+        .filter(|effect| {
+            matches!(
+                effect.dispatch,
+                SpellEffectDispatch::WeaponDamage
+                    | SpellEffectDispatch::WeaponPercentDamage
+                    | SpellEffectDispatch::SchoolDamage
+            ) && effect.implicit_target_a == TARGET_UNIT_ENEMY
+        })
+        .map(|effect| effect.chain_target_count as usize)
+        .max()
+        .unwrap_or(0);
+    let total_targets = if template.max_affected_targets == 0 {
+        effect_chain_targets
+    } else {
+        effect_chain_targets.min(template.max_affected_targets as usize)
+    };
+    total_targets.max(1)
+}
+
+pub(in crate::world) async fn resolve_queued_next_melee_secondary_db_creature_targets(
+    shared_world: SharedWorldDeps<'_>,
+    map_id: u32,
+    character_guid: u32,
+    primary_target: DbCreatureRuntime,
+    template: &wow_db::SpellTemplateQuery,
+) -> Vec<ObjectGuid> {
+    let secondary_limit = queued_next_melee_hostile_chain_target_count(template).saturating_sub(1);
+    if secondary_limit == 0 || template.range_index == 0 {
+        return Vec::new();
+    }
+    let Some(range) = shared_world.maps.spell_range(template.range_index) else {
+        return Vec::new();
+    };
+    let candidate_guids = shared_world
+        .maps
+        .nearby_attackable_db_creature_guids_for_player_spell_at_position(
+            map_id,
+            character_guid,
+            primary_target.current_position,
+            range.max_range,
+        )
+        .await;
+    if candidate_guids.len() <= 1 {
+        return Vec::new();
+    }
+    let snapshots = shared_world
+        .maps
+        .db_creature_snapshots(
+            map_id,
+            &candidate_guids
+                .iter()
+                .map(|guid| guid.raw())
+                .collect::<Vec<_>>(),
+        )
+        .await;
+    let mut secondary_targets = snapshots
+        .into_iter()
+        .filter(|creature| creature.guid() != primary_target.guid())
+        .collect::<Vec<_>>();
+    secondary_targets.sort_unstable_by(|left, right| {
+        distance_squared_2d(
+            left.current_position.x,
+            left.current_position.y,
+            primary_target.current_position.x,
+            primary_target.current_position.y,
+        )
+        .partial_cmp(&distance_squared_2d(
+            right.current_position.x,
+            right.current_position.y,
+            primary_target.current_position.x,
+            primary_target.current_position.y,
+        ))
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| left.guid().raw().cmp(&right.guid().raw()))
+    });
+    secondary_targets
+        .into_iter()
+        .take(secondary_limit)
+        .map(|creature| creature.guid())
+        .collect()
 }
 
 #[cfg(test)]
@@ -447,6 +543,7 @@ pub(in crate::world) async fn send_db_creature_swing(
             )
         })
         .unwrap_or(0);
+    let mut queued_spell_template = None;
     let mut melee_outcome = player_main_hand_melee_outcome_against_db_creature(
         &combat_stats,
         character_snapshot.level,
@@ -458,13 +555,22 @@ pub(in crate::world) async fn send_db_creature_swing(
         .queued_player_next_melee_spell(map_id, character_snapshot.guid, target)
         .await;
     if let Some(queued) = queued_spell {
-        let requires_main_hand_weapon = shared_world
+        queued_spell_template = shared_world
             .object_mgr
             .spell_template(world_db_pool, queued.spell_id)
-            .await?
-            .is_some_and(|template| queued_spell_requires_main_hand_weapon(&template));
+            .await?;
+        let requires_main_hand_weapon = queued_spell_template
+            .as_ref()
+            .is_some_and(queued_spell_requires_main_hand_weapon);
+        let is_disarmed = shared_world
+            .maps
+            .player_runtime_snapshot(map_id, character_snapshot.guid)
+            .await
+            .is_some_and(|snapshot| active_aura_has_disarm(&snapshot.active_auras));
         if requires_main_hand_weapon
-            && !has_main_hand_weapon_for_attack(world_db_pool, &session.inventory.items).await?
+            && (is_disarmed
+                || !has_main_hand_weapon_for_attack(world_db_pool, &session.inventory.items)
+                    .await?)
         {
             shared_world
                 .maps
@@ -508,6 +614,19 @@ pub(in crate::world) async fn send_db_creature_swing(
     if let Some(queued) = queued_spell {
         melee_outcome = melee_outcome.with_next_melee_spell_bonus(queued.bonus_damage);
     }
+    let queued_secondary_targets =
+        if let (Some(_queued), Some(template)) = (queued_spell, queued_spell_template.as_ref()) {
+            resolve_queued_next_melee_secondary_db_creature_targets(
+                shared_world,
+                map_id,
+                character_snapshot.guid,
+                target_creature.clone(),
+                template,
+            )
+            .await
+        } else {
+            Vec::new()
+        };
     let requested_damage = melee_outcome.total_damage;
     let swing_time = Instant::now();
     let next_swing = player_main_hand_next_swing_at(swing_time, &combat_stats);
@@ -557,6 +676,74 @@ pub(in crate::world) async fn send_db_creature_swing(
     let death_finalization = event.death_finalization;
     let target_switch = event.target_switch;
     let is_dead = death_finalization.is_some();
+    let primary_queued_spell_miss_info = if queued_spell.is_some() {
+        melee_outcome.spell_miss_info()
+    } else {
+        None
+    };
+    let mut queued_spell_events = Vec::new();
+    if let Some(queued) = queued_spell {
+        for secondary_target in queued_secondary_targets {
+            let Some(secondary_creature) = shared_world
+                .maps
+                .db_creature_snapshot(map_id, secondary_target)
+                .await
+            else {
+                continue;
+            };
+            let secondary_outcome = player_main_hand_melee_outcome_against_db_creature(
+                &combat_stats,
+                character_snapshot.level,
+                attacker_skill,
+                &secondary_creature,
+            )
+            .with_next_melee_spell_bonus(queued.bonus_damage);
+            let secondary_requested_damage = secondary_outcome.total_damage;
+            let secondary_corpse_loot = if secondary_requested_damage >= secondary_creature.health {
+                Some(
+                    prepare_db_creature_corpse_loot(
+                        shared_world.object_mgr,
+                        world_db_pool,
+                        parties,
+                        session,
+                        character_snapshot.guid,
+                        secondary_creature.spawn.entry,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            let Some(secondary_event) = shared_world
+                .maps
+                .apply_db_creature_damage(
+                    character_snapshot.position.map_id,
+                    DbCreatureDamageRequest {
+                        creature_guid: secondary_target,
+                        killer: attacker,
+                        damage: secondary_requested_damage,
+                        melee_outcome: Some(secondary_outcome),
+                        spell_damage_outcome: None,
+                        spell_id: Some(queued.spell_id),
+                        spell_school: 0,
+                        suppress_attacker_state: true,
+                        now: swing_time,
+                        now_epoch_secs: current_unix_epoch_secs(),
+                        exclude_character_guid: Some(character_snapshot.guid),
+                        corpse_loot: secondary_corpse_loot,
+                    },
+                )
+                .await?
+            else {
+                continue;
+            };
+            queued_spell_events.push(QueuedNextMeleeCreatureEvent {
+                target: secondary_target,
+                miss_info: secondary_outcome.spell_miss_info(),
+                event: secondary_event,
+            });
+        }
+    }
     let mut queued_rage_update_sent = false;
     if let Some(queued) = queued_spell {
         if let Err(failure) = shared_world
@@ -684,7 +871,31 @@ pub(in crate::world) async fn send_db_creature_swing(
             source_location: None,
             destination: None,
         };
-        let spell_go_body = build_spell_go_body(attacker, queued.spell_id, &targets)?;
+        let spell_go_body = build_spell_go_body_for_targets(
+            attacker,
+            attacker,
+            queued.spell_id,
+            CAST_FLAG_SPELL_GO,
+            &targets,
+            std::iter::once((target, primary_queued_spell_miss_info))
+                .filter_map(|(target, miss_info)| miss_info.is_none().then_some(target))
+                .chain(
+                    queued_spell_events
+                        .iter()
+                        .filter(|entry| entry.miss_info.is_none())
+                        .map(|entry| entry.target),
+                )
+                .collect(),
+            std::iter::once((target, primary_queued_spell_miss_info))
+                .filter_map(|(target, miss_info)| miss_info.map(|miss_info| (target, miss_info)))
+                .chain(
+                    queued_spell_events.iter().filter_map(|entry| {
+                        entry.miss_info.map(|miss_info| (entry.target, miss_info))
+                    }),
+                )
+                .collect(),
+            None,
+        )?;
         send_queued_next_melee_spell_cast_success(stream, header_crypto, queued).await?;
         send_packet(
             stream,
@@ -724,6 +935,26 @@ pub(in crate::world) async fn send_db_creature_swing(
             )
             .await?;
         }
+        for queued_event in &queued_spell_events {
+            if let Some(spell_non_melee_log_body) = &queued_event.event.spell_non_melee_log_body {
+                send_packet(
+                    stream,
+                    WorldOpcode::SmsgSpellNonMeleeDamageLog as u16,
+                    spell_non_melee_log_body,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
+            }
+            if let Some(spell_miss_log_body) = &queued_event.event.spell_miss_log_body {
+                send_packet(
+                    stream,
+                    WorldOpcode::SmsgSpellLogMiss as u16,
+                    spell_miss_log_body,
+                    Some(&mut *header_crypto),
+                )
+                .await?;
+            }
+        }
     } else if let Some(attacker_state_body) = &event.attacker_state_body {
         send_packet(
             stream,
@@ -751,6 +982,29 @@ pub(in crate::world) async fn send_db_creature_swing(
         .await?;
     }
     shared_world.sessions.dispatch(event.observer_packets).await;
+    for queued_event in queued_spell_events.iter().skip(1) {
+        mirror_session_db_creature(
+            session,
+            queued_event.target.raw(),
+            queued_event.event.creature.clone(),
+        );
+        send_packet(
+            stream,
+            WorldOpcode::SmsgUpdateObject as u16,
+            &queued_event.event.update_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        for packet in &queued_event.event.direct_packets {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+    }
     if !is_dead {
         send_db_creature_threat_target_switch(
             stream,
@@ -807,6 +1061,47 @@ pub(in crate::world) async fn send_db_creature_swing(
             },
             session,
             death_finalization,
+            header_crypto,
+        )
+        .await?;
+    }
+    for queued_event in queued_spell_events.into_iter().skip(1) {
+        shared_world
+            .sessions
+            .dispatch(queued_event.event.observer_packets)
+            .await;
+        send_db_creature_threat_target_switch(
+            stream,
+            shared_world,
+            session,
+            queued_event.event.target_switch,
+            header_crypto,
+        )
+        .await?;
+        if queued_event.event.death_finalization.is_none() {
+            try_process_db_creature_event_ai_hp_actions(
+                stream,
+                shared_world,
+                world_db_pool,
+                session,
+                map_id,
+                queued_event.target,
+                attacker,
+                Instant::now(),
+                header_crypto,
+            )
+            .await?;
+        }
+        finalize_db_creature_death(
+            stream,
+            CombatRewardDeps {
+                character_db_pool,
+                world_db_pool,
+                shared_world,
+                parties,
+            },
+            session,
+            queued_event.event.death_finalization,
             header_crypto,
         )
         .await?;

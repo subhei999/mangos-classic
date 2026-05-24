@@ -11,6 +11,11 @@ pub async fn get_character_enum_entries(
                 characters.zone, characters.map, \
                 characters.position_x, characters.position_y, characters.position_z, \
                 characters.orientation, \
+                COALESCE(character_homebind.zone, characters.zone) AS homebind_zone, \
+                COALESCE(character_homebind.map, characters.map) AS homebind_map, \
+                COALESCE(character_homebind.position_x, characters.position_x) AS homebind_position_x, \
+                COALESCE(character_homebind.position_y, characters.position_y) AS homebind_position_y, \
+                COALESCE(character_homebind.position_z, characters.position_z) AS homebind_position_z, \
                 guild_member.guildid, characters.playerFlags, characters.at_login, \
                 characters.money, characters.cinematic, characters.ammoId, \
                 characters.health, characters.power1, characters.power2, \
@@ -19,6 +24,7 @@ pub async fn get_character_enum_entries(
                 character_pet.entry AS pet_entry, character_pet.modelid AS pet_modelid, \
                 character_pet.level AS pet_level, characters.equipmentCache \
          FROM characters \
+         LEFT JOIN character_homebind ON characters.guid = character_homebind.guid \
          LEFT JOIN character_pet ON characters.guid = character_pet.owner AND character_pet.slot = 0 \
          LEFT JOIN guild_member ON characters.guid = guild_member.guid \
          WHERE characters.account = ? \
@@ -187,4 +193,3 @@ pub async fn replace_character_account_data(
     tx.commit().await?;
     Ok(())
 }
-

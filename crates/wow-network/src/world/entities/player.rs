@@ -99,7 +99,11 @@ pub(in crate::world) fn write_other_player_update_values(
             | ((player.gender as u32) << 16)
             | (u32::from(player.class == 1) << 24),
     )?;
-    let unit_flags = player_unit_flags_with_looting(player.in_combat, player.looting);
+    let unit_flags = player_unit_flags_with_looting_and_auras(
+        player.in_combat,
+        player.looting,
+        &player.active_auras,
+    );
     set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
     set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, player.unit_target)?;
     set_update_value(&mut values, UNIT_FIELD_BASEATTACKTIME, BASE_ATTACK_TIME_MS)?;
@@ -136,7 +140,7 @@ pub(in crate::world) fn write_other_player_update_values(
     set_update_value(
         &mut values,
         UNIT_FIELD_BYTES_1,
-        unit_bytes_1_for_class(player.class) | u32::from(player.stand_state),
+        player_unit_bytes_1_with_auras(player.class, player.stand_state, &player.active_auras),
     )?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
     set_update_value(&mut values, PLAYER_FLAGS_FIELD, player.flags)?;
@@ -148,7 +152,13 @@ pub(in crate::world) fn write_other_player_update_values(
     )?;
     set_update_value(&mut values, PLAYER_BYTES_3, 0)?;
     set_visible_item_update_values_from_equipment(&mut values, &player.visible_equipment)?;
-    set_player_aura_update_values(&mut values, &player.active_auras)?;
+    set_player_aura_update_values(
+        &mut values,
+        player.class,
+        player.stand_state,
+        player.aura_state,
+        &player.active_auras,
+    )?;
     write_update_values(body, &values)
 }
 
@@ -202,7 +212,11 @@ pub(in crate::world) fn write_minimal_player_update_values(
         faction_for_race(character.race),
     )?;
     set_update_value(&mut values, UNIT_FIELD_BYTES_0, unit_bytes_0(character))?;
-    set_update_value(&mut values, UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)?;
+    set_update_value(
+        &mut values,
+        UNIT_FIELD_FLAGS,
+        player_unit_flags_with_looting_and_auras(false, false, active_auras),
+    )?;
     set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, None)?;
     let combat_stats = combat_stats_with_active_auras(
         player_combat_stats_for_values_with_ammo(
@@ -274,15 +288,21 @@ pub(in crate::world) fn write_minimal_player_update_values(
         &mut values,
         UNIT_FIELD_BYTES_1,
         if character.health == 0 && character.player_flags & PLAYER_FLAGS_GHOST == 0 {
-            unit_bytes_1_for_class(character.class) | u32::from(PLAYER_STAND_STATE_DEAD)
+            player_unit_bytes_1_with_auras(character.class, PLAYER_STAND_STATE_DEAD, active_auras)
         } else {
-            unit_bytes_1(character)
+            player_unit_bytes_1_with_auras(character.class, PLAYER_STAND_STATE_STAND, active_auras)
         },
     )?;
     if character.player_flags & PLAYER_FLAGS_GHOST != 0 {
         set_player_ghost_aura_update_values(&mut values, true, character.race, character.level)?;
     } else {
-        set_player_aura_update_values(&mut values, active_auras)?;
+        set_player_aura_update_values(
+            &mut values,
+            character.class,
+            PLAYER_STAND_STATE_STAND,
+            0,
+            active_auras,
+        )?;
     }
     set_update_value(&mut values, UNIT_FIELD_AURASTATE, 0)?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
@@ -555,13 +575,19 @@ pub(in crate::world) fn build_player_stand_state_update_body(
     character: &Player,
     stand_state: u8,
 ) -> anyhow::Result<Vec<u8>> {
-    build_player_stand_state_update_body_for_class(character.guid, character.class, stand_state)
+    build_player_stand_state_update_body_for_class(
+        character.guid,
+        character.class,
+        stand_state,
+        &[],
+    )
 }
 
 pub(in crate::world) fn build_player_stand_state_update_body_for_class(
     character_guid: u32,
     class: u8,
     stand_state: u8,
+    active_auras: &[ActiveAura],
 ) -> anyhow::Result<Vec<u8>> {
     let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let mut block = Vec::new();
@@ -572,7 +598,7 @@ pub(in crate::world) fn build_player_stand_state_update_body_for_class(
     set_update_value(
         &mut values,
         UNIT_FIELD_BYTES_1,
-        unit_bytes_1_for_class(class) | u32::from(stand_state),
+        player_unit_bytes_1_with_auras(class, stand_state, active_auras),
     )?;
     write_update_values(&mut block, &values)?;
 
@@ -784,7 +810,20 @@ pub(in crate::world) fn set_player_damage_mod_update_values(
 pub(in crate::world) struct EquippedItemTemplate {
     pub(in crate::world) slot: u8,
     pub(in crate::world) template: ItemTemplateQuery,
+    pub(in crate::world) enchantment_stat_bonuses: [i32; ITEM_MOD_STAT_FIELD_COUNT],
+    pub(in crate::world) enchantment_resistance_bonuses: [i32; MAX_SPELL_SCHOOL],
 }
+
+pub(in crate::world) const ITEM_MOD_STAT_FIELD_COUNT: usize = 8;
+pub(in crate::world) const ITEM_MOD_MANA: u32 = 0;
+pub(in crate::world) const ITEM_MOD_HEALTH: u32 = 1;
+pub(in crate::world) const ITEM_MOD_AGILITY: u32 = 3;
+pub(in crate::world) const ITEM_MOD_STRENGTH: u32 = 4;
+pub(in crate::world) const ITEM_MOD_INTELLECT: u32 = 5;
+pub(in crate::world) const ITEM_MOD_SPIRIT: u32 = 6;
+pub(in crate::world) const ITEM_MOD_STAMINA: u32 = 7;
+const ITEM_ENCHANTMENT_TYPE_RESISTANCE: u32 = 4;
+const ITEM_ENCHANTMENT_TYPE_STAT: u32 = 5;
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::world) struct PlayerCombatStats {
@@ -897,6 +936,126 @@ pub(in crate::world) fn player_combat_stats_for_values_with_ammo(
     }
 }
 
+pub(in crate::world) fn player_world_stats_with_equipment(
+    mut world_stats: PlayerWorldStats,
+    equipped_templates: &[EquippedItemTemplate],
+) -> PlayerWorldStats {
+    for equipped in equipped_templates {
+        for stat in equipped.template.stats {
+            if stat.stat_value == 0 {
+                continue;
+            }
+            match stat.stat_type {
+                ITEM_MOD_MANA => {
+                    world_stats.base_mana =
+                        apply_signed_item_stat(world_stats.base_mana, stat.stat_value);
+                }
+                ITEM_MOD_HEALTH => {
+                    world_stats.base_health =
+                        apply_signed_item_stat(world_stats.base_health, stat.stat_value);
+                }
+                ITEM_MOD_AGILITY => {
+                    world_stats.stats[1] =
+                        apply_signed_item_stat(world_stats.stats[1], stat.stat_value);
+                }
+                ITEM_MOD_STRENGTH => {
+                    world_stats.stats[0] =
+                        apply_signed_item_stat(world_stats.stats[0], stat.stat_value);
+                }
+                ITEM_MOD_INTELLECT => {
+                    world_stats.stats[3] =
+                        apply_signed_item_stat(world_stats.stats[3], stat.stat_value);
+                }
+                ITEM_MOD_SPIRIT => {
+                    world_stats.stats[4] =
+                        apply_signed_item_stat(world_stats.stats[4], stat.stat_value);
+                }
+                ITEM_MOD_STAMINA => {
+                    world_stats.stats[2] =
+                        apply_signed_item_stat(world_stats.stats[2], stat.stat_value);
+                }
+                _ => {}
+            }
+        }
+        for (stat_type, stat_value) in equipped.enchantment_stat_bonuses.into_iter().enumerate() {
+            apply_item_stat_bonus(&mut world_stats, stat_type as u32, stat_value);
+        }
+    }
+    world_stats
+}
+
+pub(in crate::world) fn item_enchantment_bonuses(
+    enchantments: &str,
+    spell_item_enchantments: &HashMap<u32, SpellItemEnchantmentEntry>,
+) -> ([i32; ITEM_MOD_STAT_FIELD_COUNT], [i32; MAX_SPELL_SCHOOL]) {
+    let mut stat_bonuses = [0i32; ITEM_MOD_STAT_FIELD_COUNT];
+    let mut resistance_bonuses = [0i32; MAX_SPELL_SCHOOL];
+    let fields = parse_item_enchantment_fields(enchantments);
+    for slot in 0..MAX_ENCHANTMENT_SLOT {
+        let enchant_id = fields[slot * MAX_ENCHANTMENT_OFFSET];
+        let Some(enchantment) = spell_item_enchantments.get(&enchant_id) else {
+            continue;
+        };
+        for index in 0..3 {
+            let amount = enchantment.effect_amounts[index];
+            if amount == 0 {
+                continue;
+            }
+            match enchantment.effect_types[index] {
+                ITEM_ENCHANTMENT_TYPE_STAT => {
+                    let stat_type = enchantment.effect_args[index] as usize;
+                    if stat_type < ITEM_MOD_STAT_FIELD_COUNT {
+                        stat_bonuses[stat_type] = stat_bonuses[stat_type].saturating_add(amount);
+                    }
+                }
+                ITEM_ENCHANTMENT_TYPE_RESISTANCE => {
+                    let school = enchantment.effect_args[index] as usize;
+                    if school < MAX_SPELL_SCHOOL {
+                        resistance_bonuses[school] =
+                            resistance_bonuses[school].saturating_add(amount);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    (stat_bonuses, resistance_bonuses)
+}
+
+fn apply_item_stat_bonus(world_stats: &mut PlayerWorldStats, stat_type: u32, stat_value: i32) {
+    if stat_value == 0 {
+        return;
+    }
+    match stat_type {
+        ITEM_MOD_MANA => {
+            world_stats.base_mana = apply_signed_item_stat(world_stats.base_mana, stat_value);
+        }
+        ITEM_MOD_HEALTH => {
+            world_stats.base_health = apply_signed_item_stat(world_stats.base_health, stat_value);
+        }
+        ITEM_MOD_AGILITY => {
+            world_stats.stats[1] = apply_signed_item_stat(world_stats.stats[1], stat_value);
+        }
+        ITEM_MOD_STRENGTH => {
+            world_stats.stats[0] = apply_signed_item_stat(world_stats.stats[0], stat_value);
+        }
+        ITEM_MOD_INTELLECT => {
+            world_stats.stats[3] = apply_signed_item_stat(world_stats.stats[3], stat_value);
+        }
+        ITEM_MOD_SPIRIT => {
+            world_stats.stats[4] = apply_signed_item_stat(world_stats.stats[4], stat_value);
+        }
+        ITEM_MOD_STAMINA => {
+            world_stats.stats[2] = apply_signed_item_stat(world_stats.stats[2], stat_value);
+        }
+        _ => {}
+    }
+}
+
+fn apply_signed_item_stat(value: u32, amount: i32) -> u32 {
+    (i64::from(value) + i64::from(amount)).clamp(0, i64::from(u32::MAX)) as u32
+}
+
 pub(in crate::world) fn build_player_ammo_update_body(
     character_guid: u32,
     ammo_id: u32,
@@ -917,12 +1076,23 @@ pub(in crate::world) fn build_player_combat_stats_update_body(
     character_guid: u32,
     combat_stats: &PlayerCombatStats,
 ) -> anyhow::Result<Vec<u8>> {
+    build_player_combat_stats_update_body_with_flags(character_guid, combat_stats, None)
+}
+
+pub(in crate::world) fn build_player_combat_stats_update_body_with_flags(
+    character_guid: u32,
+    combat_stats: &PlayerCombatStats,
+    unit_flags: Option<u32>,
+) -> anyhow::Result<Vec<u8>> {
     let player_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_VALUES);
     PackedGuid::write(&mut block, player_guid)?;
 
     let mut values = vec![None; PLAYER_END_FIELDS];
+    if let Some(unit_flags) = unit_flags {
+        set_update_value(&mut values, UNIT_FIELD_FLAGS, unit_flags)?;
+    }
     set_update_value(
         &mut values,
         UNIT_FIELD_BASEATTACKTIME,
@@ -1204,7 +1374,25 @@ pub(in crate::world) fn combat_stats_with_active_auras(
             _ => 0,
         })
         .sum::<i32>();
+    let block_percent_delta = active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .map(|modifier| match modifier {
+            AuraStatModifier::BlockPercent { percent } => *percent,
+            _ => 0,
+        })
+        .sum::<i32>();
+    let crit_percent_delta = active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .map(|modifier| match modifier {
+            AuraStatModifier::CritPercent { percent } => *percent,
+            _ => 0,
+        })
+        .sum::<i32>();
     let physical_damage_done = active_aura_physical_damage_done(active_auras) as f32;
+    let physical_damage_done_multiplier =
+        active_aura_damage_done_multiplier(active_auras, SPELL_SCHOOL_MASK_NORMAL);
 
     for modifier in active_auras
         .iter()
@@ -1250,7 +1438,37 @@ pub(in crate::world) fn combat_stats_with_active_auras(
         stats.ranged_max_damage = (stats.ranged_max_damage + physical_damage_done).max(0.0);
     }
 
-    apply_attack_power_delta(stats, attack_power_delta, 0)
+    stats = apply_attack_power_delta(stats, attack_power_delta, 0);
+    if stats.block_percent > 0.0 && block_percent_delta != 0 {
+        stats.block_percent = (stats.block_percent + block_percent_delta as f32).clamp(0.0, 100.0);
+    }
+    if crit_percent_delta != 0 {
+        stats.crit_percent = (stats.crit_percent + crit_percent_delta as f32).clamp(0.0, 100.0);
+        stats.ranged_crit_percent =
+            (stats.ranged_crit_percent + crit_percent_delta as f32).clamp(0.0, 100.0);
+    }
+    if active_aura_has_disarm(active_auras) {
+        stats.main_attack_time_ms = BASE_ATTACK_TIME_MS;
+        let (main_min_damage, main_max_damage) = main_hand_damage_with_attack_power(
+            None,
+            stats.melee_attack_power,
+            stats.main_attack_time_ms,
+        );
+        stats.main_min_damage = main_min_damage;
+        stats.main_max_damage = main_max_damage;
+    }
+    if (physical_damage_done_multiplier - 1.0).abs() > f32::EPSILON {
+        stats.main_min_damage = (stats.main_min_damage * physical_damage_done_multiplier).max(0.0);
+        stats.main_max_damage = (stats.main_max_damage * physical_damage_done_multiplier).max(0.0);
+        stats.off_min_damage = (stats.off_min_damage * physical_damage_done_multiplier).max(0.0);
+        stats.off_max_damage = (stats.off_max_damage * physical_damage_done_multiplier).max(0.0);
+        stats.ranged_min_damage =
+            (stats.ranged_min_damage * physical_damage_done_multiplier).max(0.0);
+        stats.ranged_max_damage =
+            (stats.ranged_max_damage * physical_damage_done_multiplier).max(0.0);
+    }
+
+    stats
 }
 
 pub(in crate::world) fn multiply_attack_time(attack_time_ms: u32, multiplier: f32) -> u32 {
@@ -1361,6 +1579,13 @@ pub(in crate::world) fn equipment_resistances(
         resistances[4] += equipped.template.frost_res;
         resistances[5] += equipped.template.shadow_res;
         resistances[6] += equipped.template.arcane_res;
+        for (school, amount) in equipped
+            .enchantment_resistance_bonuses
+            .into_iter()
+            .enumerate()
+        {
+            resistances[school] = apply_signed_item_stat(resistances[school], amount);
+        }
     }
 
     resistances
@@ -1475,6 +1700,21 @@ pub(in crate::world) fn unit_bytes_1_for_class(class: u8) -> u32 {
     };
 
     ((pet_loyalty as u32) << 8) | ((shapeshift_form as u32) << 16)
+}
+
+pub(in crate::world) fn player_unit_bytes_1_with_auras(
+    class: u8,
+    stand_state: u8,
+    active_auras: &[ActiveAura],
+) -> u32 {
+    let base = unit_bytes_1_for_class(class);
+    let shapeshift_form =
+        active_aura_shapeshift_form(active_auras).unwrap_or(((base >> 16) & 0xFF) as u8);
+    let vis_flags = active_aura_unit_vis_flags(active_auras);
+    u32::from(stand_state)
+        | (base & 0x0000_FF00)
+        | (u32::from(shapeshift_form) << 16)
+        | (vis_flags << 24)
 }
 
 pub(in crate::world) fn unit_bytes_2() -> u32 {

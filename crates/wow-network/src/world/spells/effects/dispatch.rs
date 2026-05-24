@@ -95,6 +95,10 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 charge_applied = true;
             }
 
+            SpellEffectDispatch::Taunt => {
+                apply_player_taunt_effect(deps, caster, map_id, targets).await?;
+            }
+
             SpellEffectDispatch::SchoolDamage
                 if spell_profile.kind != SpellCastKind::Charge
                     && spell_profile.kind != SpellCastKind::NextMeleeSwing =>
@@ -354,15 +358,21 @@ pub(in crate::world) async fn apply_player_spell_effects(
             }
 
             SpellEffectDispatch::DispelMechanic => {
-                warn!(
-
-                    spell_id = spell_template.id,
-
-                    mechanic = effect.misc_value,
-
-                    "Skipping SPELL_EFFECT_DISPEL_MECHANIC until aura mechanic ownership is represented"
-
-                );
+                apply_player_dispel_mechanic_effect(
+                    stream,
+                    deps,
+                    session,
+                    caster,
+                    character_guid,
+                    map_id,
+                    spell_template.id,
+                    effect,
+                    effect_value_context,
+                    targets,
+                    now,
+                    header_crypto,
+                )
+                .await?;
             }
 
             SpellEffectDispatch::InterruptCast

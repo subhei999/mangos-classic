@@ -985,6 +985,7 @@ impl MapRuntime {
             target,
             spell_id: plan.spell_id,
             school_mask: spell_school_mask_from_school(template.school),
+            mechanic: template.mechanic,
             requires_behind: plan.requires_behind,
             effect,
             aura,
@@ -1476,11 +1477,32 @@ impl MapRuntime {
             destination: None,
         };
         let pending_aura = cast.aura.clone();
+        let aura_only_miss_info = if matches!(cast.effect, ActiveDbCreatureSpellEffect::None) {
+            if cast.target.is_player() {
+                self.players.get(&cast.target.counter()).and_then(|player| {
+                    active_aura_has_mechanic_immunity(&player.active_auras, cast.mechanic)
+                        .then_some(SPELL_MISS_IMMUNE)
+                })
+            } else if cast.target.is_creature() {
+                self.creatures.get(&cast.target.raw()).and_then(|creature| {
+                    active_aura_has_mechanic_immunity(&creature.active_auras, cast.mechanic)
+                        .then_some(SPELL_MISS_IMMUNE)
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let (effect, spell_go_body) = match cast.effect {
-            ActiveDbCreatureSpellEffect::None => (
-                DbCreatureCompletedSpellEffect::AuraOnly,
-                build_spell_go_body(attacker, cast.spell_id, &targets)?,
-            ),
+            ActiveDbCreatureSpellEffect::None => {
+                let spell_go_body = if let Some(miss_info) = aura_only_miss_info {
+                    build_spell_go_body_with_miss(attacker, cast.spell_id, &targets, miss_info)?
+                } else {
+                    build_spell_go_body(attacker, cast.spell_id, &targets)?
+                };
+                (DbCreatureCompletedSpellEffect::AuraOnly, spell_go_body)
+            }
             ActiveDbCreatureSpellEffect::Damage {
                 amount,
                 school,
@@ -1540,10 +1562,14 @@ impl MapRuntime {
             {
                 self.apply_player_aura(cast.target.counter(), aura)?
             }
-            (Some(aura), DbCreatureCompletedSpellEffect::AuraOnly) if cast.target.is_player() => {
+            (Some(aura), DbCreatureCompletedSpellEffect::AuraOnly)
+                if cast.target.is_player() && aura_only_miss_info.is_none() =>
+            {
                 self.apply_player_aura(cast.target.counter(), aura)?
             }
-            (Some(aura), DbCreatureCompletedSpellEffect::AuraOnly) if cast.target.is_creature() => {
+            (Some(aura), DbCreatureCompletedSpellEffect::AuraOnly)
+                if cast.target.is_creature() && aura_only_miss_info.is_none() =>
+            {
                 creature_aura_event = self.apply_db_creature_aura(cast.target, 0, aura, now)?;
                 None
             }
@@ -2119,9 +2145,20 @@ impl MapRuntime {
             body: build_unit_flags_update_body(attacker, creature_flags)?,
         };
         let player_flags = if include_player_flags {
+            let unit_flags = self
+                .players
+                .get(&victim.counter())
+                .map(|player| {
+                    player_unit_flags_with_looting_and_auras(
+                        true,
+                        player.looting,
+                        &player.active_auras,
+                    )
+                })
+                .unwrap_or_else(|| player_unit_flags(true));
             Some(OutboundWorldPacket {
                 opcode: WorldOpcode::SmsgUpdateObject as u16,
-                body: build_unit_flags_update_body(victim, player_unit_flags(true))?,
+                body: build_unit_flags_update_body(victim, unit_flags)?,
             })
         } else {
             None
@@ -2204,7 +2241,11 @@ impl MapRuntime {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
             body: build_unit_flags_update_body(
                 victim,
-                player_unit_flags_with_looting(false, player.looting),
+                player_unit_flags_with_looting_and_auras(
+                    false,
+                    player.looting,
+                    &player.active_auras,
+                ),
             )?,
         };
         Ok(self
@@ -2366,6 +2407,25 @@ impl MapRuntime {
         }) {
             return Ok(None);
         };
+        let reactive_defense_triggered = matches!(
+            outcome.outcome,
+            MeleeHitOutcome::Dodge | MeleeHitOutcome::Parry | MeleeHitOutcome::Block
+        ) && self
+            .activate_player_reactive_defense(victim.counter(), now);
+        let shield_block_consumed = if outcome.outcome == MeleeHitOutcome::Block {
+            self.players
+                .get_mut(&victim.counter())
+                .is_some_and(|player| {
+                    consume_active_aura_proc_charges(
+                        &mut player.active_auras,
+                        PROC_FLAG_TAKE_MELEE_SWING,
+                        PROC_EX_BLOCK,
+                        now,
+                    )
+                })
+        } else {
+            false
+        };
         let damage = outcome.total_damage;
         if damage == 0 {
             let Some(victim_player) = self.players.get(&victim.counter()) else {
@@ -2373,6 +2433,20 @@ impl MapRuntime {
             };
             let victim_health = victim_player.health;
             let victim_position = victim_player.position;
+            let aura_packet = if reactive_defense_triggered || shield_block_consumed {
+                Some(OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgUpdateObject as u16,
+                    body: build_player_aura_update_body(
+                        victim,
+                        victim_player.class,
+                        victim_player.stand_state,
+                        victim_player.aura_state,
+                        &victim_player.active_auras,
+                    )?,
+                })
+            } else {
+                None
+            };
             let attacker_state = OutboundWorldPacket {
                 opcode: WorldOpcode::SmsgAttackerStateUpdate as u16,
                 body: build_attacker_state_update_body_for_outcome(attacker, victim, outcome, 0)?,
@@ -2402,9 +2476,10 @@ impl MapRuntime {
             return Ok(Some(DbCreaturePlayerDamageEvent {
                 damage,
                 victim_health,
+                aura_changed: shield_block_consumed,
                 combat,
                 direct_packets: Vec::new(),
-                aura_packet: None,
+                aura_packet,
                 attacker_state_body,
                 health_update_body,
                 observer_packets,
@@ -2423,7 +2498,23 @@ impl MapRuntime {
         let victim_health = applied.remaining_health;
         let victim_position = applied.position;
         let direct_packets = applied.direct_packets;
-        let aura_packet = applied.aura_packet;
+        let aura_packet = if reactive_defense_triggered || applied.aura_packet.is_some() {
+            let Some(victim_player) = self.players.get(&victim.counter()) else {
+                return Ok(None);
+            };
+            Some(OutboundWorldPacket {
+                opcode: WorldOpcode::SmsgUpdateObject as u16,
+                body: build_player_aura_update_body(
+                    victim,
+                    victim_player.class,
+                    victim_player.stand_state,
+                    victim_player.aura_state,
+                    &victim_player.active_auras,
+                )?,
+            })
+        } else {
+            None
+        };
         let health_update_body = applied.health_packet.body.clone();
         if damage > 0 {
             self.refresh_db_creature_combat_leash(attacker, now);
@@ -2470,6 +2561,7 @@ impl MapRuntime {
         Ok(Some(DbCreaturePlayerDamageEvent {
             damage,
             victim_health,
+            aura_changed: shield_block_consumed,
             combat,
             direct_packets,
             aura_packet,
@@ -2556,7 +2648,7 @@ impl MapRuntime {
                 Some(attacker),
                 requested_damage,
                 WorldDamageKind::SpellDirect,
-                u32::from(school).max(SPELL_SCHOOL_MASK_NORMAL),
+                spell_school_mask_from_school(u32::from(school)),
                 now,
             )?
             else {
@@ -2593,7 +2685,12 @@ impl MapRuntime {
             })
             .transpose()?;
         if requested_damage > 0 {
-            self.add_db_creature_threat(attacker, victim, requested_damage as f32);
+            self.add_db_creature_threat_with_school_mask(
+                attacker,
+                victim,
+                requested_damage as f32,
+                spell_school_mask_from_school(u32::from(school)),
+            );
             self.refresh_db_creature_combat_leash(attacker, now);
         }
         for player_guid in self.nearby_player_guids(
@@ -2841,6 +2938,31 @@ impl MapRuntime {
         victim: ObjectGuid,
         threat: f32,
     ) {
+        self.add_db_creature_threat_with_school_mask(
+            attacker,
+            victim,
+            threat,
+            SPELL_SCHOOL_MASK_NORMAL,
+        );
+    }
+
+    pub(in crate::world) fn add_db_creature_threat_with_school_mask(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        threat: f32,
+        school_mask: u32,
+    ) {
+        let threat = if victim.is_player() {
+            self.players
+                .get(&victim.counter())
+                .map(|player| {
+                    threat * active_aura_threat_multiplier(&player.active_auras, school_mask)
+                })
+                .unwrap_or(threat)
+        } else {
+            threat
+        };
         if threat < 0.0 || !threat.is_finite() {
             return;
         }
@@ -2849,6 +2971,45 @@ impl MapRuntime {
             entry.threat += threat;
         } else {
             threats.push(CreatureThreatEntry { victim, threat });
+        }
+        threats.sort_by(|left, right| {
+            right
+                .threat
+                .total_cmp(&left.threat)
+                .then_with(|| left.victim.raw().cmp(&right.victim.raw()))
+        });
+    }
+
+    pub(in crate::world) fn apply_db_creature_taunt_threat(
+        &mut self,
+        attacker: ObjectGuid,
+        taunter: ObjectGuid,
+    ) {
+        let Some(creature) = self.creatures.get(&attacker.raw()) else {
+            return;
+        };
+        if !creature.is_alive() || creature.is_evading_home() {
+            return;
+        }
+
+        let max_threat = self
+            .creature_threats
+            .get(&attacker.raw())
+            .into_iter()
+            .flat_map(|entries| entries.iter())
+            .filter(|entry| entry.threat.is_finite())
+            .map(|entry| entry.threat.max(0.0))
+            .max_by(|left, right| left.total_cmp(right))
+            .unwrap_or(0.0);
+
+        let threats = self.creature_threats.entry(attacker.raw()).or_default();
+        if let Some(entry) = threats.iter_mut().find(|entry| entry.victim == taunter) {
+            entry.threat = entry.threat.max(max_threat);
+        } else {
+            threats.push(CreatureThreatEntry {
+                victim: taunter,
+                threat: max_threat,
+            });
         }
         threats.sort_by(|left, right| {
             right
@@ -2875,6 +3036,13 @@ impl MapRuntime {
         current_victim: Option<ObjectGuid>,
     ) -> Option<ObjectGuid> {
         let threats = self.creature_threats.get(&attacker.raw())?;
+        if let Some(taunt_victim) = self
+            .creatures
+            .get(&attacker.raw())
+            .and_then(|creature| active_aura_taunt_caster(&creature.active_auras))
+        {
+            return Some(taunt_victim);
+        }
         let current_entry =
             current_victim.and_then(|victim| threats.iter().find(|entry| entry.victim == victim));
 

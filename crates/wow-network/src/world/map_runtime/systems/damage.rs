@@ -379,8 +379,11 @@ pub(in crate::world) fn apply_player_runtime_world_damage_with_school_mask(
         return Ok(None);
     }
 
-    let absorb = absorb_player_runtime_damage(player, requested_damage, school_mask);
-    let requested_damage_after_absorb = requested_damage.saturating_sub(absorb.absorbed);
+    let damage_taken_multiplier =
+        active_aura_damage_taken_multiplier(&player.active_auras, school_mask);
+    let modified_damage = scale_damage_amount(requested_damage, damage_taken_multiplier);
+    let absorb = absorb_player_runtime_damage(player, modified_damage, school_mask);
+    let requested_damage_after_absorb = modified_damage.saturating_sub(absorb.absorbed);
     let previous_health = player.health;
     let applied_damage = requested_damage_after_absorb.min(previous_health);
     player.health = previous_health.saturating_sub(applied_damage);
@@ -396,16 +399,39 @@ pub(in crate::world) fn apply_player_runtime_world_damage_with_school_mask(
             body: build_player_mana_update_body(target, player.power1)?,
         });
     }
-    let aura_packet = if died && !player.active_auras.is_empty() {
+    let aura_state_changed = if died {
+        let had_aura_state = player.aura_state != 0
+            || player.reactive_defense_expires_at.is_some()
+            || player.reactive_overpower_expires_at.is_some();
+        player.aura_state = 0;
+        player.reactive_defense_expires_at = None;
+        player.reactive_overpower_expires_at = None;
+        had_aura_state
+    } else {
+        false
+    };
+    let aura_packet = if died && (!player.active_auras.is_empty() || aura_state_changed) {
         player.active_auras.clear();
         Some(OutboundWorldPacket {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
-            body: build_player_aura_update_body(target, &player.active_auras)?,
+            body: build_player_aura_update_body(
+                target,
+                player.class,
+                player.stand_state,
+                player.aura_state,
+                &player.active_auras,
+            )?,
         })
     } else if absorb.aura_changed {
         Some(OutboundWorldPacket {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
-            body: build_player_aura_update_body(target, &player.active_auras)?,
+            body: build_player_aura_update_body(
+                target,
+                player.class,
+                player.stand_state,
+                player.aura_state,
+                &player.active_auras,
+            )?,
         })
     } else {
         None
@@ -481,6 +507,13 @@ pub(in crate::world) fn apply_player_runtime_world_damage_with_school_mask(
         aura_packet,
         death_presentation_deferred,
     }))
+}
+
+fn scale_damage_amount(amount: u32, multiplier: f32) -> u32 {
+    if !multiplier.is_finite() {
+        return amount;
+    }
+    ((amount as f32) * multiplier).floor().max(0.0) as u32
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

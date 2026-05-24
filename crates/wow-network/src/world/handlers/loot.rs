@@ -1491,6 +1491,7 @@ pub(in crate::world) async fn grant_loot_item_to_character(
                     item_template: loot.item,
                     count: slot.count,
                     durability: 0,
+                    initial_flags: item_binding_flags_on_pickup(&template),
                     random_properties: random_properties.as_ref(),
                 },
             )

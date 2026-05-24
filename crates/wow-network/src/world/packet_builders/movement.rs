@@ -181,6 +181,32 @@ pub(in crate::world) fn build_monster_move_path_body_inner(
         move_type_facing_target: MONSTER_MOVE_TYPE_FACING_TARGET,
         run_spline_flag: MONSTER_MOVE_SPLINE_FLAG_RUNMODE,
         run,
+        catmull_rom: false,
+    }
+    .body())
+}
+
+pub(in crate::world) fn build_taxi_flight_spline_body(
+    guid: ObjectGuid,
+    start: WorldPosition,
+    path: &[WorldPosition],
+    spline_id: u32,
+    duration_ms: u32,
+) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(!path.is_empty(), "taxi flight path must not be empty");
+
+    Ok(SmsgMonsterMovePathResponse {
+        guid,
+        start: world_location_response(start),
+        path: path.iter().copied().map(world_location_response).collect(),
+        spline_id,
+        duration_ms,
+        facing_target: None,
+        move_type_normal: MONSTER_MOVE_TYPE_NORMAL,
+        move_type_facing_target: MONSTER_MOVE_TYPE_FACING_TARGET,
+        run_spline_flag: MONSTER_MOVE_SPLINE_FLAG_RUNMODE | MONSTER_MOVE_SPLINE_FLAG_FLYING,
+        run: true,
+        catmull_rom: true,
     }
     .body())
 }

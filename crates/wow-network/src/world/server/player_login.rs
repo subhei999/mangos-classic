@@ -106,6 +106,7 @@ pub(in crate::world) async fn handle_player_login(
         equipment_cache: character.equipment_cache.clone(),
         guildid: character.guildid,
     });
+    session.character.current_zone = Some(character.zone);
     session.movement.movement_client_time_delay = None;
     session.character.player_flags = character.player_flags;
     session.death.player_death_state = if character.player_flags & PLAYER_FLAGS_GHOST != 0 {
@@ -313,8 +314,19 @@ pub(in crate::world) async fn handle_player_login(
         session,
     )
     .await?;
+    let equipped_templates = load_equipped_item_templates_with_enchantments(
+        deps.world_db_pool,
+        &session.inventory.items,
+        &session
+            .movement
+            .db_creature_navigation
+            .world_data_files
+            .spell_item_enchantments,
+    )
+    .await?;
+    let equipped_world_stats = player_world_stats_with_equipment(world_stats, &equipped_templates);
     let effective_world_stats =
-        player_world_stats_with_active_auras(world_stats, &session.auras.active_auras);
+        player_world_stats_with_active_auras(equipped_world_stats, &session.auras.active_auras);
     if session.character.player_mana == 0 {
         session.character.player_mana = effective_world_stats.max_mana();
     }
@@ -332,8 +344,6 @@ pub(in crate::world) async fn handle_player_login(
             "Loaded 0 HP character as corpse state for death invariant handling"
         );
     }
-    let equipped_templates =
-        load_equipped_item_templates(deps.world_db_pool, &session.inventory.items).await?;
     let ammo_template = load_selected_ammo_template(
         deps.world_db_pool,
         &session.inventory.items,
@@ -496,7 +506,7 @@ pub(in crate::world) async fn handle_player_login(
         class: character.class,
         spirit: effective_world_stats.stats[4],
         gender: character.gender,
-        base_world_stats: world_stats,
+        base_world_stats: equipped_world_stats,
         effective_world_stats,
         health: session.character.player_health,
         max_health: effective_world_stats.max_health().max(1),
@@ -510,6 +520,9 @@ pub(in crate::world) async fn handle_player_login(
         max_power4: create_power_for_class_power(character.class, POWER_ENERGY),
         player_bytes: character.player_bytes,
         player_bytes2: player_bytes2_with_rest_bonus(character.player_bytes2, rest_bonus),
+        aura_state: 0,
+        reactive_defense_expires_at: None,
+        reactive_overpower_expires_at: None,
         combo_target: None,
         combo_points: 0,
         stand_state: session.character.player_stand_state,

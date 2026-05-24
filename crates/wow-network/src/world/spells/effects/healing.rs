@@ -20,15 +20,37 @@ pub(in crate::world) async fn apply_player_direct_heal_effect(
 
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let heal = spell_direct_heal(spell_info, value_context);
+    let base_heal = spell_direct_heal(spell_info, value_context);
 
-    if heal == 0 {
+    if base_heal == 0 {
         return Ok(());
     }
 
     let Some(target) = targets.unit_target.filter(|target| target.is_player()) else {
         return Ok(());
     };
+
+    let target_active_auras = if target.counter() == caster.counter() {
+        session.auras.active_auras.clone()
+    } else {
+        deps.shared_world
+            .maps
+            .player_runtime_snapshot(map_id, target.counter())
+            .await
+            .map(|snapshot| snapshot.active_auras)
+            .unwrap_or_default()
+    };
+    let heal = apply_flat_spell_bonus(
+        base_heal,
+        active_aura_spell_healing_taken_bonus(
+            &target_active_auras,
+            spell_school_mask_from_school(spell_info.template.school),
+        ),
+    );
+
+    if heal == 0 {
+        return Ok(());
+    }
 
     let Some(event) = deps
         .shared_world

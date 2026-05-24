@@ -1095,15 +1095,25 @@ async fn auction_item_can_be_listed(
     else {
         return Ok(false);
     };
-    if instance_state.flags != 0 || instance_state.duration != 0 {
-        return Ok(false);
-    }
-    if template.flags & ITEM_FLAG_CONJURED != 0
-        || sell_item_is_non_empty_container(inventory, source_item, template)
-    {
+    if !auction_attachment_can_be_listed(
+        instance_state,
+        template.flags,
+        sell_item_is_non_empty_container(inventory, source_item, template),
+    ) {
         return Ok(false);
     }
     Ok(true)
+}
+
+fn auction_attachment_can_be_listed(
+    instance: wow_db::MailAttachmentInstanceState,
+    template_flags: u32,
+    non_empty_container: bool,
+) -> bool {
+    !item_instance_is_soulbound(instance.flags)
+        && instance.duration == 0
+        && template_flags & ITEM_FLAG_CONJURED == 0
+        && !non_empty_container
 }
 
 fn auction_source_position_supported(source_item: &CharacterInventoryItem) -> bool {
@@ -1650,6 +1660,26 @@ mod tests {
             auction_deposit_from_template(&entry, 7_200, &template, 1, config),
             150
         );
+    }
+
+    #[test]
+    fn auction_listing_rejects_soulbound_but_not_unrelated_instance_flags() {
+        assert!(!auction_attachment_can_be_listed(
+            wow_db::MailAttachmentInstanceState {
+                flags: ITEM_DYNFLAG_BINDED,
+                duration: 0,
+            },
+            0,
+            false,
+        ));
+        assert!(auction_attachment_can_be_listed(
+            wow_db::MailAttachmentInstanceState {
+                flags: 0x0000_0200,
+                duration: 0,
+            },
+            0,
+            false,
+        ));
     }
 
     #[test]

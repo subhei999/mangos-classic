@@ -369,15 +369,41 @@ fn armor_reduced_damage_matches_cmangos_cap_shape() {
 
 #[test]
 fn player_miss_chance_uses_weapon_skill_against_creature_defense() {
-    let even = player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 5, 5, 1);
+    let even =
+        player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 5, 5, 1, 0);
     let under_skilled =
-        player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 1, 5, 1);
+        player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 1, 5, 1, 0);
     let heavily_under_skilled =
-        player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 5, 20, 4);
+        player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 5, 20, 4, 0);
 
     assert_eq!(even.miss, 5.0);
     assert!(under_skilled.miss > even.miss);
     assert_eq!(heavily_under_skilled.miss, 9.0);
+}
+
+#[test]
+fn player_main_hand_chances_include_cmangos_creature_defenses() {
+    let even =
+        player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 5, 5, 1, 0);
+    let under_skilled =
+        player_main_hand_chances_against_db_creature(&test_player_combat_stats(), 5, 20, 4, 0);
+    let flagged = player_main_hand_chances_against_db_creature(
+        &test_player_combat_stats(),
+        5,
+        5,
+        1,
+        CREATURE_EXTRA_FLAG_NO_PARRY | CREATURE_EXTRA_FLAG_NO_BLOCK,
+    );
+
+    assert_eq!(even.dodge, 5.0);
+    assert_eq!(even.parry, 5.0);
+    assert_eq!(even.block, 5.0);
+    assert_eq!(under_skilled.dodge, 6.5);
+    assert_eq!(under_skilled.parry, 14.0);
+    assert_eq!(under_skilled.block, 5.0);
+    assert_eq!(flagged.dodge, 5.0);
+    assert_eq!(flagged.parry, 0.0);
+    assert_eq!(flagged.block, 0.0);
 }
 
 #[test]
@@ -663,6 +689,78 @@ fn player_swing_timer_defaults_to_base_attack_time_without_weapon() {
 }
 
 #[test]
+fn combat_stats_with_disarm_reverts_main_hand_to_unarmed_profile() {
+    let mut weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 6.0, 10.0, 0);
+    weapon.delay = 2800;
+    let equipped = [equipped_template(EQUIPMENT_SLOT_MAINHAND, weapon)];
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let base = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+    let disarm = ActiveAura {
+        spell_id: 676,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 99),
+        level: 18,
+        interrupt_flags: 0,
+        positive: false,
+        visible: true,
+        duration_millis: Some(10_000),
+        expires_at: Some(Instant::now() + Duration::from_secs(10)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::Disarm],
+        proc_triggers: Vec::new(),
+    };
+
+    let disarmed = combat_stats_with_active_auras(base, &[disarm]);
+    let (expected_min, expected_max) =
+        main_hand_damage_with_attack_power(None, disarmed.melee_attack_power, BASE_ATTACK_TIME_MS);
+
+    assert_eq!(disarmed.main_attack_time_ms, BASE_ATTACK_TIME_MS);
+    assert_eq!(disarmed.off_attack_time_ms, base.off_attack_time_ms);
+    assert!((disarmed.main_min_damage - expected_min).abs() < 0.001);
+    assert!((disarmed.main_max_damage - expected_max).abs() < 0.001);
+}
+
+#[test]
+fn shield_block_aura_adds_block_percent_only_when_player_can_block() {
+    let mut shield = test_item_template(2362, ITEM_CLASS_ARMOR, INVTYPE_SHIELD, 0.0, 0.0, 3);
+    shield.block = 11;
+    let equipped = [equipped_template(EQUIPMENT_SLOT_OFFHAND, shield)];
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let with_shield = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+    let without_shield = player_combat_stats_for_values(1, 1, &world_stats, &[]);
+    let shield_block = ActiveAura {
+        spell_id: 2565,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 99),
+        level: 10,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: Some(5_000),
+        expires_at: Some(Instant::now() + Duration::from_secs(5)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::BlockPercent { percent: 75 }],
+        proc_triggers: Vec::new(),
+    };
+
+    let shielded = combat_stats_with_active_auras(with_shield, &[shield_block.clone()]);
+    let unshielded = combat_stats_with_active_auras(without_shield, &[shield_block]);
+
+    assert_eq!(shielded.block_percent, 80.0);
+    assert_eq!(unshielded.block_percent, 0.0);
+}
+
+#[test]
 fn player_main_hand_outcome_uses_db_creature_template_armor() {
     let weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 20.0, 20.0, 0);
     let equipped = [equipped_template(EQUIPMENT_SLOT_MAINHAND, weapon)];
@@ -687,6 +785,171 @@ fn player_main_hand_outcome_uses_db_creature_template_armor() {
     assert_eq!(
         outcome.total_damage,
         armor_reduced_damage(1, 100, stats.main_min_damage)
+    );
+}
+
+#[test]
+fn player_main_hand_outcome_can_be_dodged_parried_or_blocked_by_db_creature() {
+    let weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 20.0, 20.0, 0);
+    let equipped = [equipped_template(EQUIPMENT_SLOT_MAINHAND, weapon)];
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+    let mut spawn = test_creature_spawn(6);
+    spawn.template.min_level = 1;
+    spawn.template.max_level = 1;
+    let creature = DbCreatureRuntime::new(spawn);
+
+    let dodge = calculate_player_main_hand_melee_outcome_against_db_creature(
+        &stats, 1, 5, &creature, 1, 501,
+    );
+    let parry = calculate_player_main_hand_melee_outcome_against_db_creature(
+        &stats, 1, 5, &creature, 1, 1_001,
+    );
+    let block = calculate_player_main_hand_melee_outcome_against_db_creature(
+        &stats, 1, 5, &creature, 1, 1_501,
+    );
+
+    assert_eq!(dodge.outcome, MeleeHitOutcome::Dodge);
+    assert_eq!(dodge.total_damage, 0);
+    assert_eq!(parry.outcome, MeleeHitOutcome::Parry);
+    assert_eq!(parry.total_damage, 0);
+    assert_eq!(block.outcome, MeleeHitOutcome::Block);
+}
+
+#[test]
+fn creature_block_outcome_uses_cmangos_shield_block_value_from_strength() {
+    let weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 20.0, 20.0, 0);
+    let equipped = [equipped_template(EQUIPMENT_SLOT_MAINHAND, weapon)];
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(6, 1, &world_stats, &equipped);
+    let mut spawn = test_creature_spawn(6);
+    spawn.template.min_level = 6;
+    spawn.template.max_level = 6;
+    spawn.template.base_strength = Some(60);
+    spawn.template.strength_multiplier = 1.5;
+    let creature = DbCreatureRuntime::new(spawn);
+
+    let outcome = calculate_player_main_hand_melee_outcome_against_db_creature(
+        &stats, 6, 30, &creature, 1, 1_501,
+    );
+
+    assert_eq!(effective_db_creature_strength(&creature), Some(90));
+    assert_eq!(db_creature_shield_block_value(&creature), 7);
+    assert_eq!(outcome.outcome, MeleeHitOutcome::Block);
+    assert_eq!(outcome.blocked, 7);
+    assert_eq!(outcome.total_damage, 13);
+}
+
+#[test]
+fn creature_block_outcome_does_not_fake_block_value_without_classlevel_strength() {
+    let weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 20.0, 20.0, 0);
+    let equipped = [equipped_template(EQUIPMENT_SLOT_MAINHAND, weapon)];
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(6, 1, &world_stats, &equipped);
+    let mut spawn = test_creature_spawn(6);
+    spawn.template.min_level = 6;
+    spawn.template.max_level = 6;
+    spawn.template.base_strength = None;
+    let creature = DbCreatureRuntime::new(spawn);
+
+    let outcome = calculate_player_main_hand_melee_outcome_against_db_creature(
+        &stats, 6, 30, &creature, 1, 1_501,
+    );
+
+    assert_eq!(effective_db_creature_strength(&creature), None);
+    assert_eq!(db_creature_shield_block_value(&creature), 0);
+    assert_eq!(outcome.outcome, MeleeHitOutcome::Block);
+    assert_eq!(outcome.blocked, 0);
+    assert_eq!(outcome.total_damage, 20);
+}
+
+#[test]
+fn creature_extra_flags_disable_player_main_hand_parry_and_block_outcomes() {
+    let weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 20.0, 20.0, 0);
+    let equipped = [equipped_template(EQUIPMENT_SLOT_MAINHAND, weapon)];
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+    let mut spawn = test_creature_spawn(6);
+    spawn.template.min_level = 1;
+    spawn.template.max_level = 1;
+    spawn.template.extra_flags = CREATURE_EXTRA_FLAG_NO_PARRY | CREATURE_EXTRA_FLAG_NO_BLOCK;
+    let creature = DbCreatureRuntime::new(spawn);
+
+    let former_parry_slot = calculate_player_main_hand_melee_outcome_against_db_creature(
+        &stats, 1, 5, &creature, 1, 1_001,
+    );
+    let former_block_slot = calculate_player_main_hand_melee_outcome_against_db_creature(
+        &stats, 1, 5, &creature, 1, 1_501,
+    );
+
+    assert_ne!(former_parry_slot.outcome, MeleeHitOutcome::Parry);
+    assert_ne!(former_block_slot.outcome, MeleeHitOutcome::Block);
+}
+
+#[test]
+fn player_main_hand_outcome_uses_db_creature_armor_debuff_auras() {
+    let weapon = test_item_template(25, ITEM_CLASS_WEAPON, 13, 20.0, 20.0, 0);
+    let equipped = [equipped_template(EQUIPMENT_SLOT_MAINHAND, weapon)];
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [23, 20, 22, 20, 20],
+        next_level_xp: 400,
+    };
+    let stats = player_combat_stats_for_values(1, 1, &world_stats, &equipped);
+    let mut spawn = test_creature_spawn(6);
+    spawn.template.min_level = 1;
+    spawn.template.max_level = 1;
+    spawn.template.armor = 500;
+    let mut creature = DbCreatureRuntime::new(spawn);
+    for _ in 0..2 {
+        creature.active_auras.push(ActiveAura {
+            spell_id: 7386,
+            caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+            level: 22,
+            interrupt_flags: 0,
+            positive: false,
+            visible: true,
+            duration_millis: Some(30_000),
+            expires_at: Some(Instant::now() + Duration::from_secs(30)),
+            periodic_damage: None,
+            periodic_regen: None,
+            stat_modifiers: vec![AuraStatModifier::Resistance {
+                school_mask: SPELL_SCHOOL_MASK_NORMAL,
+                amount: -90,
+            }],
+            proc_triggers: Vec::new(),
+        });
+    }
+
+    let outcome = calculate_player_main_hand_melee_outcome_against_db_creature(
+        &stats, 1, 5, &creature, 1, 10_000,
+    );
+
+    assert_eq!(outcome.outcome, MeleeHitOutcome::Normal);
+    assert_eq!(
+        outcome.total_damage,
+        armor_reduced_damage(1, 320, stats.main_min_damage)
     );
 }
 
@@ -790,6 +1053,50 @@ fn creature_melee_outcome_uses_player_armor_from_defense_input() {
 
     assert_eq!(outcome.outcome, MeleeHitOutcome::Normal);
     assert_eq!(outcome.total_damage, armor_reduced_damage(1, 100, 20.0));
+}
+
+#[test]
+fn creature_melee_outcome_applies_attack_power_debuff_auras() {
+    let mut spawn = test_creature_spawn(6);
+    spawn.template.min_level = 1;
+    spawn.template.max_level = 1;
+    spawn.template.min_melee_dmg = 20.0;
+    spawn.template.max_melee_dmg = 20.0;
+    spawn.template.melee_base_attack_time = 2_000;
+    spawn.template.melee_attack_power = 140;
+    let mut creature = DbCreatureRuntime::new(spawn);
+    creature.active_auras.push(ActiveAura {
+        spell_id: 1160,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 7),
+        level: 14,
+        interrupt_flags: 0,
+        positive: false,
+        visible: true,
+        duration_millis: Some(30_000),
+        expires_at: Some(Instant::now() + Duration::from_secs(30)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::AttackPower { amount: -28 }],
+        proc_triggers: Vec::new(),
+    });
+    let defense = PlayerMeleeDefenseInput {
+        level: 1,
+        defense_skill: 5,
+        armor: 0,
+        block_value: 0,
+        dodge_percent: 0.0,
+        parry_percent: 0.0,
+        block_percent: 0.0,
+    };
+
+    let outcome = calculate_melee_damage(
+        creature_melee_input_against_player(&creature, defense),
+        1,
+        10_000,
+    );
+
+    assert_eq!(outcome.outcome, MeleeHitOutcome::Normal);
+    assert_eq!(outcome.total_damage, 16);
 }
 
 #[test]

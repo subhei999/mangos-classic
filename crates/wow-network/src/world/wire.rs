@@ -454,6 +454,10 @@ pub(in crate::world) struct MovementInfo {
 
 impl MovementInfo {
     pub(in crate::world) fn read(body: &[u8]) -> anyhow::Result<Self> {
+        Self::read_with_len(body).map(|(movement, _)| movement)
+    }
+
+    pub(in crate::world) fn read_with_len(body: &[u8]) -> anyhow::Result<(Self, usize)> {
         let mut cursor = 0;
         let flags = read_u32(body, &mut cursor)?;
         let client_time = read_u32(body, &mut cursor)?;
@@ -490,13 +494,16 @@ impl MovementInfo {
             let _spline_elevation = read_f32(body, &mut cursor)?;
         }
 
-        Ok(Self {
-            flags,
-            client_time,
-            position: WorldPosition::new(0, x, y, z, orientation),
-            fall_time,
-            jump,
-        })
+        Ok((
+            Self {
+                flags,
+                client_time,
+                position: WorldPosition::new(0, x, y, z, orientation),
+                fall_time,
+                jump,
+            },
+            cursor,
+        ))
     }
 }
 
@@ -619,6 +626,7 @@ pub(in crate::world) fn is_movement_opcode(opcode: u32) -> bool {
                 | WorldOpcode::MsgMoveSetPitch
                 | WorldOpcode::MsgMoveHeartbeat
                 | WorldOpcode::CmsgMoveFallReset
+                | WorldOpcode::CmsgMoveSplineDone
         )
     )
 }
@@ -683,6 +691,7 @@ pub(in crate::world) fn movement_opcode_name(opcode: u32) -> &'static str {
         Some(WorldOpcode::MsgMoveSetPitch) => "MSG_MOVE_SET_PITCH",
         Some(WorldOpcode::MsgMoveHeartbeat) => "MSG_MOVE_HEARTBEAT",
         Some(WorldOpcode::CmsgMoveFallReset) => "CMSG_MOVE_FALL_RESET",
+        Some(WorldOpcode::CmsgMoveSplineDone) => "CMSG_MOVE_SPLINE_DONE",
         _ => "UNKNOWN_MOVEMENT",
     }
 }

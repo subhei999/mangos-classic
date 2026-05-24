@@ -21,6 +21,25 @@ const MAIL_BODY_ITEM_TEMPLATE: u32 = 8383;
 const ITEM_FLAG_CONJURED: u32 = 0x0000_0002;
 const ITEM_DYNFLAG_WRAPPED: u32 = 0x0000_0200;
 
+fn mail_attachment_transfer_error(
+    template_flags: u32,
+    instance: wow_db::MailAttachmentInstanceState,
+    non_empty_container: bool,
+    cod: u32,
+) -> Option<u32> {
+    if item_instance_is_soulbound(instance.flags)
+        || non_empty_container
+        || template_flags & ITEM_FLAG_CONJURED != 0
+        || instance.duration != 0
+    {
+        return Some(MAIL_ERR_MAIL_ATTACHMENT_INVALID);
+    }
+    if cod != 0 && instance.flags & ITEM_DYNFLAG_WRAPPED != 0 {
+        return Some(MAIL_ERR_CANT_SEND_WRAPPED_COD);
+    }
+    None
+}
+
 pub(in crate::world) async fn dispatch_mail_packet(
     ctx: &mut WorldPacketDispatchContext<'_>,
     packet: &packets::ParsedWorldClientPacket,
@@ -254,38 +273,14 @@ pub(in crate::world) async fn handle_send_mail(
             )
             .await;
         };
-        if template.flags & ITEM_FLAG_CONJURED != 0 {
-            return send_mail_result(
-                stream,
-                0,
-                MAIL_SEND,
-                MAIL_ERR_MAIL_ATTACHMENT_INVALID,
-                None,
-                None,
-                header_crypto,
-            )
-            .await;
-        }
-        if template.container_slots != 0
+        let non_empty_container = template.container_slots != 0
             && wow_db::inventory_items_in_container(
                 deps.character_db_pool,
                 character_guid,
                 item.item,
             )
             .await?
-                != 0
-        {
-            return send_mail_result(
-                stream,
-                0,
-                MAIL_SEND,
-                MAIL_ERR_MAIL_ATTACHMENT_INVALID,
-                None,
-                None,
-                header_crypto,
-            )
-            .await;
-        }
+                != 0;
         let Some(instance) = wow_db::mail_attachment_instance_state(
             deps.character_db_pool,
             character_guid,
@@ -304,29 +299,13 @@ pub(in crate::world) async fn handle_send_mail(
             )
             .await;
         };
-        if instance.duration != 0 {
-            return send_mail_result(
-                stream,
-                0,
-                MAIL_SEND,
-                MAIL_ERR_MAIL_ATTACHMENT_INVALID,
-                None,
-                None,
-                header_crypto,
-            )
-            .await;
-        }
-        if request.cod != 0 && instance.flags & ITEM_DYNFLAG_WRAPPED != 0 {
-            return send_mail_result(
-                stream,
-                0,
-                MAIL_SEND,
-                MAIL_ERR_CANT_SEND_WRAPPED_COD,
-                None,
-                None,
-                header_crypto,
-            )
-            .await;
+        if let Some(error) = mail_attachment_transfer_error(
+            template.flags,
+            instance,
+            non_empty_container,
+            request.cod,
+        ) {
+            return send_mail_result(stream, 0, MAIL_SEND, error, None, None, header_crypto).await;
         }
     }
 
@@ -1108,6 +1087,33 @@ mod tests {
         assert_eq!(
             send_mail_delivery_delay_secs(&send_mail_request(0, 123), Some(99)),
             MAIL_DELIVERY_DELAY_SECS
+        );
+    }
+
+    #[test]
+    fn mail_attachment_transfer_rejects_soulbound_like_cmangos_can_be_traded() {
+        let instance = wow_db::MailAttachmentInstanceState {
+            flags: ITEM_DYNFLAG_BINDED,
+            duration: 0,
+        };
+
+        assert_eq!(
+            mail_attachment_transfer_error(0, instance, false, 0),
+            Some(MAIL_ERR_MAIL_ATTACHMENT_INVALID)
+        );
+    }
+
+    #[test]
+    fn mail_attachment_transfer_allows_wrapped_items_except_cod() {
+        let instance = wow_db::MailAttachmentInstanceState {
+            flags: ITEM_DYNFLAG_WRAPPED,
+            duration: 0,
+        };
+
+        assert_eq!(mail_attachment_transfer_error(0, instance, false, 0), None);
+        assert_eq!(
+            mail_attachment_transfer_error(0, instance, false, 1),
+            Some(MAIL_ERR_CANT_SEND_WRAPPED_COD)
         );
     }
 }

@@ -7,6 +7,10 @@ pub(in crate::world) struct WorldDataFiles {
     pub(in crate::world) maps_available: bool,
     pub(in crate::world) vmaps_available: bool,
     pub(in crate::world) auction_houses: HashMap<u32, AuctionHouseEntry>,
+    pub(in crate::world) taxi_nodes: HashMap<u32, TaxiNodeEntry>,
+    pub(in crate::world) taxi_paths: HashMap<(u32, u32), TaxiPathEntry>,
+    pub(in crate::world) taxi_path_nodes: HashMap<u32, Vec<TaxiPathNodeEntry>>,
+    pub(in crate::world) taxi_node_mask: [u32; 8],
     pub(in crate::world) creature_display_scales: HashMap<u32, f32>,
     pub(in crate::world) spell_cast_times: HashMap<u32, SpellCastTimeEntry>,
     pub(in crate::world) spell_durations: HashMap<u32, SpellDurationEntry>,
@@ -19,6 +23,7 @@ pub(in crate::world) struct WorldDataFiles {
         HashMap<u32, Vec<SkillRaceClassInfoEntry>>,
     pub(in crate::world) faction_templates: FactionTemplateStore,
     pub(in crate::world) item_random_properties: HashMap<u32, ItemRandomPropertyEntry>,
+    pub(in crate::world) spell_item_enchantments: HashMap<u32, SpellItemEnchantmentEntry>,
     pub(in crate::world) bank_bag_slot_prices: HashMap<u32, u32>,
     pub(in crate::world) area_triggers: HashMap<u32, AreaTriggerEntry>,
     pub(in crate::world) area_tables: AreaTableStore,
@@ -37,6 +42,10 @@ impl WorldDataFiles {
             maps_available: false,
             vmaps_available: false,
             auction_houses: HashMap::new(),
+            taxi_nodes: HashMap::new(),
+            taxi_paths: HashMap::new(),
+            taxi_path_nodes: HashMap::new(),
+            taxi_node_mask: [0; 8],
             creature_display_scales: HashMap::new(),
             spell_cast_times: HashMap::new(),
             spell_durations: HashMap::new(),
@@ -48,6 +57,7 @@ impl WorldDataFiles {
             skill_race_class_infos_by_skill: HashMap::new(),
             faction_templates: FactionTemplateStore::fallback_bridge(),
             item_random_properties: HashMap::new(),
+            spell_item_enchantments: HashMap::new(),
             bank_bag_slot_prices: HashMap::new(),
             area_triggers: HashMap::new(),
             area_tables: AreaTableStore::default(),
@@ -64,6 +74,10 @@ impl WorldDataFiles {
         let maps_available = data_dir.join("maps").is_dir();
         let vmaps_available = data_dir.join("vmaps").is_dir();
         let auction_houses = load_auction_houses(&data_dir.join("dbc").join("AuctionHouse.dbc"));
+        let taxi_nodes = load_taxi_nodes(&data_dir.join("dbc").join("TaxiNodes.dbc"));
+        let taxi_paths = load_taxi_paths(&data_dir.join("dbc").join("TaxiPath.dbc"));
+        let taxi_path_nodes = load_taxi_path_nodes(&data_dir.join("dbc").join("TaxiPathNode.dbc"));
+        let taxi_node_mask = taxi_network_mask(&taxi_nodes, &taxi_paths);
         let creature_display_scales = load_creature_display_info_scales(
             &data_dir.join("dbc").join("CreatureDisplayInfo.dbc"),
         );
@@ -82,6 +96,8 @@ impl WorldDataFiles {
             load_faction_templates(&data_dir.join("dbc").join("FactionTemplate.dbc"));
         let item_random_properties =
             load_item_random_properties(&data_dir.join("dbc").join("ItemRandomProperties.dbc"));
+        let spell_item_enchantments =
+            load_spell_item_enchantments(&data_dir.join("dbc").join("SpellItemEnchantment.dbc"));
         let bank_bag_slot_prices =
             load_bank_bag_slot_prices(&data_dir.join("dbc").join("BankBagSlotPrices.dbc"));
         let area_triggers = load_area_triggers(&data_dir.join("dbc").join("AreaTrigger.dbc"));
@@ -136,6 +152,10 @@ impl WorldDataFiles {
             maps_available,
             vmaps_available,
             auction_houses,
+            taxi_nodes,
+            taxi_paths,
+            taxi_path_nodes,
+            taxi_node_mask,
             creature_display_scales,
             spell_cast_times,
             spell_durations,
@@ -147,6 +167,7 @@ impl WorldDataFiles {
             skill_race_class_infos_by_skill,
             faction_templates,
             item_random_properties,
+            spell_item_enchantments,
             bank_bag_slot_prices,
             area_triggers,
             area_tables,
@@ -206,6 +227,49 @@ impl WorldDataFiles {
             .filter_map(|entry| self.area_tables.entry(entry.area_id))
             .rfind(|area| area.map_id == map_id)
     }
+
+    pub(in crate::world) fn nearest_taxi_node(
+        &self,
+        position: WorldPosition,
+        alliance: bool,
+    ) -> Option<u32> {
+        self.taxi_nodes
+            .values()
+            .filter(|node| {
+                node.map_id == position.map_id
+                    && self.taxi_node_known(self.taxi_node_mask, node.id)
+                    && node.mount_creature_id(alliance) != 0
+            })
+            .min_by(|left, right| {
+                left.distance_squared(position)
+                    .partial_cmp(&right.distance_squared(position))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|node| node.id)
+    }
+
+    pub(in crate::world) fn taxi_path(
+        &self,
+        source: u32,
+        destination: u32,
+    ) -> Option<TaxiPathEntry> {
+        self.taxi_paths.get(&(source, destination)).copied()
+    }
+
+    pub(in crate::world) fn taxi_node(&self, node: u32) -> Option<TaxiNodeEntry> {
+        self.taxi_nodes.get(&node).copied()
+    }
+
+    pub(in crate::world) fn taxi_path_nodes(&self, path: u32) -> &[TaxiPathNodeEntry] {
+        self.taxi_path_nodes
+            .get(&path)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub(in crate::world) fn taxi_node_known(&self, taximask: [u32; 8], node: u32) -> bool {
+        taxi_mask_has_node(taximask, node)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,6 +285,46 @@ pub(in crate::world) struct AuctionHouseEntry {
     pub(in crate::world) faction: u32,
     pub(in crate::world) deposit_percent: u32,
     pub(in crate::world) cut_percent: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::world) struct TaxiNodeEntry {
+    pub(in crate::world) id: u32,
+    pub(in crate::world) map_id: u32,
+    pub(in crate::world) x: f32,
+    pub(in crate::world) y: f32,
+    pub(in crate::world) z: f32,
+    pub(in crate::world) horde_mount_creature: u32,
+    pub(in crate::world) alliance_mount_creature: u32,
+}
+
+impl TaxiNodeEntry {
+    pub(in crate::world) fn position(self) -> WorldPosition {
+        WorldPosition::new(self.map_id, self.x, self.y, self.z, 0.0)
+    }
+
+    pub(in crate::world) fn mount_creature_id(self, alliance: bool) -> u32 {
+        if alliance {
+            self.alliance_mount_creature
+        } else {
+            self.horde_mount_creature
+        }
+    }
+
+    fn distance_squared(self, position: WorldPosition) -> f32 {
+        let dx = self.x - position.x;
+        let dy = self.y - position.y;
+        let dz = self.z - position.z;
+        dx * dx + dy * dy + dz * dz
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct TaxiPathEntry {
+    pub(in crate::world) id: u32,
+    pub(in crate::world) source: u32,
+    pub(in crate::world) destination: u32,
+    pub(in crate::world) price: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -421,6 +525,15 @@ pub(in crate::world) struct SkillRaceClassInfoEntry {
 pub(in crate::world) struct ItemRandomPropertyEntry {
     pub(in crate::world) id: u32,
     pub(in crate::world) enchant_ids: [u32; 3],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct SpellItemEnchantmentEntry {
+    pub(in crate::world) id: u32,
+    pub(in crate::world) effect_types: [u32; 3],
+    pub(in crate::world) effect_amounts: [i32; 3],
+    pub(in crate::world) effect_args: [u32; 3],
+    pub(in crate::world) flags: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -702,6 +815,235 @@ pub(in crate::world) fn parse_auction_houses(bytes: &[u8]) -> HashMap<u32, Aucti
     entries
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::world) struct TaxiPathNodeEntry {
+    pub(in crate::world) id: u32,
+    pub(in crate::world) path: u32,
+    pub(in crate::world) index: u32,
+    pub(in crate::world) map_id: u32,
+    pub(in crate::world) x: f32,
+    pub(in crate::world) y: f32,
+    pub(in crate::world) z: f32,
+    pub(in crate::world) action_flag: u32,
+    pub(in crate::world) delay: u32,
+}
+
+impl TaxiPathNodeEntry {
+    pub(in crate::world) fn position(self) -> WorldPosition {
+        WorldPosition::new(self.map_id, self.x, self.y, self.z, 0.0)
+    }
+}
+
+pub(in crate::world) fn load_taxi_nodes(path: &std::path::Path) -> HashMap<u32, TaxiNodeEntry> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_taxi_nodes(&bytes)
+}
+
+pub(in crate::world) fn parse_taxi_nodes(bytes: &[u8]) -> HashMap<u32, TaxiNodeEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const TAXI_NODE_FIELD_COUNT: usize = 16;
+    const HORDE_MOUNT_FIELD: usize = 14;
+    const ALLIANCE_MOUNT_FIELD: usize = 15;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < TAXI_NODE_FIELD_COUNT || record_size < TAXI_NODE_FIELD_COUNT * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut entries = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let f32_field = |index: usize| {
+            let offset = record_offset + index * 4;
+            f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let id = field(0);
+        if id == 0 {
+            continue;
+        }
+        entries.insert(
+            id,
+            TaxiNodeEntry {
+                id,
+                map_id: field(1),
+                x: f32_field(2),
+                y: f32_field(3),
+                z: f32_field(4),
+                horde_mount_creature: field(HORDE_MOUNT_FIELD),
+                alliance_mount_creature: field(ALLIANCE_MOUNT_FIELD),
+            },
+        );
+    }
+    entries
+}
+
+pub(in crate::world) fn load_taxi_paths(
+    path: &std::path::Path,
+) -> HashMap<(u32, u32), TaxiPathEntry> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_taxi_paths(&bytes)
+}
+
+pub(in crate::world) fn parse_taxi_paths(bytes: &[u8]) -> HashMap<(u32, u32), TaxiPathEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const TAXI_PATH_FIELD_COUNT: usize = 4;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < TAXI_PATH_FIELD_COUNT || record_size < TAXI_PATH_FIELD_COUNT * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut entries = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let id = field(0);
+        let source = field(1);
+        let destination = field(2);
+        if id == 0 || source == 0 || destination == 0 {
+            continue;
+        }
+        entries.insert(
+            (source, destination),
+            TaxiPathEntry {
+                id,
+                source,
+                destination,
+                price: field(3),
+            },
+        );
+    }
+    entries
+}
+
+pub(in crate::world) fn load_taxi_path_nodes(
+    path: &std::path::Path,
+) -> HashMap<u32, Vec<TaxiPathNodeEntry>> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_taxi_path_nodes(&bytes)
+}
+
+pub(in crate::world) fn parse_taxi_path_nodes(
+    bytes: &[u8],
+) -> HashMap<u32, Vec<TaxiPathNodeEntry>> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const TAXI_PATH_NODE_FIELD_COUNT: usize = 9;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < TAXI_PATH_NODE_FIELD_COUNT || record_size < TAXI_PATH_NODE_FIELD_COUNT * 4 {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut entries: HashMap<u32, Vec<TaxiPathNodeEntry>> = HashMap::new();
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let f32_field = |index: usize| {
+            let offset = record_offset + index * 4;
+            f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let id = field(0);
+        let path = field(1);
+        if id == 0 || path == 0 {
+            continue;
+        }
+        entries.entry(path).or_default().push(TaxiPathNodeEntry {
+            id,
+            path,
+            index: field(2),
+            map_id: field(3),
+            x: f32_field(4),
+            y: f32_field(5),
+            z: f32_field(6),
+            action_flag: field(7),
+            delay: field(8),
+        });
+    }
+    for nodes in entries.values_mut() {
+        nodes.sort_by_key(|node| node.index);
+    }
+    entries
+}
+
+pub(in crate::world) fn taxi_network_mask(
+    nodes: &HashMap<u32, TaxiNodeEntry>,
+    paths: &HashMap<(u32, u32), TaxiPathEntry>,
+) -> [u32; 8] {
+    let mut mask = [0u32; 8];
+    for node in nodes.keys().copied() {
+        if paths.keys().any(|(source, _)| *source == node) {
+            set_taxi_mask_node(&mut mask, node);
+        }
+    }
+    mask
+}
+
+pub(in crate::world) fn taxi_mask_has_node(taximask: [u32; 8], node: u32) -> bool {
+    if node == 0 {
+        return false;
+    }
+    let index = ((node - 1) / 32) as usize;
+    if index >= taximask.len() {
+        return false;
+    }
+    let submask = 1u32 << ((node - 1) % 32);
+    taximask[index] & submask == submask
+}
+
+pub(in crate::world) fn set_taxi_mask_node(taximask: &mut [u32; 8], node: u32) -> bool {
+    if node == 0 {
+        return false;
+    }
+    let index = ((node - 1) / 32) as usize;
+    if index >= taximask.len() {
+        return false;
+    }
+    let submask = 1u32 << ((node - 1) % 32);
+    let learned = taximask[index] & submask == 0;
+    taximask[index] |= submask;
+    learned
+}
+
 pub(in crate::world) fn parse_faction_templates(
     bytes: &[u8],
 ) -> HashMap<u32, FactionTemplateEntry> {
@@ -806,6 +1148,65 @@ pub(in crate::world) fn parse_item_random_properties(
         );
     }
     properties
+}
+
+pub(in crate::world) fn load_spell_item_enchantments(
+    path: &std::path::Path,
+) -> HashMap<u32, SpellItemEnchantmentEntry> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    parse_spell_item_enchantments(&bytes)
+}
+
+pub(in crate::world) fn parse_spell_item_enchantments(
+    bytes: &[u8],
+) -> HashMap<u32, SpellItemEnchantmentEntry> {
+    const DBC_HEADER_SIZE: usize = 20;
+    const SPELL_ITEM_ENCHANTMENT_FIELD_COUNT: usize = 24;
+    if bytes.len() < DBC_HEADER_SIZE || &bytes[0..4] != b"WDBC" {
+        return HashMap::new();
+    }
+    let record_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let field_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let record_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if field_count < SPELL_ITEM_ENCHANTMENT_FIELD_COUNT
+        || record_size < SPELL_ITEM_ENCHANTMENT_FIELD_COUNT * 4
+    {
+        return HashMap::new();
+    }
+    let records_size = record_count.saturating_mul(record_size);
+    if bytes.len() < DBC_HEADER_SIZE + records_size {
+        return HashMap::new();
+    }
+
+    let mut enchantments = HashMap::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let record_offset = DBC_HEADER_SIZE + record_index * record_size;
+        let field = |index: usize| {
+            let offset = record_offset + index * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let signed_field = |index: usize| {
+            let offset = record_offset + index * 4;
+            i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let id = field(0);
+        if id == 0 {
+            continue;
+        }
+        enchantments.insert(
+            id,
+            SpellItemEnchantmentEntry {
+                id,
+                effect_types: [field(1), field(2), field(3)],
+                effect_amounts: [signed_field(4), signed_field(5), signed_field(6)],
+                effect_args: [field(10), field(11), field(12)],
+                flags: field(23),
+            },
+        );
+    }
+    enchantments
 }
 
 pub(in crate::world) fn load_bank_bag_slot_prices(path: &std::path::Path) -> HashMap<u32, u32> {
@@ -1550,4 +1951,130 @@ pub(in crate::world) fn file_has_magic(path: &std::path::Path, magic: &[u8]) -> 
     };
     let mut buffer = vec![0; magic.len()];
     std::io::Read::read_exact(&mut file, &mut buffer).is_ok() && buffer == magic
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dbc_bytes(field_count: usize, records: Vec<Vec<u32>>) -> Vec<u8> {
+        let record_size = field_count * 4;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"WDBC");
+        bytes.extend_from_slice(&(records.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(field_count as u32).to_le_bytes());
+        bytes.extend_from_slice(&(record_size as u32).to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        for record in records {
+            assert_eq!(record.len(), field_count);
+            for field in record {
+                bytes.extend_from_slice(&field.to_le_bytes());
+            }
+        }
+        bytes.push(0);
+        bytes
+    }
+
+    #[test]
+    fn taxi_node_parser_uses_cmangos_dbc_fields() {
+        let mut record = vec![0u32; 16];
+        record[0] = 5;
+        record[1] = 0;
+        record[2] = 1.25f32.to_bits();
+        record[3] = 2.5f32.to_bits();
+        record[4] = 3.75f32.to_bits();
+        record[14] = 111;
+        record[15] = 222;
+
+        let nodes = parse_taxi_nodes(&dbc_bytes(16, vec![record]));
+        let node = nodes.get(&5).unwrap();
+
+        assert_eq!(node.map_id, 0);
+        assert_eq!(node.position(), WorldPosition::new(0, 1.25, 2.5, 3.75, 0.0));
+        assert_eq!(node.mount_creature_id(false), 111);
+        assert_eq!(node.mount_creature_id(true), 222);
+    }
+
+    #[test]
+    fn taxi_path_parser_and_network_mask_follow_source_nodes() {
+        let paths = parse_taxi_paths(&dbc_bytes(4, vec![vec![10, 5, 6, 123]]));
+        let path = paths.get(&(5, 6)).unwrap();
+        assert_eq!(path.id, 10);
+        assert_eq!(path.price, 123);
+
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            5,
+            TaxiNodeEntry {
+                id: 5,
+                map_id: 0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                horde_mount_creature: 1,
+                alliance_mount_creature: 2,
+            },
+        );
+        nodes.insert(
+            6,
+            TaxiNodeEntry {
+                id: 6,
+                map_id: 0,
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+                horde_mount_creature: 1,
+                alliance_mount_creature: 2,
+            },
+        );
+
+        let mut mask = taxi_network_mask(&nodes, &paths);
+        assert!(taxi_mask_has_node(mask, 5));
+        assert!(!taxi_mask_has_node(mask, 6));
+        assert!(set_taxi_mask_node(&mut mask, 33));
+        assert!(taxi_mask_has_node(mask, 33));
+        assert!(!set_taxi_mask_node(&mut mask, 33));
+    }
+
+    #[test]
+    fn taxi_path_node_parser_groups_and_sorts_nodes_by_path() {
+        let nodes = parse_taxi_path_nodes(&dbc_bytes(
+            9,
+            vec![
+                vec![
+                    2,
+                    10,
+                    1,
+                    0,
+                    4.0f32.to_bits(),
+                    5.0f32.to_bits(),
+                    6.0f32.to_bits(),
+                    7,
+                    8,
+                ],
+                vec![
+                    1,
+                    10,
+                    0,
+                    0,
+                    1.0f32.to_bits(),
+                    2.0f32.to_bits(),
+                    3.0f32.to_bits(),
+                    0,
+                    0,
+                ],
+            ],
+        ));
+
+        let path_nodes = nodes.get(&10).unwrap();
+        assert_eq!(path_nodes.len(), 2);
+        assert_eq!(path_nodes[0].id, 1);
+        assert_eq!(path_nodes[1].id, 2);
+        assert_eq!(
+            path_nodes[1].position(),
+            WorldPosition::new(0, 4.0, 5.0, 6.0, 0.0)
+        );
+        assert_eq!(path_nodes[1].action_flag, 7);
+        assert_eq!(path_nodes[1].delay, 8);
+    }
 }

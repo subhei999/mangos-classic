@@ -21,6 +21,7 @@ pub(in crate::world) struct SpellInfoEffect {
     pub(in crate::world) amplitude: u32,
     pub(in crate::world) implicit_target_a: u32,
     pub(in crate::world) implicit_target_b: u32,
+    pub(in crate::world) chain_target_count: u32,
     pub(in crate::world) radius_index: u32,
     pub(in crate::world) misc_value: i32,
     pub(in crate::world) mechanic: u32,
@@ -38,6 +39,7 @@ pub(in crate::world) struct SpellInfoEffectSlot {
     pub(in crate::world) amplitude: u32,
     pub(in crate::world) implicit_target_a: u32,
     pub(in crate::world) implicit_target_b: u32,
+    pub(in crate::world) chain_target_count: u32,
     pub(in crate::world) radius_index: u32,
     pub(in crate::world) misc_value: i32,
     pub(in crate::world) mechanic: u32,
@@ -63,6 +65,7 @@ impl<'a> SpellInfo<'a> {
                 amplitude: template.effect_amplitude1,
                 implicit_target_a: template.effect_implicit_target_a1,
                 implicit_target_b: template.effect_implicit_target_b1,
+                chain_target_count: template.effect_chain_target1,
                 radius_index: template.effect_radius_index1,
                 misc_value: template.effect_misc_value1,
                 mechanic: template.effect_mechanic1,
@@ -84,6 +87,7 @@ impl<'a> SpellInfo<'a> {
                 amplitude: template.effect_amplitude2,
                 implicit_target_a: template.effect_implicit_target_a2,
                 implicit_target_b: template.effect_implicit_target_b2,
+                chain_target_count: template.effect_chain_target2,
                 radius_index: template.effect_radius_index2,
                 misc_value: template.effect_misc_value2,
                 mechanic: template.effect_mechanic2,
@@ -105,6 +109,7 @@ impl<'a> SpellInfo<'a> {
                 amplitude: template.effect_amplitude3,
                 implicit_target_a: template.effect_implicit_target_a3,
                 implicit_target_b: template.effect_implicit_target_b3,
+                chain_target_count: template.effect_chain_target3,
                 radius_index: template.effect_radius_index3,
                 misc_value: template.effect_misc_value3,
                 mechanic: template.effect_mechanic3,
@@ -161,12 +166,7 @@ impl<'a> SpellInfo<'a> {
                 self.direct_damage()
             },
             power: self.power(),
-            requires_melee: kind == SpellCastKind::NextMeleeSwing
-                || (self.template.dmg_class == 2
-                    && !matches!(
-                        kind,
-                        SpellCastKind::AutoRepeatRanged | SpellCastKind::Charge
-                    )),
+            requires_melee: self.requires_melee_for_kind(kind),
             requires_behind: self.requires_behind_target(),
             needs_combo_points: self.needs_combo_points(),
             global_cooldown_category: self.template.start_recovery_category,
@@ -263,6 +263,23 @@ impl<'a> SpellInfo<'a> {
                 _ => SpellAuraTarget::UnitTarget,
             })
             .unwrap_or(SpellAuraTarget::Caster)
+    }
+
+    fn requires_melee_for_kind(&self, kind: SpellCastKind) -> bool {
+        if kind == SpellCastKind::NextMeleeSwing {
+            return true;
+        }
+        if self.template.dmg_class != SPELL_DAMAGE_CLASS_MELEE
+            || matches!(
+                kind,
+                SpellCastKind::AutoRepeatRanged | SpellCastKind::Charge
+            )
+        {
+            return false;
+        }
+        self.effects
+            .iter()
+            .any(|effect| effect_targets_direct_hostile_unit(*effect))
     }
 
     pub(in crate::world) fn bonus_damage(&self) -> u32 {
@@ -366,6 +383,7 @@ impl SpellInfoEffect {
             amplitude: slot.amplitude,
             implicit_target_a: slot.implicit_target_a,
             implicit_target_b: slot.implicit_target_b,
+            chain_target_count: slot.chain_target_count,
             radius_index: slot.radius_index,
             misc_value: slot.misc_value,
             mechanic: slot.mechanic,

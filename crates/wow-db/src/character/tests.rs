@@ -118,4 +118,13 @@ mod tests {
             ENUM_EQUIPMENT_CACHE_SLOTS * 2
         );
     }
+
+    #[test]
+    fn character_taximask_parser_preserves_eight_cmangos_words() {
+        let parsed = parse_character_taximask("1 2 3 4 5 6 7 8 9");
+
+        assert_eq!(parsed, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(serialize_character_taximask(parsed), "1 2 3 4 5 6 7 8");
+        assert_eq!(parse_character_taximask("1 nope 3"), [1, 0, 3, 0, 0, 0, 0, 0]);
+    }
 }

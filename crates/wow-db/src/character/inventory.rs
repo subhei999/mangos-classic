@@ -4,7 +4,7 @@ pub async fn get_character_inventory_items(
 ) -> Result<Vec<CharacterInventoryItem>, DbError> {
     let rows = sqlx::query_as::<_, CharacterInventoryItem>(
         "SELECT ci.bag, ci.slot, ci.item, ci.item_template, ii.count, \
-                ii.randomPropertyId, ii.charges, ii.enchantments, ii.durability \
+                ii.flags, ii.randomPropertyId, ii.charges, ii.enchantments, ii.durability \
          FROM character_inventory ci \
          JOIN item_instance ii ON ci.item = ii.guid \
          WHERE ci.guid = ? ORDER BY ci.bag, ci.slot",
@@ -244,13 +244,14 @@ pub async fn split_character_inventory_item(
         return Ok(None);
     }
 
-    let new_item = next_item_guid(pool).await?;
+    let mut tx = pool.begin().await?;
+    let new_item = next_item_guid_tx(&mut tx).await?;
     let new_source_count = source_count - count;
     sqlx::query("UPDATE item_instance SET count = ? WHERE guid = ? AND owner_guid = ?")
         .bind(new_source_count)
         .bind(source_item)
         .bind(guid)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     sqlx::query(
         "INSERT INTO item_instance \
@@ -264,7 +265,7 @@ pub async fn split_character_inventory_item(
     .bind(count)
     .bind(source_item)
     .bind(guid)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
     sqlx::query(
         "INSERT INTO character_inventory (guid, bag, slot, item, item_template) \
@@ -276,8 +277,9 @@ pub async fn split_character_inventory_item(
     .bind(new_item)
     .bind(source_item)
     .bind(guid)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(Some(InventorySplitResult {
         source_item,
@@ -330,6 +332,7 @@ pub async fn add_character_inventory_item(
         item_template,
         count,
         durability,
+        initial_flags: 0,
         random_properties: None,
     })
     .await
@@ -342,6 +345,7 @@ pub struct AddCharacterInventoryItemRequest<'a> {
     pub item_template: u32,
     pub count: u32,
     pub durability: u32,
+    pub initial_flags: u32,
     pub random_properties: Option<&'a ItemInstanceRandomProperties>,
 }
 
@@ -349,7 +353,8 @@ pub async fn add_character_inventory_item_with_random_properties(
     pool: &MySqlPool,
     request: AddCharacterInventoryItemRequest<'_>,
 ) -> Result<CharacterInventoryItem, DbError> {
-    let item_guid = next_item_guid(pool).await?;
+    let mut tx = pool.begin().await?;
+    let item_guid = next_item_guid_tx(&mut tx).await?;
     let random_property_id = request
         .random_properties
         .map(|properties| properties.random_property_id)
@@ -362,16 +367,17 @@ pub async fn add_character_inventory_item_with_random_properties(
         "INSERT INTO item_instance \
          (guid, owner_guid, itemEntry, creatorGuid, giftCreatorGuid, count, duration, \
           charges, flags, enchantments, randomPropertyId, durability, itemTextId) \
-         VALUES (?, ?, ?, 0, 0, ?, 0, '0 0 0 0 0 ', 0, ?, ?, ?, 0)",
+         VALUES (?, ?, ?, 0, 0, ?, 0, '0 0 0 0 0 ', ?, ?, ?, ?, 0)",
     )
     .bind(item_guid)
     .bind(request.guid)
     .bind(request.item_template)
     .bind(request.count)
+    .bind(request.initial_flags)
     .bind(&enchantments)
     .bind(random_property_id)
     .bind(request.durability)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
     sqlx::query(
         "INSERT INTO character_inventory (guid, bag, slot, item, item_template) \
@@ -382,8 +388,9 @@ pub async fn add_character_inventory_item_with_random_properties(
     .bind(request.slot)
     .bind(item_guid)
     .bind(request.item_template)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(CharacterInventoryItem {
         bag: request.bag,
@@ -391,11 +398,27 @@ pub async fn add_character_inventory_item_with_random_properties(
         item: item_guid,
         item_template: request.item_template,
         count: request.count,
+        flags: request.initial_flags,
         random_property_id,
         charges: default_item_charges().to_string(),
         enchantments,
         durability: request.durability,
     })
+}
+
+pub async fn bind_character_inventory_item(
+    pool: &MySqlPool,
+    owner_guid: u32,
+    item_guid: u32,
+) -> Result<bool, DbError> {
+    let result = sqlx::query(
+        "UPDATE item_instance SET flags = flags | 1 WHERE guid = ? AND owner_guid = ?",
+    )
+    .bind(item_guid)
+    .bind(owner_guid)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn update_character_inventory_item_charges(

@@ -26,8 +26,10 @@ pub(in crate::world) struct PreparedGossipMenu {
 
 pub(in crate::world) async fn handle_gossip_hello(
     stream: &mut WorldPacketSink,
+    character_db_pool: &MySqlPool,
     object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
+    world_data_files: &WorldDataFiles,
     maps: &Arc<MapRuntimeManager>,
     request: wow_proto::GossipHelloRequest,
     session: &mut WorldSessionState,
@@ -42,6 +44,17 @@ pub(in crate::world) async fn handle_gossip_hello(
     );
 
     if guid.is_creature() {
+        discover_taxi_node_on_gossip_hello(
+            stream,
+            character_db_pool,
+            world_db_pool,
+            world_data_files,
+            guid,
+            session,
+            header_crypto,
+        )
+        .await?;
+
         if let Some(quest) =
             questgiver_completed_turnin_quest(object_mgr, world_db_pool, guid, session).await?
         {
@@ -212,6 +225,21 @@ async fn dispatch_db_gossip_selection(
             )
             .await
         }
+        GOSSIP_OPTION_TAXIVENDOR => {
+            handle_taxi_query_available_nodes(
+                stream,
+                deps.character_db_pool,
+                deps.world_db_pool,
+                deps.world_data_files,
+                wow_proto::TaxiQueryAvailableNodesRequest {
+                    raw_guid: guid.raw(),
+                },
+                session,
+                header_crypto,
+            )
+            .await
+        }
+        GOSSIP_OPTION_INNKEEPER => send_bind_confirmation(stream, guid, header_crypto).await,
         GOSSIP_OPTION_AUCTIONEER => {
             send_auction_hello(
                 stream,

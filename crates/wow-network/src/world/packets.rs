@@ -1,14 +1,15 @@
 use wow_proto::world::WorldOpcode;
 use wow_proto::{
-    AreaTriggerRequest, AttackStopRequest, AttackSwingRequest, AuctionHelloRequest,
-    AuctionListBidderItemsRequest, AuctionListItemsRequest, AuctionListOwnerItemsRequest,
-    AuctionPlaceBidRequest, AuctionRemoveItemRequest, AuctionSellItemRequest,
-    AutostoreLootItemRequest, BankItemRequest, BankerActivateRequest, BuyBankSlotRequest,
-    BuyItemInSlotRequest, BuyItemRequest, BuybackItemRequest, CancelAutoRepeatSpellRequest,
-    CancelCastRequest, CastSpellRequest, CharCreateRequest, CharDeleteRequest, CharEnumRequest,
-    CorpseQueryRequest, CreatureQueryRequest, DestroyItemRequest, GameObjectQueryRequest,
-    GameObjectUseRequest, GetMailListRequest, GmTicketGetTicketRequest, GossipHelloRequest,
-    GossipSelectOptionRequest, GroupAcceptRequest, GroupAssistantLeaderRequest, GroupCancelRequest,
+    ActivateTaxiRequest, AreaTriggerRequest, AttackStopRequest, AttackSwingRequest,
+    AuctionHelloRequest, AuctionListBidderItemsRequest, AuctionListItemsRequest,
+    AuctionListOwnerItemsRequest, AuctionPlaceBidRequest, AuctionRemoveItemRequest,
+    AuctionSellItemRequest, AutostoreLootItemRequest, BankItemRequest, BankerActivateRequest,
+    BinderActivateRequest, BuyBankSlotRequest, BuyItemInSlotRequest, BuyItemRequest,
+    BuybackItemRequest, CancelAutoRepeatSpellRequest, CancelCastRequest, CastSpellRequest,
+    CharCreateRequest, CharDeleteRequest, CharEnumRequest, CorpseQueryRequest,
+    CreatureQueryRequest, DestroyItemRequest, GameObjectQueryRequest, GameObjectUseRequest,
+    GetMailListRequest, GmTicketGetTicketRequest, GossipHelloRequest, GossipSelectOptionRequest,
+    GroupAcceptRequest, GroupAssistantLeaderRequest, GroupCancelRequest,
     GroupChangeSubGroupRequest, GroupDeclineRequest, GroupDisbandRequest, GroupInviteRequest,
     GroupRaidConvertRequest, GroupSetLeaderRequest, GroupUninviteGuidRequest, GroupUninviteRequest,
     InventoryMoveClientRequest, ItemNameQueryRequest, ItemQuerySingleRequest, ItemTextQueryRequest,
@@ -23,9 +24,10 @@ use wow_proto::{
     RequestAccountDataRequest, RequestPartyMemberStatsRequest, SellItemRequest, SendMailRequest,
     SetActionButtonRequest, SetActiveMoverRequest, SetAmmoRequest, SetSelectionRequest,
     SetTargetObsoleteRequest, SpiritHealerActivateRequest, SplitItemRequest,
-    StandStateChangeRequest, TextEmoteRequest, TrainerBuySpellRequest, TrainerListRequest,
-    TutorialClearRequest, TutorialFlagRequest, TutorialResetRequest, UpdateAccountDataRequest,
-    UseItemRequest, WorldAuthSessionRequest, ZoneUpdateRequest,
+    StandStateChangeRequest, TaxiNodeStatusQueryRequest, TaxiQueryAvailableNodesRequest,
+    TextEmoteRequest, TrainerBuySpellRequest, TrainerListRequest, TutorialClearRequest,
+    TutorialFlagRequest, TutorialResetRequest, UpdateAccountDataRequest, UseItemRequest,
+    WorldAuthSessionRequest, ZoneUpdateRequest,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +96,10 @@ pub(super) enum ParsedWorldClientPacket {
     BuybackItem(BuybackItemRequest),
     BuyItem(BuyItemRequest),
     BuyItemInSlot(BuyItemInSlotRequest),
+    TaxiNodeStatusQuery(TaxiNodeStatusQueryRequest),
+    TaxiQueryAvailableNodes(TaxiQueryAvailableNodesRequest),
+    ActivateTaxi(ActivateTaxiRequest),
+    BinderActivate(BinderActivateRequest),
     TrainerList(TrainerListRequest),
     TrainerBuySpell(TrainerBuySpellRequest),
     BankerActivate(BankerActivateRequest),
@@ -237,6 +243,10 @@ impl ParsedWorldClientPacket {
             Self::BuybackItem(_) => WorldOpcode::CmsgBuybackItem.into(),
             Self::BuyItem(_) => WorldOpcode::CmsgBuyItem.into(),
             Self::BuyItemInSlot(_) => WorldOpcode::CmsgBuyItemInSlot.into(),
+            Self::TaxiNodeStatusQuery(_) => WorldOpcode::CmsgTaxiNodeStatusQuery.into(),
+            Self::TaxiQueryAvailableNodes(_) => WorldOpcode::CmsgTaxiQueryAvailableNodes.into(),
+            Self::ActivateTaxi(_) => WorldOpcode::CmsgActivateTaxi.into(),
+            Self::BinderActivate(_) => WorldOpcode::CmsgBinderActivate.into(),
             Self::TrainerList(_) => WorldOpcode::CmsgTrainerList.into(),
             Self::TrainerBuySpell(_) => WorldOpcode::CmsgTrainerBuySpell.into(),
             Self::BankerActivate(_) => WorldOpcode::CmsgBankerActivate.into(),
@@ -533,6 +543,30 @@ impl ParsedWorldClientPacket {
         BuyItemInSlot,
         BuyItemInSlotRequest,
         "CMSG_BUY_ITEM_IN_SLOT"
+    );
+    packet_accessor!(
+        taxi_node_status_query,
+        TaxiNodeStatusQuery,
+        TaxiNodeStatusQueryRequest,
+        "CMSG_TAXINODE_STATUS_QUERY"
+    );
+    packet_accessor!(
+        taxi_query_available_nodes,
+        TaxiQueryAvailableNodes,
+        TaxiQueryAvailableNodesRequest,
+        "CMSG_TAXIQUERYAVAILABLENODES"
+    );
+    packet_accessor!(
+        activate_taxi,
+        ActivateTaxi,
+        ActivateTaxiRequest,
+        "CMSG_ACTIVATETAXI"
+    );
+    packet_accessor!(
+        binder_activate,
+        BinderActivate,
+        BinderActivateRequest,
+        "CMSG_BINDER_ACTIVATE"
     );
     packet_accessor!(
         trainer_list,
@@ -1137,6 +1171,30 @@ pub(super) fn parse_world_client_packet(
             let mut body = body;
             Ok(ParsedWorldClientPacket::BuyItemInSlot(
                 BuyItemInSlotRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgTaxiNodeStatusQuery) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::TaxiNodeStatusQuery(
+                TaxiNodeStatusQueryRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgTaxiQueryAvailableNodes) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::TaxiQueryAvailableNodes(
+                TaxiQueryAvailableNodesRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgActivateTaxi) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::ActivateTaxi(
+                ActivateTaxiRequest::read(&mut body)?,
+            ))
+        }
+        Ok(WorldOpcode::CmsgBinderActivate) => {
+            let mut body = body;
+            Ok(ParsedWorldClientPacket::BinderActivate(
+                BinderActivateRequest::read(&mut body)?,
             ))
         }
         Ok(WorldOpcode::CmsgTrainerList) => {

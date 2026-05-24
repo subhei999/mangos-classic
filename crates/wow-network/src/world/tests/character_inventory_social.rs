@@ -72,6 +72,11 @@ fn serializes_character_enum_entry() {
         position_y: -132.493,
         position_z: 83.5312,
         orientation: 0.0,
+        homebind_zone: 12,
+        homebind_map: 0,
+        homebind_position_x: -8949.95,
+        homebind_position_y: -132.493,
+        homebind_position_z: 83.5312,
         guildid: Some(0),
         player_flags: PLAYER_FLAGS_HIDE_HELM,
         at_login: AT_LOGIN_FIRST,
@@ -131,6 +136,11 @@ fn login_verify_world_packet_shape() {
         position_y: -132.493,
         position_z: 83.5312,
         orientation: 1.25,
+        homebind_zone: 12,
+        homebind_map: 0,
+        homebind_position_x: -8949.95,
+        homebind_position_y: -132.493,
+        homebind_position_z: 83.5312,
         guildid: None,
         player_flags: 0,
         at_login: 0,
@@ -381,6 +391,11 @@ fn warrior_unit_bytes_set_battle_stance_for_stance_action_bar() {
         position_y: -132.493,
         position_z: 83.5312,
         orientation: 0.0,
+        homebind_zone: 12,
+        homebind_map: 0,
+        homebind_position_x: -8949.95,
+        homebind_position_y: -132.493,
+        homebind_position_z: 83.5312,
         guildid: None,
         player_flags: 0,
         at_login: 0,
@@ -942,15 +957,20 @@ fn login_verify_world_packet_keeps_map_and_position_order() {
 
 #[test]
 fn bindpointupdate_packet_keeps_position_map_zone_order() {
-    let character = test_character(1, 1);
+    let mut character = test_character(1, 1);
+    character.homebind_position_x = -9464.0;
+    character.homebind_position_y = 62.0;
+    character.homebind_position_z = 56.0;
+    character.homebind_map = 0;
+    character.homebind_zone = 87;
     let body = build_bindpoint_update_body(&character);
 
     assert_eq!(body.len(), 20);
-    assert_eq!(&body[0..4], &character.position_x.to_le_bytes());
-    assert_eq!(&body[4..8], &character.position_y.to_le_bytes());
-    assert_eq!(&body[8..12], &character.position_z.to_le_bytes());
-    assert_eq!(&body[12..16], &character.map.to_le_bytes());
-    assert_eq!(&body[16..20], &character.zone.to_le_bytes());
+    assert_eq!(&body[0..4], &character.homebind_position_x.to_le_bytes());
+    assert_eq!(&body[4..8], &character.homebind_position_y.to_le_bytes());
+    assert_eq!(&body[8..12], &character.homebind_position_z.to_le_bytes());
+    assert_eq!(&body[12..16], &character.homebind_map.to_le_bytes());
+    assert_eq!(&body[16..20], &character.homebind_zone.to_le_bytes());
 }
 
 #[test]
@@ -1018,6 +1038,7 @@ fn visible_item_updates_prefer_live_equipped_inventory() {
         item: 99,
         item_template: 2362,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -1039,6 +1060,7 @@ fn writes_inventory_item_guid_update_values() {
         item: 42,
         item_template: 25,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -1064,6 +1086,7 @@ fn main_hand_inventory_and_visible_update_values_are_written() {
         item: 42,
         item_template: 25,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -1389,6 +1412,132 @@ fn inventory_recomputed_combat_stats_keep_passive_resistance_on_self_update() {
         Some(10)
     );
 
+}
+
+#[test]
+fn equipped_item_primary_stats_feed_world_and_combat_stats_like_cmangos() {
+    let world_stats = PlayerWorldStats {
+        base_health: 40,
+        base_mana: 80,
+        stats: [10, 10, 10, 10, 10],
+        next_level_xp: 400,
+    };
+    let mut chest = test_item_template(1008, ITEM_CLASS_ARMOR, 5, 0.0, 0.0, 20);
+    chest.stats[0] = wow_db::ItemTemplateStat {
+        stat_type: ITEM_MOD_STRENGTH,
+        stat_value: 4,
+    };
+    chest.stats[1] = wow_db::ItemTemplateStat {
+        stat_type: ITEM_MOD_AGILITY,
+        stat_value: 3,
+    };
+    chest.stats[2] = wow_db::ItemTemplateStat {
+        stat_type: ITEM_MOD_STAMINA,
+        stat_value: 5,
+    };
+    chest.stats[3] = wow_db::ItemTemplateStat {
+        stat_type: ITEM_MOD_INTELLECT,
+        stat_value: 2,
+    };
+    chest.stats[4] = wow_db::ItemTemplateStat {
+        stat_type: ITEM_MOD_SPIRIT,
+        stat_value: 7,
+    };
+    chest.stats[5] = wow_db::ItemTemplateStat {
+        stat_type: ITEM_MOD_MANA,
+        stat_value: 11,
+    };
+    chest.stats[6] = wow_db::ItemTemplateStat {
+        stat_type: ITEM_MOD_HEALTH,
+        stat_value: 13,
+    };
+
+    let equipped = [equipped_template(4, chest)];
+    let geared_world_stats = player_world_stats_with_equipment(world_stats, &equipped);
+    assert_eq!(geared_world_stats.base_health, 53);
+    assert_eq!(geared_world_stats.base_mana, 91);
+    assert_eq!(geared_world_stats.stats, [14, 13, 15, 12, 17]);
+
+    let (_, combat_stats) =
+        inventory_recomputed_combat_stats(1, 10, world_stats, &equipped, None, &[]);
+    assert_eq!(combat_stats.intellect, 12);
+    assert_eq!(combat_stats.armor, 46);
+    assert_eq!(
+        combat_stats.melee_attack_power,
+        class_melee_attack_power(1, 10, 14, 13)
+    );
+    assert!(combat_stats.dodge_percent > dodge_percent(1, 10, 10));
+    assert!(combat_stats.crit_percent > melee_crit_percent(1, 10, 10));
+}
+
+#[test]
+fn random_property_stat_enchantments_feed_world_stats_like_cmangos() {
+    let world_stats = PlayerWorldStats {
+        base_health: 40,
+        base_mana: 80,
+        stats: [10, 10, 10, 10, 10],
+        next_level_xp: 400,
+    };
+    let template = test_item_template(11980, ITEM_CLASS_ARMOR, 5, 0.0, 0.0, 20);
+    let spell_item_enchantments = HashMap::from([
+        (
+            141,
+            SpellItemEnchantmentEntry {
+                id: 141,
+                effect_types: [5, 5, 0],
+                effect_amounts: [4, 6, 0],
+                effect_args: [ITEM_MOD_STRENGTH, ITEM_MOD_STAMINA, 0],
+                flags: 0,
+            },
+        ),
+        (
+            142,
+            SpellItemEnchantmentEntry {
+                id: 142,
+                effect_types: [5, 0, 0],
+                effect_amounts: [3, 0, 0],
+                effect_args: [ITEM_MOD_AGILITY, 0, 0],
+                flags: 0,
+            },
+        ),
+    ]);
+    let enchantments = "0 0 0 0 0 0 0 0 0 141 0 0 142 0 0 0 0 0 0 0 0";
+    let (enchantment_stat_bonuses, enchantment_resistance_bonuses) =
+        item_enchantment_bonuses(enchantments, &spell_item_enchantments);
+    let equipped = [EquippedItemTemplate {
+        slot: 4,
+        template,
+        enchantment_stat_bonuses,
+        enchantment_resistance_bonuses,
+    }];
+
+    let geared_world_stats = player_world_stats_with_equipment(world_stats, &equipped);
+
+    assert_eq!(geared_world_stats.stats[0], 14);
+    assert_eq!(geared_world_stats.stats[1], 13);
+    assert_eq!(geared_world_stats.stats[2], 16);
+}
+
+#[test]
+fn item_binding_rules_match_cmangos_pickup_and_equip_boundaries() {
+    let mut boe = test_item_template(2000, ITEM_CLASS_ARMOR, 5, 0.0, 0.0, 1);
+    boe.bonding = BIND_WHEN_EQUIPPED;
+    let mut bop = boe.clone();
+    bop.bonding = BIND_WHEN_PICKED_UP;
+    let mut quest = boe.clone();
+    quest.bonding = BIND_QUEST_ITEM;
+
+    assert_eq!(item_binding_flags_on_pickup(&boe), 0);
+    assert_eq!(item_binding_flags_on_pickup(&bop), ITEM_DYNFLAG_BINDED);
+    assert_eq!(item_binding_flags_on_pickup(&quest), ITEM_DYNFLAG_BINDED);
+    assert!(item_binds_when_equipped(&boe));
+    assert!(item_binds_when_equipped(&bop));
+    assert!(merged_destination_stack_needs_pickup_bind(&bop, 0));
+    assert!(!merged_destination_stack_needs_pickup_bind(
+        &bop,
+        ITEM_DYNFLAG_BINDED
+    ));
+    assert!(!merged_destination_stack_needs_pickup_bind(&boe, 0));
 }
 
 #[test]
@@ -1815,6 +1964,7 @@ fn autoequip_bag_prefers_first_empty_bag_slot() {
         item: 77,
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -1846,6 +1996,7 @@ fn autoequip_bag_has_no_destination_when_all_bag_slots_are_full() {
             item: 100 + index as u32,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -1869,6 +2020,7 @@ fn inventory_store_plan_merges_stack_before_empty_slots() {
         item: 90,
         item_template: 4540,
         count: 5,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -1909,6 +2061,7 @@ fn inventory_store_plan_returns_none_when_backpack_is_full_and_no_stack_can_merg
             item: 1_000 + slot as u32,
             item_template: 6948,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -1940,6 +2093,7 @@ fn inventory_store_plan_uses_equipped_bag_capacity_after_backpack() {
             item: 1_000 + slot as u32,
             item_template: 6948,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -1952,6 +2106,7 @@ fn inventory_store_plan_uses_equipped_bag_capacity_after_backpack() {
         item: 77,
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -1997,6 +2152,7 @@ fn inventory_store_plan_uses_last_secondary_bag_slot() {
             item: 1_500 + slot as u32,
             item_template: 6948,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2009,6 +2165,7 @@ fn inventory_store_plan_uses_last_secondary_bag_slot() {
         item: 77,
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -2020,6 +2177,7 @@ fn inventory_store_plan_uses_last_secondary_bag_slot() {
         item: 2_000 + slot as u32,
         item_template: 6948,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -2088,6 +2246,7 @@ fn bank_store_plan_merges_bank_main_before_empty_slots() {
         item: 90,
         item_template: 4540,
         count: 5,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -2128,6 +2287,7 @@ fn bank_store_plan_uses_purchased_bank_bag_capacity() {
             item: 1_000 + slot as u32,
             item_template: 6948,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2140,6 +2300,7 @@ fn bank_store_plan_uses_purchased_bank_bag_capacity() {
         item: 77,
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -2204,6 +2365,7 @@ fn quest_reward_storage_plans_equipped_bag_after_required_item_consumed_from_bag
             item: 1_000 + slot as u32,
             item_template: 6948,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2216,6 +2378,7 @@ fn quest_reward_storage_plans_equipped_bag_after_required_item_consumed_from_bag
         item: 77,
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -2227,6 +2390,7 @@ fn quest_reward_storage_plans_equipped_bag_after_required_item_consumed_from_bag
         item: 88,
         item_template: 182,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -2290,6 +2454,7 @@ fn quest_reward_storage_uses_freed_backpack_and_equipped_bag_for_multiple_reward
                 6948
             },
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2302,6 +2467,7 @@ fn quest_reward_storage_uses_freed_backpack_and_equipped_bag_for_multiple_reward
         item: 77,
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -2367,6 +2533,7 @@ fn quest_reward_storage_fails_without_consuming_partial_required_stack_space() {
             } else {
                 1
             },
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2394,6 +2561,7 @@ fn autostore_to_bag_icon_selects_first_valid_slot_in_that_bag() {
             item: 77,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2405,6 +2573,7 @@ fn autostore_to_bag_icon_selects_first_valid_slot_in_that_bag() {
             item: 88,
             item_template: 6948,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2416,6 +2585,7 @@ fn autostore_to_bag_icon_selects_first_valid_slot_in_that_bag() {
             item: 99,
             item_template: 38,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2451,6 +2621,7 @@ fn autostore_to_bank_bag_icon_selects_first_valid_slot_in_that_bank_bag() {
             item: 77,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2462,6 +2633,7 @@ fn autostore_to_bank_bag_icon_selects_first_valid_slot_in_that_bank_bag() {
             item: 88,
             item_template: 6948,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2473,6 +2645,7 @@ fn autostore_to_bank_bag_icon_selects_first_valid_slot_in_that_bank_bag() {
             item: 99,
             item_template: 38,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2509,6 +2682,7 @@ fn swap_to_bank_bag_icon_resolves_non_bag_item_to_bag_storage() {
             item: 77,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2520,6 +2694,7 @@ fn swap_to_bank_bag_icon_resolves_non_bag_item_to_bag_storage() {
             item: 88,
             item_template: 6948,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2531,6 +2706,7 @@ fn swap_to_bank_bag_icon_resolves_non_bag_item_to_bag_storage() {
             item: 99,
             item_template: 38,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2622,6 +2798,7 @@ fn inventory_slot_update_body_clears_source_and_sets_destination() {
         item: 42,
         item_template: 6948,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -2654,6 +2831,7 @@ fn inventory_slot_update_body_updates_visible_equipment_slot() {
         item: 42,
         item_template: 38,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -2687,6 +2865,7 @@ fn backpack_to_equipped_bag_move_updates_player_and_container_slots() {
             item: 77,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2698,6 +2877,7 @@ fn backpack_to_equipped_bag_move_updates_player_and_container_slots() {
             item: 99,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 2,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2756,6 +2936,7 @@ fn equipped_bag_internal_swap_coalesces_container_slot_updates() {
             item: 77,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2767,6 +2948,7 @@ fn equipped_bag_internal_swap_coalesces_container_slot_updates() {
             item: 100,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2778,6 +2960,7 @@ fn equipped_bag_internal_swap_coalesces_container_slot_updates() {
             item: 99,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2842,6 +3025,7 @@ fn equipped_bag_to_backpack_move_updates_player_slot_and_clears_container_slot()
             item: 77,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2853,6 +3037,7 @@ fn equipped_bag_to_backpack_move_updates_player_slot_and_clears_container_slot()
             item: 99,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 2,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -2903,6 +3088,7 @@ fn equipped_bag_destroy_update_clears_container_slot() {
         item: 77,
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -2932,6 +3118,7 @@ fn equipped_bag_multi_destroy_update_coalesces_container_slots() {
         item: 77,
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -2973,6 +3160,7 @@ fn backpack_stack_merge_update_clears_source_slot_and_updates_destination_count(
         item: 99,
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 7,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -3021,6 +3209,7 @@ fn equipped_bag_stack_merge_update_clears_container_slot_and_updates_destination
             item: 77,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -3032,6 +3221,7 @@ fn equipped_bag_stack_merge_update_clears_container_slot_and_updates_destination
             item: 99,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 7,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -3072,6 +3262,7 @@ fn split_into_equipped_bag_update_body_contains_renderable_destination_stack() {
             item: 77,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -3083,6 +3274,7 @@ fn split_into_equipped_bag_update_body_contains_renderable_destination_stack() {
             item: 42,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 4,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -3094,6 +3286,7 @@ fn split_into_equipped_bag_update_body_contains_renderable_destination_stack() {
             item: 99,
             item_template: RUST_VENDOR_BAG_ITEM,
             count: 2,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -3179,6 +3372,11 @@ fn builds_create_blocks_for_equipped_and_backpack_items() {
         position_y: -132.493,
         position_z: 83.5312,
         orientation: 0.0,
+        homebind_zone: 12,
+        homebind_map: 0,
+        homebind_position_x: -8949.95,
+        homebind_position_y: -132.493,
+        homebind_position_z: 83.5312,
         guildid: None,
         player_flags: 0,
         at_login: 0,
@@ -3205,6 +3403,7 @@ fn builds_create_blocks_for_equipped_and_backpack_items() {
             item: 40,
             item_template: 2362,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -3216,6 +3415,7 @@ fn builds_create_blocks_for_equipped_and_backpack_items() {
             item: 41,
             item_template: 6948,
             count: 1,
+            flags: 0,
             random_property_id: 0,
             charges: String::new(),
             enchantments: String::new(),
@@ -3243,6 +3443,7 @@ fn login_create_blocks_make_equipped_bags_openable_containers() {
         item: 41,
         item_template: 5571,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -3254,6 +3455,7 @@ fn login_create_blocks_make_equipped_bags_openable_containers() {
         item: 42,
         item_template: 117,
         count: 4,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -3296,6 +3498,7 @@ fn item_create_block_includes_random_property_enchantments() {
         item: 42,
         item_template: 11980,
         count: 1,
+        flags: 0,
         random_property_id: 1373,
         charges: String::new(),
         enchantments: enchantments
@@ -3331,6 +3534,7 @@ fn item_create_block_includes_instance_spell_charges() {
         item: 42,
         item_template: 6948,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: "-1 0 3 0 0".to_string(),
         enchantments: String::new(),
@@ -3347,6 +3551,30 @@ fn item_create_block_includes_instance_spell_charges() {
 }
 
 #[test]
+fn item_create_block_includes_soulbound_instance_flag() {
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let item_guid = ObjectGuid::new(HighGuid::Item, 0, 42);
+    let item = CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_ITEM_START,
+        item: 42,
+        item_template: 1509,
+        count: 1,
+        flags: ITEM_DYNFLAG_BINDED,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    };
+
+    let block = build_item_create_update_block(owner_guid, owner_guid, &item, None).unwrap();
+    let (values, rest) = decode_create_update_block(&block, item_guid, TYPEID_ITEM);
+
+    assert!(rest.is_empty());
+    assert_eq!(values[ITEM_FIELD_FLAGS], Some(ITEM_DYNFLAG_BINDED));
+}
+
+#[test]
 fn item_create_block_for_looted_bag_is_container_immediately() {
     let owner_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
     let item_guid = ObjectGuid::new(HighGuid::Item, 0, 42);
@@ -3356,6 +3584,7 @@ fn item_create_block_for_looted_bag_is_container_immediately() {
         item: 42,
         item_template: RUST_VENDOR_BAG_ITEM,
         count: 1,
+        flags: 0,
         random_property_id: 0,
         charges: String::new(),
         enchantments: String::new(),
@@ -3445,6 +3674,56 @@ fn starter_item_visuals_cover_human_warrior_equipment() {
 }
 
 #[test]
+fn spell_item_enchantment_dbc_parser_reads_stat_effects() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"WDBC");
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&24u32.to_le_bytes());
+    bytes.extend_from_slice(&(24u32 * 4).to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    for field in [
+        141u32,
+        5,
+        5,
+        0,
+        4,
+        6,
+        0,
+        0,
+        0,
+        0,
+        ITEM_MOD_STRENGTH,
+        ITEM_MOD_STAMINA,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        77,
+        1,
+    ] {
+        bytes.extend_from_slice(&field.to_le_bytes());
+    }
+    bytes.push(0);
+
+    let enchantments = parse_spell_item_enchantments(&bytes);
+    let enchantment = enchantments.get(&141).unwrap();
+
+    assert_eq!(enchantment.effect_types, [5, 5, 0]);
+    assert_eq!(enchantment.effect_amounts, [4, 6, 0]);
+    assert_eq!(
+        enchantment.effect_args,
+        [ITEM_MOD_STRENGTH, ITEM_MOD_STAMINA, 0]
+    );
+    assert_eq!(enchantment.flags, 1);
+}
+
+#[test]
 fn maps_classic_race_gender_display_ids() {
     let mut character = CharacterEnumEntry {
         guid: 7,
@@ -3465,6 +3744,11 @@ fn maps_classic_race_gender_display_ids() {
         position_y: -132.493,
         position_z: 83.5312,
         orientation: 0.0,
+        homebind_zone: 12,
+        homebind_map: 0,
+        homebind_position_x: -8949.95,
+        homebind_position_y: -132.493,
+        homebind_position_z: 83.5312,
         guildid: None,
         player_flags: 0,
         at_login: 0,
@@ -3835,6 +4119,14 @@ fn parses_gm_dot_commands_for_creature_spawn_and_die() {
         }))
     );
     assert_eq!(
+        parse_gm_dot_command(".learn 71"),
+        Some(Ok(GmDotCommand::Learn(71)))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".learn |Hspell:2458|h[Berserker Stance]|h"),
+        Some(Ok(GmDotCommand::Learn(2458)))
+    );
+    assert_eq!(
         parse_gm_dot_command(".additem #929 #5"),
         Some(Ok(GmDotCommand::AddItem {
             item: 929,
@@ -3874,6 +4166,10 @@ fn malformed_gm_npc_add_returns_syntax_error() {
     assert_eq!(
         parse_gm_dot_command(".additem"),
         Some(Err("Syntax: .additem #itemid [#count]".to_string()))
+    );
+    assert_eq!(
+        parse_gm_dot_command(".learn"),
+        Some(Err("Syntax: .learn #spellid".to_string()))
     );
     assert_eq!(
         parse_gm_dot_command(".additem 929 0"),
@@ -4811,6 +5107,7 @@ fn party_member_stats_full_body_matches_cmangos_core_fields() {
         power2: 50,
         power4: 0,
         max_power4: 0,
+        aura_state: 0,
         active_spells: HashSet::new(),
         inventory: Vec::new(),
         quest_statuses: HashMap::new(),
@@ -4872,6 +5169,7 @@ fn party_member_stats_reports_rogue_energy_power() {
         power2: 0,
         power4: POWER_ENERGY_DEFAULT,
         max_power4: POWER_ENERGY_DEFAULT,
+        aura_state: 0,
         active_spells: HashSet::new(),
         inventory: Vec::new(),
         quest_statuses: HashMap::new(),
@@ -5509,6 +5807,7 @@ fn player_death_clears_active_spell_channels_and_dynamic_objects() {
         target,
         5_000,
         1_000,
+        0.0,
         0,
         0.0,
         damage_effect,
@@ -5688,6 +5987,7 @@ fn near_teleport_position_set_clears_active_spell_runtime() {
         target,
         5_000,
         1_000,
+        0.0,
         0,
         0.0,
         damage_effect,
@@ -5796,6 +6096,7 @@ fn removing_channeled_creature_aura_interrupts_player_channel() {
         target,
         5_000,
         1_000,
+        0.0,
         0,
         0.0,
         damage_effect,

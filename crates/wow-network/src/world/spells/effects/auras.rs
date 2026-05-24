@@ -125,6 +125,11 @@ pub(in crate::world) async fn apply_player_spell_aura(
             .maps
             .spell_duration(spell_template.duration_index),
     );
+    apply_spell_proc_event_to_active_aura(
+        &mut aura,
+        spell_template,
+        wow_db::get_spell_proc_event_query(deps.world_db_pool, spell_template.id).await?,
+    );
 
     resolve_active_aura_transform_displays(
         deps.shared_world.object_mgr,
@@ -143,7 +148,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
 
     match aura_target {
         SpellPlanTarget::Caster => {
-            let resolution = aura_rank_conflict_resolution(
+            let mut resolution = aura_rank_conflict_resolution(
                 deps.shared_world.object_mgr,
                 deps.world_db_pool,
                 spell_template.id,
@@ -156,12 +161,27 @@ pub(in crate::world) async fn apply_player_spell_aura(
                 return Ok(());
             }
 
+            extend_resolution_with_mechanic_immunity_purges(
+                deps.shared_world.object_mgr,
+                deps.world_db_pool,
+                spell_template,
+                &session.auras.active_auras,
+                &aura,
+                &mut resolution,
+            )
+            .await?;
+
             apply_player_aura_replacing_conflicts(session, aura.clone(), &resolution);
 
             if let Some(event) = deps
                 .shared_world
                 .maps
-                .apply_player_aura_replacing_conflicts(map_id, character_guid, aura, &resolution)
+                .apply_player_aura_replacing_conflicts(
+                    map_id,
+                    character_guid,
+                    aura.clone(),
+                    &resolution,
+                )
                 .await?
             {
                 send_or_dispatch_player_aura_event(
@@ -177,7 +197,23 @@ pub(in crate::world) async fn apply_player_spell_aura(
                 send_packet(
                     stream,
                     WorldOpcode::SmsgUpdateObject as u16,
-                    &build_player_aura_update_body(caster, &session.auras.active_auras)?,
+                    &build_player_aura_update_body(
+                        caster,
+                        session
+                            .character
+                            .active_character
+                            .as_ref()
+                            .map(|character| character.class)
+                            .unwrap_or(0),
+                        session.character.player_stand_state,
+                        deps.shared_world
+                            .maps
+                            .player_runtime_snapshot(map_id, character_guid)
+                            .await
+                            .map(|snapshot| snapshot.aura_state)
+                            .unwrap_or(0),
+                        &session.auras.active_auras,
+                    )?,
                     Some(&mut *header_crypto),
                 )
                 .await?;
@@ -206,6 +242,32 @@ pub(in crate::world) async fn apply_player_spell_aura(
                 header_crypto,
             )
             .await?;
+
+            apply_warrior_stance_rage_retention_if_needed(
+                stream,
+                deps,
+                session,
+                caster,
+                character_guid,
+                map_id,
+                &aura,
+                header_crypto,
+            )
+            .await?;
+
+            apply_linked_warrior_stance_passive_if_needed(
+                stream,
+                deps,
+                session,
+                caster,
+                character_guid,
+                character_level,
+                map_id,
+                &aura,
+                now,
+                header_crypto,
+            )
+            .await?;
         }
 
         SpellPlanTarget::Unit | SpellPlanTarget::HostileUnit | SpellPlanTarget::FriendlyUnit => {
@@ -228,7 +290,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         snapshot.active_auras
                     };
 
-                    let resolution = aura_rank_conflict_resolution(
+                    let mut resolution = aura_rank_conflict_resolution(
                         deps.shared_world.object_mgr,
                         deps.world_db_pool,
                         spell_template.id,
@@ -240,6 +302,16 @@ pub(in crate::world) async fn apply_player_spell_aura(
                     if resolution.failure.is_some() {
                         return Ok(());
                     }
+
+                    extend_resolution_with_mechanic_immunity_purges(
+                        deps.shared_world.object_mgr,
+                        deps.world_db_pool,
+                        spell_template,
+                        &active_auras,
+                        &aura,
+                        &mut resolution,
+                    )
+                    .await?;
 
                     if target_character_guid == character_guid {
                         apply_player_aura_replacing_conflicts(session, aura.clone(), &resolution);
@@ -327,7 +399,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
                             Some(now + Duration::from_millis(adjusted_duration as u64));
                     }
 
-                    let resolution = aura_rank_conflict_resolution(
+                    let mut resolution = aura_rank_conflict_resolution(
                         deps.shared_world.object_mgr,
                         deps.world_db_pool,
                         spell_template.id,
@@ -351,6 +423,16 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         return Ok(());
                     }
 
+                    extend_resolution_with_mechanic_immunity_purges(
+                        deps.shared_world.object_mgr,
+                        deps.world_db_pool,
+                        spell_template,
+                        &target_creature.active_auras,
+                        &aura,
+                        &mut resolution,
+                    )
+                    .await?;
+
                     if let Some(event) = deps
                         .shared_world
                         .maps
@@ -366,6 +448,15 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         )
                         .await?
                     {
+                        let target_switch = deps
+                            .shared_world
+                            .maps
+                            .switch_db_creature_threat_victim_if_needed(
+                                map_id,
+                                target,
+                                Some(character_guid),
+                            )
+                            .await?;
                         send_packet(
                             stream,
                             WorldOpcode::SmsgUpdateObject as u16,
@@ -388,6 +479,15 @@ pub(in crate::world) async fn apply_player_spell_aura(
                             .sessions
                             .dispatch(event.observer_packets)
                             .await;
+
+                        send_db_creature_threat_target_switch(
+                            stream,
+                            deps.shared_world,
+                            session,
+                            target_switch,
+                            header_crypto,
+                        )
+                        .await?;
                     }
 
                     begin_db_creature_retaliation_if_needed(
@@ -638,6 +738,169 @@ pub(in crate::world) async fn apply_player_spell_aura(
         SpellPlanTarget::Destination => {}
     }
 
+    Ok(())
+}
+
+const LINKED_WARRIOR_STANCE_PASSIVE_SPELL_IDS: [u32; 3] = [21156, 7376, 7381];
+
+fn linked_warrior_stance_passive_spell_id(form: u8) -> Option<u32> {
+    match form {
+        FORM_BATTLESTANCE => Some(21156),
+        FORM_DEFENSIVESTANCE => Some(7376),
+        FORM_BERSERKERSTANCE => Some(7381),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_warrior_stance_rage_retention_if_needed(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    aura: &ActiveAura,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if session
+        .character
+        .active_character
+        .as_ref()
+        .is_none_or(|character| character.class != 1)
+    {
+        return Ok(());
+    }
+    let Some(form) = active_aura_shapeshift_form(std::slice::from_ref(aura)) else {
+        return Ok(());
+    };
+    if linked_warrior_stance_passive_spell_id(form).is_none() {
+        return Ok(());
+    }
+
+    // CMaNGOS trims rage on every warrior stance swap inside the shapeshift apply path.
+    // Tactical Mastery retention comes from override-class-script talent auras and stays
+    // out of scope here until the talent lane is implemented.
+    let retained_rage = 0;
+    if session.character.player_rage <= retained_rage {
+        return Ok(());
+    }
+
+    session.character.player_rage = retained_rage;
+    deps.shared_world
+        .maps
+        .set_player_power2(map_id, character_guid, retained_rage)
+        .await;
+
+    send_packet(
+        stream,
+        WorldOpcode::SmsgUpdateObject as u16,
+        &build_player_rage_update_body(caster, retained_rage)?,
+        Some(header_crypto),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_linked_warrior_stance_passive_if_needed(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    aura: &ActiveAura,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(form) = active_aura_shapeshift_form(std::slice::from_ref(aura)) else {
+        return Ok(());
+    };
+    let Some(passive_spell_id) = linked_warrior_stance_passive_spell_id(form) else {
+        return Ok(());
+    };
+    let Some(passive_template) = deps
+        .shared_world
+        .object_mgr
+        .spell_template(deps.world_db_pool, passive_spell_id)
+        .await?
+    else {
+        warn!(
+            stance_spell_id = aura.spell_id,
+            passive_spell_id, "Skipping linked warrior stance passive with no spell_template row"
+        );
+        return Ok(());
+    };
+    let value_context = player_spell_effect_value_context(
+        deps.shared_world.maps,
+        &passive_template,
+        &session.character.character_skills,
+        0,
+    );
+    let Some(passive_aura) = passive_spell_active_aura(
+        &passive_template,
+        caster,
+        character_level,
+        value_context,
+        now,
+        deps.shared_world
+            .maps
+            .spell_duration(passive_template.duration_index),
+    ) else {
+        return Ok(());
+    };
+
+    let resolution = AuraRankConflictResolution {
+        failure: None,
+        replace_spell_ids: LINKED_WARRIOR_STANCE_PASSIVE_SPELL_IDS.to_vec(),
+        replace_any_caster_spell_ids: Vec::new(),
+        stack_limit: 1,
+    };
+
+    apply_player_aura_replacing_conflicts(session, passive_aura.clone(), &resolution);
+
+    if let Some(event) = deps
+        .shared_world
+        .maps
+        .apply_player_aura_replacing_conflicts(map_id, character_guid, passive_aura, &resolution)
+        .await?
+    {
+        send_or_dispatch_player_aura_event(
+            stream,
+            deps.shared_world,
+            character_guid,
+            character_guid,
+            event,
+            header_crypto,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn extend_resolution_with_mechanic_immunity_purges(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    spell_template: &wow_db::SpellTemplateQuery,
+    active_auras: &[ActiveAura],
+    aura: &ActiveAura,
+    resolution: &mut AuraRankConflictResolution,
+) -> anyhow::Result<()> {
+    for spell_id in mechanic_immunity_purge_spell_ids(
+        object_mgr,
+        world_db_pool,
+        spell_template,
+        active_auras,
+        aura,
+    )
+    .await?
+    {
+        push_unique_spell_id(&mut resolution.replace_any_caster_spell_ids, spell_id);
+    }
     Ok(())
 }
 

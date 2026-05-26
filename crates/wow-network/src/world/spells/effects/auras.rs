@@ -115,11 +115,25 @@ pub(in crate::world) async fn apply_player_spell_aura(
 
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    let spell_school_mask = spell_school_mask_from_school(spell_template.school);
+    let aura_value_context = deps
+        .shared_world
+        .maps
+        .player_runtime_snapshot(map_id, character_guid)
+        .await
+        .map(|snapshot| {
+            value_context.with_spell_healing_bonus_done(active_aura_spell_healing_done_bonus(
+                &snapshot.active_auras,
+                spell_school_mask,
+            ))
+        })
+        .unwrap_or(value_context);
+
     let mut aura = build_active_aura(
         spell_template,
         caster,
         character_level,
-        value_context,
+        aura_value_context,
         now,
         deps.shared_world
             .maps
@@ -338,6 +352,21 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         )
                         .await?;
                     }
+
+                    apply_power_word_shield_weakened_soul_if_needed(
+                        stream,
+                        deps,
+                        session,
+                        caster,
+                        character_guid,
+                        character_level,
+                        map_id,
+                        spell_template,
+                        target_character_guid,
+                        now,
+                        header_crypto,
+                    )
+                    .await?;
                 } else if target.is_creature() {
                     let Some(target_creature) = deps
                         .shared_world
@@ -750,6 +779,126 @@ fn linked_warrior_stance_passive_spell_id(form: u8) -> Option<u32> {
         FORM_BERSERKERSTANCE => Some(7381),
         _ => None,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_power_word_shield_weakened_soul_if_needed(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    target_character_guid: u32,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if !spell_is_priest_power_word_shield(spell_template) {
+        return Ok(());
+    }
+
+    let Some(weakened_soul_template) = deps
+        .shared_world
+        .object_mgr
+        .spell_template(deps.world_db_pool, PRIEST_WEAKENED_SOUL_SPELL_ID)
+        .await?
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            linked_spell_id = PRIEST_WEAKENED_SOUL_SPELL_ID,
+            "Skipping linked Priest Weakened Soul aura with no spell_template row"
+        );
+        return Ok(());
+    };
+
+    let value_context = player_spell_effect_value_context(
+        deps.shared_world.maps,
+        &weakened_soul_template,
+        &session.character.character_skills,
+        0,
+    );
+    let mut weakened_soul = build_active_aura(
+        &weakened_soul_template,
+        caster,
+        character_level,
+        value_context,
+        now,
+        deps.shared_world
+            .maps
+            .spell_duration(weakened_soul_template.duration_index),
+    );
+    apply_spell_proc_event_to_active_aura(
+        &mut weakened_soul,
+        &weakened_soul_template,
+        wow_db::get_spell_proc_event_query(deps.world_db_pool, weakened_soul_template.id).await?,
+    );
+
+    let active_auras = if target_character_guid == character_guid {
+        session.auras.active_auras.clone()
+    } else {
+        let Some(snapshot) = deps
+            .shared_world
+            .maps
+            .player_runtime_snapshot(map_id, target_character_guid)
+            .await
+        else {
+            return Ok(());
+        };
+        snapshot.active_auras
+    };
+
+    let mut resolution = aura_rank_conflict_resolution(
+        deps.shared_world.object_mgr,
+        deps.world_db_pool,
+        weakened_soul_template.id,
+        caster,
+        &active_auras,
+    )
+    .await?;
+
+    if resolution.failure.is_some() {
+        return Ok(());
+    }
+
+    extend_resolution_with_mechanic_immunity_purges(
+        deps.shared_world.object_mgr,
+        deps.world_db_pool,
+        &weakened_soul_template,
+        &active_auras,
+        &weakened_soul,
+        &mut resolution,
+    )
+    .await?;
+
+    if target_character_guid == character_guid {
+        apply_player_aura_replacing_conflicts(session, weakened_soul.clone(), &resolution);
+    }
+
+    if let Some(event) = deps
+        .shared_world
+        .maps
+        .apply_player_aura_replacing_conflicts(
+            map_id,
+            target_character_guid,
+            weakened_soul,
+            &resolution,
+        )
+        .await?
+    {
+        send_or_dispatch_player_aura_event(
+            stream,
+            deps.shared_world,
+            character_guid,
+            target_character_guid,
+            event,
+            header_crypto,
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

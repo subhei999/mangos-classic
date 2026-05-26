@@ -185,6 +185,15 @@ pub(in crate::world) fn queued_next_melee_hostile_chain_target_count(
     total_targets.max(1)
 }
 
+fn without_spell_miss_log_packets(
+    packets: Vec<(SessionId, OutboundWorldPacket)>,
+) -> Vec<(SessionId, OutboundWorldPacket)> {
+    packets
+        .into_iter()
+        .filter(|(_, packet)| packet.opcode != WorldOpcode::SmsgSpellLogMiss as u16)
+        .collect()
+}
+
 pub(in crate::world) async fn resolve_queued_next_melee_secondary_db_creature_targets(
     shared_world: SharedWorldDeps<'_>,
     map_id: u32,
@@ -926,30 +935,15 @@ pub(in crate::world) async fn send_db_creature_swing(
             )
             .await?;
         }
-        if let Some(spell_miss_log_body) = &event.spell_miss_log_body {
-            send_packet(
-                stream,
-                WorldOpcode::SmsgSpellLogMiss as u16,
-                spell_miss_log_body,
-                Some(&mut *header_crypto),
-            )
-            .await?;
-        }
+        // Avoided queued melee spells already carry miss details in SMSG_SPELL_GO.
+        // Sending SMSG_SPELLLOGMISS as well makes the 1.12 client show duplicate
+        // combat log and floating text for Heroic Strike, Cleave, and friends.
         for queued_event in &queued_spell_events {
             if let Some(spell_non_melee_log_body) = &queued_event.event.spell_non_melee_log_body {
                 send_packet(
                     stream,
                     WorldOpcode::SmsgSpellNonMeleeDamageLog as u16,
                     spell_non_melee_log_body,
-                    Some(&mut *header_crypto),
-                )
-                .await?;
-            }
-            if let Some(spell_miss_log_body) = &queued_event.event.spell_miss_log_body {
-                send_packet(
-                    stream,
-                    WorldOpcode::SmsgSpellLogMiss as u16,
-                    spell_miss_log_body,
                     Some(&mut *header_crypto),
                 )
                 .await?;
@@ -981,7 +975,12 @@ pub(in crate::world) async fn send_db_creature_swing(
         )
         .await?;
     }
-    shared_world.sessions.dispatch(event.observer_packets).await;
+    let observer_packets = if queued_spell.is_some() {
+        without_spell_miss_log_packets(event.observer_packets)
+    } else {
+        event.observer_packets
+    };
+    shared_world.sessions.dispatch(observer_packets).await;
     for queued_event in queued_spell_events.iter().skip(1) {
         mirror_session_db_creature(
             session,
@@ -1068,7 +1067,9 @@ pub(in crate::world) async fn send_db_creature_swing(
     for queued_event in queued_spell_events.into_iter().skip(1) {
         shared_world
             .sessions
-            .dispatch(queued_event.event.observer_packets)
+            .dispatch(without_spell_miss_log_packets(
+                queued_event.event.observer_packets,
+            ))
             .await;
         send_db_creature_threat_target_switch(
             stream,
@@ -2547,6 +2548,7 @@ pub(in crate::world) async fn grant_db_creature_kill_credit_to_member(
                     quest: quest_id,
                     status: QUEST_STATUS_INCOMPLETE,
                     rewarded: 0,
+                    explored: 0,
                     mobcount1: 0,
                     mobcount2: 0,
                     mobcount3: 0,

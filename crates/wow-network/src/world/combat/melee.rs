@@ -131,7 +131,7 @@ pub(in crate::world) fn player_can_reach_with_melee_attack(
     if character.position.map_id != target.current_position.map_id {
         return false;
     }
-    let reach = combined_melee_reach(PLAYER_COMBAT_REACH_YARDS, target.combat_reach());
+    let reach = player_melee_reach_against_db_creature(character.movement_flags, target);
     let dx = character.position.x - target.current_position.x;
     let dy = character.position.y - target.current_position.y;
     let dz = character.position.z - target.current_position.z;
@@ -144,6 +144,77 @@ pub(in crate::world) fn combined_melee_reach(
 ) -> f32 {
     (attacker_combat_reach.max(0.0) + victim_combat_reach.max(0.0) + BASE_MELEE_RANGE_OFFSET_YARDS)
         .max(ATTACK_DISTANCE_YARDS)
+}
+
+pub(in crate::world) fn combined_melee_reach_with_movement(
+    attacker_combat_reach: f32,
+    victim_combat_reach: f32,
+    attacker_moving: bool,
+    attacker_walking: bool,
+    victim_moving: bool,
+    victim_walking: bool,
+) -> f32 {
+    let mut reach = combined_melee_reach(attacker_combat_reach, victim_combat_reach);
+    if attacker_moving && !attacker_walking && victim_moving && !victim_walking {
+        reach += MELEE_LEEWAY_YARDS;
+    }
+    reach
+}
+
+pub(in crate::world) fn unit_movement_flags_count_as_moving(flags: u32) -> bool {
+    flags & MOVEFLAG_MASK_MOVING != 0
+}
+
+pub(in crate::world) fn unit_movement_flags_count_as_walking(flags: u32) -> bool {
+    flags & MOVEFLAG_WALK_MODE != 0
+}
+
+pub(in crate::world) fn db_creature_movement_for_melee_leeway(
+    creature: &DbCreatureRuntime,
+) -> (bool, bool) {
+    match &creature.motion {
+        CreatureMotionState::Idle => (false, false),
+        CreatureMotionState::Random(_) | CreatureMotionState::Waypoint(_) => {
+            (true, !creature.default_movement_run)
+        }
+        CreatureMotionState::Confused(_) => (true, true),
+        CreatureMotionState::Chase(chase) => (
+            !db_creature_chase_motion_arrived(creature, chase),
+            !chase.run,
+        ),
+        CreatureMotionState::Flee(_) => (true, false),
+        CreatureMotionState::ReturnHome(_) => (true, false),
+    }
+}
+
+pub(in crate::world) fn db_creature_melee_reach_against_player(
+    creature: &DbCreatureRuntime,
+    player_movement_flags: u32,
+) -> f32 {
+    let (creature_moving, creature_walking) = db_creature_movement_for_melee_leeway(creature);
+    combined_melee_reach_with_movement(
+        creature.combat_reach(),
+        PLAYER_COMBAT_REACH_YARDS,
+        creature_moving,
+        creature_walking,
+        unit_movement_flags_count_as_moving(player_movement_flags),
+        unit_movement_flags_count_as_walking(player_movement_flags),
+    )
+}
+
+pub(in crate::world) fn player_melee_reach_against_db_creature(
+    player_movement_flags: u32,
+    creature: &DbCreatureRuntime,
+) -> f32 {
+    let (creature_moving, creature_walking) = db_creature_movement_for_melee_leeway(creature);
+    combined_melee_reach_with_movement(
+        PLAYER_COMBAT_REACH_YARDS,
+        creature.combat_reach(),
+        unit_movement_flags_count_as_moving(player_movement_flags),
+        unit_movement_flags_count_as_walking(player_movement_flags),
+        creature_moving,
+        creature_walking,
+    )
 }
 
 pub(in crate::world) fn creature_bounding_radius(template: &CreatureTemplateQuery) -> f32 {
@@ -193,12 +264,13 @@ pub(in crate::world) fn db_creature_can_reach_player(
     let Some(creature) = session.visibility.db_creatures.get(&attacker.raw()) else {
         return false;
     };
-    creature
-        .distance_to_player_squared(character)
-        .is_some_and(|distance_sq| {
-            let reach = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
-            distance_sq <= reach * reach
-        })
+    if character.position.map_id != creature.current_position.map_id {
+        return false;
+    }
+    let reach = db_creature_melee_reach_against_player(creature, character.movement_flags);
+    let dx = creature.current_position.x - character.position.x;
+    let dy = creature.current_position.y - character.position.y;
+    dx * dx + dy * dy <= reach * reach
 }
 
 pub(in crate::world) async fn db_creature_can_reach_player_from_map(
@@ -217,12 +289,13 @@ pub(in crate::world) async fn db_creature_can_reach_player_from_map(
     else {
         return false;
     };
-    creature
-        .distance_to_player_squared(character)
-        .is_some_and(|distance_sq| {
-            let reach = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
-            distance_sq <= reach * reach
-        })
+    if character.position.map_id != creature.current_position.map_id {
+        return false;
+    }
+    let reach = db_creature_melee_reach_against_player(&creature, character.movement_flags);
+    let dx = creature.current_position.x - character.position.x;
+    let dy = creature.current_position.y - character.position.y;
+    dx * dx + dy * dy <= reach * reach
 }
 
 #[cfg(test)]

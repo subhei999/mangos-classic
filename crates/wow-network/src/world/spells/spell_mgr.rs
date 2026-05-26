@@ -17,6 +17,7 @@ pub(in crate::world) struct SpellInfoEffect {
     pub(in crate::world) dice_per_level: f32,
     pub(in crate::world) real_points_per_level: f32,
     pub(in crate::world) points_per_combo_point: f32,
+    pub(in crate::world) bonus_coefficient: f32,
     pub(in crate::world) multiple_value: f32,
     pub(in crate::world) amplitude: u32,
     pub(in crate::world) implicit_target_a: u32,
@@ -36,6 +37,7 @@ pub(in crate::world) struct SpellInfoEffectSlot {
     pub(in crate::world) aura_name: u32,
     pub(in crate::world) base_points: i32,
     pub(in crate::world) roll: (i32, u32, f32, f32, f32, f32),
+    pub(in crate::world) bonus_coefficient: f32,
     pub(in crate::world) amplitude: u32,
     pub(in crate::world) implicit_target_a: u32,
     pub(in crate::world) implicit_target_b: u32,
@@ -62,6 +64,7 @@ impl<'a> SpellInfo<'a> {
                     template.effect_points_per_combo_point1,
                     template.effect_multiple_value1,
                 ),
+                bonus_coefficient: template.effect_bonus_coefficient1,
                 amplitude: template.effect_amplitude1,
                 implicit_target_a: template.effect_implicit_target_a1,
                 implicit_target_b: template.effect_implicit_target_b1,
@@ -84,6 +87,7 @@ impl<'a> SpellInfo<'a> {
                     template.effect_points_per_combo_point2,
                     template.effect_multiple_value2,
                 ),
+                bonus_coefficient: template.effect_bonus_coefficient2,
                 amplitude: template.effect_amplitude2,
                 implicit_target_a: template.effect_implicit_target_a2,
                 implicit_target_b: template.effect_implicit_target_b2,
@@ -106,6 +110,7 @@ impl<'a> SpellInfo<'a> {
                     template.effect_points_per_combo_point3,
                     template.effect_multiple_value3,
                 ),
+                bonus_coefficient: template.effect_bonus_coefficient3,
                 amplitude: template.effect_amplitude3,
                 implicit_target_a: template.effect_implicit_target_a3,
                 implicit_target_b: template.effect_implicit_target_b3,
@@ -134,6 +139,19 @@ impl<'a> SpellInfo<'a> {
             PreparedSpellCast::new(
                 self.template.id,
                 SpellCastSource::Item { item_guid },
+                profile,
+            )
+        })
+    }
+
+    pub(in crate::world) fn prepare_gameobject_cast(
+        &self,
+        gameobject_guid: ObjectGuid,
+    ) -> Option<PreparedSpellCast> {
+        self.item_cast_profile().map(|profile| {
+            PreparedSpellCast::new(
+                self.template.id,
+                SpellCastSource::GameObject { gameobject_guid },
                 profile,
             )
         })
@@ -201,6 +219,13 @@ impl<'a> SpellInfo<'a> {
                     | SpellEffectDispatch::Energize
                     | SpellEffectDispatch::SchoolDamage
             ) && spell_effect_simple_value(effect.base_points).is_some()
+        })
+    }
+
+    pub(in crate::world) fn has_power_burn_effect(&self) -> bool {
+        self.effects.iter().any(|effect| {
+            effect.dispatch == SpellEffectDispatch::PowerBurn
+                && spell_effect_simple_value(effect.base_points).is_some()
         })
     }
 
@@ -379,6 +404,7 @@ impl SpellInfoEffect {
             dice_per_level: slot.roll.2,
             real_points_per_level: slot.roll.3,
             points_per_combo_point: slot.roll.4,
+            bonus_coefficient: slot.bonus_coefficient,
             multiple_value: slot.roll.5,
             amplitude: slot.amplitude,
             implicit_target_a: slot.implicit_target_a,

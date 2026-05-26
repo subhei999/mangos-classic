@@ -52,14 +52,17 @@ impl SpellPlan {
                 SpellEffectDispatch::SchoolDamage
                     | SpellEffectDispatch::WeaponDamage
                     | SpellEffectDispatch::WeaponPercentDamage
+                    | SpellEffectDispatch::PowerBurn
             ) && effect.target.is_hostile()
         })
     }
 
     pub(in crate::world) fn has_hostile_unit_damage(&self) -> bool {
         self.effects.iter().any(|effect| {
-            effect.dispatch == SpellEffectDispatch::SchoolDamage
-                && effect.target == SpellPlanEffectTarget::HostileUnit
+            matches!(
+                effect.dispatch,
+                SpellEffectDispatch::SchoolDamage | SpellEffectDispatch::PowerBurn
+            ) && effect.target == SpellPlanEffectTarget::HostileUnit
         })
     }
 
@@ -299,13 +302,16 @@ pub(in crate::world) enum SpellPowerCost {
 
 pub(in crate::world) const SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE: u32 = 0x0000_0004;
 pub(in crate::world) const SPELL_ATTR_USES_RANGED_SLOT: u32 = 0x0000_0002;
+pub(in crate::world) const SPELL_ATTR_IS_ABILITY: u32 = 0x0000_0010;
 pub(in crate::world) const SPELL_ATTR_PASSIVE: u32 = 0x0000_0040;
 pub(in crate::world) const SPELL_ATTR_ON_NEXT_SWING: u32 = 0x0000_0400;
+pub(in crate::world) const SPELL_ATTR_NO_IMMUNITIES: u32 = 0x2000_0000;
 pub(in crate::world) const SPELL_INTERRUPT_FLAG_MOVEMENT: u32 = 0x01;
 pub(in crate::world) const SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK: u32 = 0x02;
 pub(in crate::world) const SPELL_INTERRUPT_FLAG_DAMAGE_CANCELS: u32 = 0x10;
 pub(in crate::world) const SPELL_ATTR_EX_IS_CHANNELED: u32 = 0x0000_0004;
 pub(in crate::world) const SPELL_ATTR_EX_IS_SELF_CHANNELED: u32 = 0x0000_0040;
+pub(in crate::world) const SPELL_ATTR_EX_NO_REFLECTION: u32 = 0x0000_0080;
 pub(in crate::world) const SPELL_ATTR_EX_IMMUNITY_PURGES_EFFECT: u32 = 0x0000_8000;
 pub(in crate::world) const SPELL_ATTR_EX_NO_AUTOCAST_AI: u32 = 0x0002_0000;
 pub(in crate::world) const SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE: u32 = 0x0010_0000;
@@ -330,6 +336,7 @@ pub(in crate::world) const SPELL_EFFECT_DISPEL_MECHANIC: u32 = 108;
 pub(in crate::world) const SPELL_EFFECT_INTERRUPT_CAST: u32 = 68;
 pub(in crate::world) const SPELL_EFFECT_HEAL: u32 = 10;
 pub(in crate::world) const SPELL_EFFECT_ENERGIZE: u32 = 30;
+pub(in crate::world) const SPELL_EFFECT_POWER_BURN: u32 = 62;
 pub(in crate::world) const SPELL_EFFECT_CHARGE: u32 = 96;
 pub(in crate::world) const SPELL_EFFECT_ATTACK_ME: u32 = 114;
 pub(in crate::world) const SPELL_EFFECT_DUEL: u32 = 83;
@@ -365,12 +372,16 @@ pub(in crate::world) const SPELL_AURA_MOD_PACIFY_SILENCE: u32 = 60;
 pub(in crate::world) const SPELL_AURA_MOD_DISARM: u32 = 67;
 pub(in crate::world) const SPELL_AURA_MOD_STALKED: u32 = 68;
 pub(in crate::world) const SPELL_AURA_SCHOOL_ABSORB: u32 = 69;
+pub(in crate::world) const SPELL_AURA_REFLECT_SPELLS_SCHOOL: u32 = 74;
 pub(in crate::world) const SPELL_AURA_MECHANIC_IMMUNITY: u32 = 77;
 pub(in crate::world) const SPELL_AURA_MANA_SHIELD: u32 = 97;
+pub(in crate::world) const SPELL_AURA_AURAS_VISIBLE: u32 = 100;
 pub(in crate::world) const SPELL_AURA_MOD_RESISTANCE_PCT: u32 = 101;
+pub(in crate::world) const SPELL_AURA_MOD_TOTAL_THREAT: u32 = 103;
 pub(in crate::world) const SPELL_AURA_MOD_POWER_REGEN_PERCENT: u32 = 110;
 pub(in crate::world) const SPELL_AURA_MOD_HEALING: u32 = 115;
 pub(in crate::world) const SPELL_AURA_MOD_MANA_REGEN_INTERRUPT: u32 = 134;
+pub(in crate::world) const SPELL_AURA_MOD_HEALING_DONE: u32 = 135;
 pub(in crate::world) const SPELL_AURA_MOD_SKILL_TALENT: u32 = 98;
 pub(in crate::world) const SPELL_AURA_MOD_SKILL: u32 = 30;
 pub(in crate::world) const SPELL_AURA_MOD_REGEN: u32 = 84;
@@ -387,6 +398,7 @@ pub(in crate::world) const SPELL_AURA_TRANSFORM: u32 = 56;
 pub(in crate::world) const SPELL_AURA_GHOST: u32 = 95;
 pub(in crate::world) const SPELL_AURA_WATER_WALK: u32 = 104;
 pub(in crate::world) const SPELL_AURA_FEATHER_FALL: u32 = 105;
+pub(in crate::world) const SPELL_AURA_HOVER: u32 = 106;
 pub(in crate::world) const AURA_INTERRUPT_FLAG_DAMAGE: u32 = 0x0000_0002;
 pub(in crate::world) const AURA_INTERRUPT_FLAG_MOVING: u32 = 0x0000_0008;
 pub(in crate::world) const AURA_INTERRUPT_FLAG_DAMAGE_CHANNEL_DURATION: u32 = 0x0000_4000;
@@ -406,6 +418,7 @@ pub(in crate::world) const TARGET_UNIT_CASTER: u32 = 1;
 pub(in crate::world) const TARGET_UNIT_ENEMY: u32 = 6;
 pub(in crate::world) const TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC: u32 = 15;
 pub(in crate::world) const TARGET_ENUM_UNITS_ENEMY_AOE_AT_DEST_LOC: u32 = 16;
+pub(in crate::world) const TARGET_LOCATION_DATABASE: u32 = 17;
 pub(in crate::world) const TARGET_LOCATION_CASTER_SRC: u32 = 22;
 pub(in crate::world) const TARGET_ENUM_UNITS_ENEMY_IN_CONE_24: u32 = 24;
 pub(in crate::world) const TARGET_ENUM_UNITS_ENEMY_AOE_AT_DYNOBJ_LOC: u32 = 28;
@@ -441,7 +454,9 @@ pub(in crate::world) const BASE_CHARGE_SPEED: f32 = 27.0;
 pub(in crate::world) const SPELL_SCHOOL_MASK_NORMAL: u32 = 0x01;
 pub(in crate::world) const SPELL_FAMILY_GENERIC: u32 = 0;
 pub(in crate::world) const SPELL_FAMILY_MAGE: u32 = 3;
+pub(in crate::world) const SPELL_FAMILY_PRIEST: u32 = 6;
 pub(in crate::world) const SPELL_FAMILY_HUNTER: u32 = 9;
+pub(in crate::world) const PRIEST_WEAKENED_SOUL_SPELL_ID: u32 = 6788;
 pub(in crate::world) const MECHANIC_FEAR: u32 = 5;
 pub(in crate::world) const MECHANIC_ROOT: u32 = 7;
 pub(in crate::world) const MECHANIC_SLEEP: u32 = 10;

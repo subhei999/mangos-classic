@@ -776,6 +776,79 @@ pub(in crate::world) async fn complete_item_use_spell_cast(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn complete_gameobject_use_spell_cast(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    mut prepared_spell: PreparedSpellCast,
+    spell_template: wow_db::SpellTemplateQuery,
+    spell_profile: SpellCastProfile,
+    targets: SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    let character_guid = character.guid;
+    let character_level = character.level;
+    let map_id = character.position.map_id;
+
+    send_packet(
+        stream,
+        WorldOpcode::SmsgCastResult as u16,
+        &build_cast_result_ok_body(spell_template.id),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let spell_go_body = prepared_spell.spell_go_body(caster, &targets)?;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgSpellGo as u16,
+        &spell_go_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    deps.shared_world
+        .sessions
+        .dispatch(
+            deps.shared_world
+                .maps
+                .broadcast_nearby_player_packet(
+                    map_id,
+                    character_guid,
+                    PLAYER_VISIBILITY_RADIUS_YARDS,
+                    OutboundWorldPacket {
+                        opcode: WorldOpcode::SmsgSpellGo as u16,
+                        body: spell_go_body,
+                    },
+                )
+                .await,
+        )
+        .await;
+
+    apply_player_spell_impact(
+        stream,
+        deps,
+        session,
+        caster,
+        character_guid,
+        character_level,
+        map_id,
+        &spell_template,
+        &spell_profile,
+        &targets,
+        None,
+        now,
+        header_crypto,
+    )
+    .await?;
+    prepared_spell.finish();
+    Ok(())
+}
+
 impl PendingSpellCastTargets {
     fn from_spell_targets(targets: &SpellCastTargets) -> Self {
         Self {
@@ -1719,16 +1792,17 @@ pub(in crate::world) async fn handle_opening_spell(
         warn!("Ignoring Opening spell outside gameobject interaction range");
         return Ok(());
     }
-    if !gameobject_chest_has_loot_id(&gameobject.spawn.template) {
-        warn!("Ignoring Opening spell for gameobject without chest loot");
+    if !gameobject_opens_with_opening_spell(&gameobject.spawn.template) {
+        warn!("Ignoring Opening spell for unsupported gameobject");
         return Ok(());
     }
-    if gameobject_chest_loot_is_exclusively_quest_drops(
-        shared_world.object_mgr,
-        world_db_pool,
-        &gameobject.spawn.template,
-    )
-    .await?
+    if gameobject_chest_has_loot_id(&gameobject.spawn.template)
+        && gameobject_chest_loot_is_exclusively_quest_drops(
+            shared_world.object_mgr,
+            world_db_pool,
+            &gameobject.spawn.template,
+        )
+        .await?
         && select_db_gameobject_loot_item_for_character(
             shared_world.object_mgr,
             world_db_pool,
@@ -1831,8 +1905,8 @@ pub(in crate::world) async fn complete_opening_spell_cast(
         warn!("Ignoring completed Opening spell outside gameobject interaction range");
         return Ok(());
     }
-    if !gameobject_chest_has_loot_id(&gameobject.spawn.template) {
-        warn!("Ignoring completed Opening spell for gameobject without chest loot");
+    if !gameobject_opens_with_opening_spell(&gameobject.spawn.template) {
+        warn!("Ignoring completed Opening spell for unsupported gameobject");
         return Ok(());
     }
     targets.target_mask |= SPELL_CAST_TARGET_GAMEOBJECT;
@@ -1866,6 +1940,19 @@ pub(in crate::world) async fn complete_opening_spell_cast(
         )
         .await;
     shared_world.sessions.dispatch(observer_go).await;
+
+    if gameobject.spawn.template.object_type == GO_TYPE_QUESTGIVER {
+        handle_gameobject_questgiver_use(
+            stream,
+            shared_world.object_mgr,
+            world_db_pool,
+            session,
+            gameobject_guid,
+            header_crypto,
+        )
+        .await?;
+        return Ok(());
+    }
 
     let loot_items = select_db_gameobject_loot_item_for_character(
         shared_world.object_mgr,
@@ -1904,6 +1991,13 @@ pub(in crate::world) async fn complete_opening_spell_cast(
         Some(header_crypto),
     )
     .await
+}
+
+pub(in crate::world) fn gameobject_opens_with_opening_spell(
+    template: &wow_db::GameObjectTemplateQuery,
+) -> bool {
+    gameobject_chest_has_loot_id(template)
+        || (template.object_type == GO_TYPE_QUESTGIVER && template.raw_data[0] != 0)
 }
 
 pub(in crate::world) fn opening_spell_cast_profile(spell_id: u32) -> SpellCastProfile {

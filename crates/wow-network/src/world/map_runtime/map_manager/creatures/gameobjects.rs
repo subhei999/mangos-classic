@@ -1,6 +1,29 @@
 use super::*;
 
 impl MapRuntimeManager {
+    pub(in crate::world) async fn create_temporary_gameobject(
+        &self,
+        map_id: u32,
+        owner_character_guid: u32,
+        spawn: wow_db::GameObjectSpawnQuery,
+        created_by: ObjectGuid,
+        expires_at: Instant,
+    ) -> anyhow::Result<
+        Option<(
+            Vec<OutboundWorldPacket>,
+            Vec<(SessionId, OutboundWorldPacket)>,
+        )>,
+    > {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let event = map.lock().await.create_temporary_gameobject(
+            owner_character_guid,
+            spawn,
+            created_by,
+            expires_at,
+        )?;
+        Ok(event)
+    }
+
     pub(in crate::world) async fn db_gameobject_snapshot(
         &self,
         map_id: u32,

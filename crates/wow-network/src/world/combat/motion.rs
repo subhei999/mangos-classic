@@ -126,7 +126,6 @@ pub(in crate::world) fn advance_db_creature_motion_runtime(
                 now,
             ) else {
                 creature.current_position = chase.destination;
-                creature.motion = CreatureMotionState::Idle;
                 return;
             };
             creature.current_position = position;
@@ -570,6 +569,37 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
     if creature.has_waypoint_movement() && creature.waypoint_resume_position.is_none() {
         creature.waypoint_resume_position = Some(start);
     }
+    if let CreatureMotionState::Chase(chase) = &creature.motion {
+        if chase.target == target {
+            // Retail-feel chase commits to an active spline; once landed, the
+            // normal recheck below can quickly correct small backpedal shifts.
+            if !db_creature_chase_motion_arrived(creature, chase) {
+                creature.pending_chase_launch = None;
+                return None;
+            }
+            if now < chase.recheck_at {
+                return None;
+            }
+            if !db_creature_chase_requires_new_position(creature, chase, target_position) {
+                creature.pending_chase_launch = None;
+                return None;
+            }
+            if !db_creature_chase_endpoint_reaches_target(
+                creature,
+                creature.current_position,
+                target_position,
+            ) {
+                creature.pending_chase_launch = None;
+            } else if db_creature_chase_launch_waits_for_stable_target(
+                creature,
+                target,
+                target_position,
+                now,
+            ) {
+                return None;
+            }
+        }
+    }
     let path_result = if let Some(chase_destination) = chase_destination {
         db_creature_path_to_destination(
             navigation,
@@ -596,22 +626,6 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
     {
         return None;
     }
-    if let CreatureMotionState::Chase(chase) = &creature.motion {
-        if chase.target == target {
-            if now < chase.recheck_at {
-                return None;
-            }
-            let destination_delta = distance_2d(
-                chase.destination.x,
-                chase.destination.y,
-                destination.x,
-                destination.y,
-            );
-            if destination_delta <= DB_CREATURE_CHASE_REPATH_YARDS {
-                return None;
-            }
-        }
-    }
     let move_distance = distance_2d(start.x, start.y, destination.x, destination.y);
     if move_distance <= f32::EPSILON {
         return None;
@@ -620,6 +634,7 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
     let duration = db_creature_targeted_motion_duration(creature, start, &path, run);
     let spline_id = creature.next_spline_id;
     creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
+    creature.pending_chase_launch = None;
     creature.motion = CreatureMotionState::Chase(CreatureChaseMotion {
         target,
         start,
@@ -637,6 +652,80 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
         duration,
         run,
     })
+}
+
+fn db_creature_chase_launch_waits_for_stable_target(
+    creature: &mut DbCreatureRuntime,
+    target: ObjectGuid,
+    target_position: WorldPosition,
+    now: Instant,
+) -> bool {
+    let stable_at = now + Duration::from_millis(DB_CREATURE_CHASE_STABLE_LAUNCH_MILLIS);
+    let settle_distance = db_creature_chase_stop_distance(creature) * 0.5;
+    let Some(pending) = creature.pending_chase_launch.as_mut() else {
+        creature.pending_chase_launch = Some(PendingCreatureChaseLaunch {
+            target,
+            target_position,
+            ready_at: stable_at,
+        });
+        return true;
+    };
+    if pending.target != target || pending.target_position.map_id != target_position.map_id {
+        *pending = PendingCreatureChaseLaunch {
+            target,
+            target_position,
+            ready_at: stable_at,
+        };
+        return true;
+    }
+    if now < pending.ready_at {
+        return true;
+    }
+
+    let dx = pending.target_position.x - target_position.x;
+    let dy = pending.target_position.y - target_position.y;
+    let dz = pending.target_position.z - target_position.z;
+    if dx * dx + dy * dy + dz * dz > settle_distance * settle_distance {
+        pending.target_position = target_position;
+        pending.ready_at = stable_at;
+        return true;
+    }
+
+    creature.pending_chase_launch = None;
+    false
+}
+
+pub(in crate::world) fn db_creature_chase_motion_arrived(
+    creature: &DbCreatureRuntime,
+    chase: &CreatureChaseMotion,
+) -> bool {
+    creature.current_position.map_id == chase.destination.map_id
+        && distance_2d(
+            creature.current_position.x,
+            creature.current_position.y,
+            chase.destination.x,
+            chase.destination.y,
+        ) <= f32::EPSILON
+        && (creature.current_position.z - chase.destination.z).abs() <= f32::EPSILON
+}
+
+pub(in crate::world) fn db_creature_chase_requires_new_position(
+    creature: &DbCreatureRuntime,
+    chase: &CreatureChaseMotion,
+    target_position: WorldPosition,
+) -> bool {
+    if chase.destination.map_id != target_position.map_id {
+        return true;
+    }
+    // Real WoW appears to refresh melee chase toward the preferred landing
+    // distance, not merely when the old destination falls outside max swing
+    // range. This intentionally diverges from CMaNGOS' wider
+    // combined-reach-based RequiresNewPosition check.
+    let range = db_creature_chase_stop_distance(creature);
+    let dx = chase.destination.x - target_position.x;
+    let dy = chase.destination.y - target_position.y;
+    let dz = chase.destination.z - target_position.z;
+    dx * dx + dy * dy + dz * dz > range * range
 }
 
 pub(in crate::world) fn db_creature_chase_endpoint_reaches_target(

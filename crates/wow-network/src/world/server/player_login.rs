@@ -352,10 +352,12 @@ pub(in crate::world) async fn handle_player_login(
     .await?;
     let inventory_container_slots =
         load_inventory_container_slots(deps.world_db_pool, &session.inventory.items).await?;
-    let base_combat_stats = player_combat_stats_for_values_with_ammo(
+    let base_combat_stats = player_combat_stats_for_values_with_known_spells_and_ammo(
         character.class,
         character.level,
         &effective_world_stats,
+        &session.character.character_skills,
+        &session.character.active_spells,
         &equipped_templates,
         ammo_template.as_ref(),
     );
@@ -405,6 +407,7 @@ pub(in crate::world) async fn handle_player_login(
             ammo_template: ammo_template.as_ref(),
             spells: &spells,
             skills: &session.character.character_skills,
+            active_spells: &session.character.active_spells,
             reputations: &session.character.character_reputations,
             quest_statuses: &session.quests.quest_statuses,
             active_auras: &session.auras.active_auras,

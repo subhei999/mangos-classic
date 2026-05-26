@@ -12,6 +12,7 @@ pub(in crate::world) struct SpellEffectValueContext {
     pub(in crate::world) spell_level: u32,
     pub(in crate::world) spell_rank_level: Option<i32>,
     pub(in crate::world) combo_points: u8,
+    pub(in crate::world) spell_healing_bonus_done: i32,
 }
 
 impl SpellEffectValueContext {
@@ -26,6 +27,7 @@ impl SpellEffectValueContext {
             spell_level: template.spell_level,
             spell_rank_level: None,
             combo_points,
+            spell_healing_bonus_done: 0,
         }
     }
 
@@ -38,6 +40,11 @@ impl SpellEffectValueContext {
             spell_rank_level: Some(spell_rank_level),
             ..Self::unranked(template, combo_points)
         }
+    }
+
+    pub(in crate::world) fn with_spell_healing_bonus_done(mut self, amount: i32) -> Self {
+        self.spell_healing_bonus_done = amount;
+        self
     }
 }
 

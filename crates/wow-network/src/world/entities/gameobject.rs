@@ -5,6 +5,8 @@ pub(in crate::world) struct GameObjectRuntime {
     pub(in crate::world) spawn: wow_db::GameObjectSpawnQuery,
     pub(in crate::world) client_visible: bool,
     pub(in crate::world) consumed_until: Option<Instant>,
+    pub(in crate::world) created_by: Option<ObjectGuid>,
+    pub(in crate::world) expires_at: Option<Instant>,
 }
 
 impl GameObjectRuntime {
@@ -13,6 +15,22 @@ impl GameObjectRuntime {
             spawn,
             client_visible: true,
             consumed_until: None,
+            created_by: None,
+            expires_at: None,
+        }
+    }
+
+    pub(in crate::world) fn temporary(
+        spawn: wow_db::GameObjectSpawnQuery,
+        created_by: ObjectGuid,
+        expires_at: Instant,
+    ) -> Self {
+        Self {
+            spawn,
+            client_visible: true,
+            consumed_until: None,
+            created_by: Some(created_by),
+            expires_at: Some(expires_at),
         }
     }
 
@@ -28,10 +46,29 @@ impl GameObjectRuntime {
         self.consumed_until.is_some_and(|until| now < until)
     }
 
+    pub(in crate::world) fn is_expired(&self, now: Instant) -> bool {
+        self.expires_at.is_some_and(|expires_at| now >= expires_at)
+    }
+
+    pub(in crate::world) fn is_unavailable(&self, now: Instant) -> bool {
+        self.is_consumed(now) || self.is_expired(now)
+    }
+
     pub(in crate::world) fn mark_consumed(&mut self, now: Instant) {
         let delay = gameobject_respawn_delay(&self.spawn);
         self.client_visible = false;
         self.consumed_until = Some(now + delay);
+    }
+
+    pub(in crate::world) fn spellcaster_spell_id(&self) -> Option<u32> {
+        (self.spawn.template.object_type == GO_TYPE_SPELLCASTER
+            && self.spawn.template.raw_data[0] != 0)
+            .then_some(self.spawn.template.raw_data[0])
+    }
+
+    pub(in crate::world) fn spellcaster_party_only(&self) -> bool {
+        self.spawn.template.object_type == GO_TYPE_SPELLCASTER
+            && self.spawn.template.raw_data[2] != 0
     }
 }
 
@@ -110,7 +147,11 @@ pub(in crate::world) fn build_db_gameobject_runtime_create_block_with_dynamic_fl
             1.0f32.to_bits()
         },
     )?;
-    set_object_guid_update_values(&mut values, GAMEOBJECT_FIELD_CREATED_BY, None)?;
+    set_object_guid_update_values(
+        &mut values,
+        GAMEOBJECT_FIELD_CREATED_BY,
+        gameobject.created_by,
+    )?;
     set_update_value(
         &mut values,
         GAMEOBJECT_DISPLAYID,
@@ -202,7 +243,9 @@ pub(in crate::world) fn gameobject_dynamic_flags_for_quest_statuses(
 
     match gameobject.spawn.template.object_type {
         GO_TYPE_CHEST | GO_TYPE_QUESTGIVER => GO_DYNFLAG_LO_ACTIVATE | GO_DYNFLAG_LO_SPARKLE,
-        GO_TYPE_GENERIC | GO_TYPE_SPELL_FOCUS | GO_TYPE_GOOBER => GO_DYNFLAG_LO_ACTIVATE,
+        GO_TYPE_GENERIC | GO_TYPE_SPELL_FOCUS | GO_TYPE_GOOBER | GO_TYPE_SPELLCASTER => {
+            GO_DYNFLAG_LO_ACTIVATE
+        }
         _ => 0,
     }
 }
@@ -220,12 +263,20 @@ pub(in crate::world) fn gameobject_activates_for_quest_statuses(
                 | GO_TYPE_GENERIC
                 | GO_TYPE_SPELL_FOCUS
                 | GO_TYPE_GOOBER
+                | GO_TYPE_SPELLCASTER
         );
     }
 
     if let Some(required_quest) = gameobject_required_active_quest(template) {
         return quest_statuses.get(&required_quest).is_some_and(|status| {
             status.status == QUEST_STATUS_INCOMPLETE && status.rewarded == 0
+        });
+    }
+    if template.object_type == GO_TYPE_QUESTGIVER {
+        return quest_statuses.values().any(|status| {
+            status.rewarded == 0
+                && (status.status == QUEST_STATUS_INCOMPLETE
+                    || status.status == QUEST_STATUS_COMPLETE)
         });
     }
 

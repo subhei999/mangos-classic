@@ -137,11 +137,15 @@ pub(in crate::world) async fn dispatch_misc_packet(
         packets::ParsedWorldClientPacket::AreaTrigger(_) => {
             handle_area_trigger(
                 &mut *ctx.stream,
-                ctx.world_db_pool,
-                SharedWorldDeps {
-                    object_mgr: ctx.runtime_state.object_mgr.as_ref(),
-                    maps: &ctx.runtime_state.maps,
-                    sessions: &ctx.runtime_state.sessions,
+                AreaTriggerDeps {
+                    character_db_pool: ctx.character_db_pool,
+                    world_db_pool: ctx.world_db_pool,
+                    world_data_files: ctx.runtime_state.world_data_files.as_ref(),
+                    shared_world: SharedWorldDeps {
+                        object_mgr: ctx.runtime_state.object_mgr.as_ref(),
+                        maps: &ctx.runtime_state.maps,
+                        sessions: &ctx.runtime_state.sessions,
+                    },
                 },
                 packet.area_trigger()?,
                 &mut *ctx.session,
@@ -194,18 +198,50 @@ pub(in crate::world) async fn dispatch_misc_packet(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(in crate::world) struct AreaTriggerDeps<'a> {
+    pub(in crate::world) character_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_db_pool: &'a MySqlPool,
+    pub(in crate::world) world_data_files: &'a WorldDataFiles,
+    pub(in crate::world) shared_world: SharedWorldDeps<'a>,
+}
+
 pub(in crate::world) async fn handle_area_trigger(
     stream: &mut WorldPacketSink,
-    world_db_pool: &MySqlPool,
-    shared_world: SharedWorldDeps<'_>,
+    deps: AreaTriggerDeps<'_>,
     request: wow_proto::AreaTriggerRequest,
     session: &mut WorldSessionState,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    if session.character.active_character.is_none() {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    if !area_trigger_contains_client_position(
+        deps.world_data_files,
+        request.trigger_id,
+        character.position,
+    ) {
+        warn!(
+            trigger = request.trigger_id,
+            map = character.position.map_id,
+            x = character.position.x,
+            y = character.position.y,
+            z = character.position.z,
+            "Ignoring area trigger outside DBC bounds"
+        );
         return Ok(());
     }
-    if !wow_db::is_tavern_area_trigger(world_db_pool, request.trigger_id).await? {
+    grant_area_trigger_exploration_credit(
+        stream,
+        deps.character_db_pool,
+        deps.shared_world.object_mgr,
+        deps.world_db_pool,
+        request.trigger_id,
+        session,
+        header_crypto,
+    )
+    .await?;
+    if !wow_db::is_tavern_area_trigger(deps.world_db_pool, request.trigger_id).await? {
         return Ok(());
     }
     if session.rest.rest_type == RestType::InCity {
@@ -213,13 +249,25 @@ pub(in crate::world) async fn handle_area_trigger(
     }
     set_rest_type(
         stream,
-        shared_world.maps,
+        deps.shared_world.maps,
         session,
         header_crypto,
         RestType::InTavern,
         Some(request.trigger_id),
     )
     .await
+}
+
+const AREA_TRIGGER_INTERACTION_DELTA_YARDS: f32 = 5.0;
+
+pub(in crate::world) fn area_trigger_contains_client_position(
+    world_data_files: &WorldDataFiles,
+    trigger_id: u32,
+    position: WorldPosition,
+) -> bool {
+    world_data_files
+        .area_trigger_contains_position(trigger_id, position, AREA_TRIGGER_INTERACTION_DELTA_YARDS)
+        .unwrap_or(false)
 }
 
 pub(in crate::world) async fn handle_zone_update(

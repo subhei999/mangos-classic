@@ -564,6 +564,9 @@ pub(in crate::world) enum AuraStatModifier {
         school_mask: u32,
         percent: i32,
     },
+    TotalThreat {
+        amount: i32,
+    },
     Taunt,
     DamageDonePercent {
         school_mask: u32,
@@ -580,6 +583,10 @@ pub(in crate::world) enum AuraStatModifier {
     ResistancePercent {
         school_mask: u32,
         percent: i32,
+    },
+    HealingDone {
+        school_mask: u32,
+        amount: i32,
     },
     HealingTaken {
         school_mask: u32,
@@ -617,6 +624,10 @@ pub(in crate::world) enum AuraStatModifier {
     FeatherFall,
     DispelType {
         dispel_type: u32,
+    },
+    ReflectSpellsSchool {
+        school_mask: u32,
+        percent: i32,
     },
     SchoolAbsorb {
         school_mask: u32,
@@ -660,6 +671,7 @@ pub(in crate::world) enum AuraStatModifier {
         resource_type: i32,
     },
     Ghost,
+    Hover,
     WaterWalk,
     Dummy {
         aura_name: u32,

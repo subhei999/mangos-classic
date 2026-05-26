@@ -252,6 +252,45 @@ pub(in crate::world) async fn handle_trainer_buy_spell(
         )
         .await?;
     }
+    if list_spell.learned_spell == SPELL_PASSIVE_PARRY {
+        let character_guid = character.guid;
+        let map_id = character.position.map_id;
+        let race = character.race;
+        let class = character.class;
+        let level = character.level;
+        let world_stats = wow_db::get_player_world_stats(world_db_pool, race, class, level).await?;
+        let equipped_templates =
+            load_equipped_item_templates(world_db_pool, &session.inventory.items).await?;
+        let ammo_template = load_selected_ammo_template(
+            world_db_pool,
+            &session.inventory.items,
+            session.character.player_ammo_id,
+        )
+        .await?;
+        let base_combat_stats = player_combat_stats_for_values_with_known_spells_and_ammo(
+            class,
+            level,
+            &world_stats,
+            &session.character.character_skills,
+            &session.character.active_spells,
+            &equipped_templates,
+            ammo_template.as_ref(),
+        );
+        let combat_stats =
+            combat_stats_with_active_auras(base_combat_stats, &session.auras.active_auras);
+        maps.sync_player_gameplay_state(map_id, character_guid, session)
+            .await;
+        let _observer_packets = maps
+            .update_player_combat_stats(map_id, character_guid, base_combat_stats)
+            .await?;
+        send_packet(
+            stream,
+            WorldOpcode::SmsgUpdateObject as u16,
+            &build_player_combat_stats_update_body(character_guid, &combat_stats)?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
     let known_spells = wow_db::get_character_spells(character_db_pool, character.guid).await?;
     send_known_proficiencies(
         stream,

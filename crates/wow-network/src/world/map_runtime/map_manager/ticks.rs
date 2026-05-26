@@ -387,11 +387,13 @@ impl MapRuntimeManager {
         let maps = { self.maps.lock().await.values().cloned().collect::<Vec<_>>() };
         let mut packets = Vec::new();
         for map in maps {
-            packets.extend(map.lock().await.advance_dynamic_objects(
+            let mut map = map.lock().await;
+            packets.extend(map.advance_dynamic_objects(
                 &self.faction_templates,
                 now,
                 now_epoch_secs,
             )?);
+            packets.extend(map.advance_temporary_gameobjects(now));
         }
         Ok(packets)
     }

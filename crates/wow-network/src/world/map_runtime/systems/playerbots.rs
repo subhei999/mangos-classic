@@ -2145,11 +2145,10 @@ pub(in crate::world) fn playerbot_creature_can_reach_player(
     if creature.current_position.map_id != player.position.map_id {
         return false;
     }
-    let reach = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
+    let reach = db_creature_melee_reach_against_player(creature, player.movement_flags);
     let dx = creature.current_position.x - player.position.x;
     let dy = creature.current_position.y - player.position.y;
-    let dz = creature.current_position.z - player.position.z;
-    if dx * dx + dy * dy + dz * dz > reach * reach {
+    if dx * dx + dy * dy > reach * reach {
         return false;
     }
     db_creature_navigation_check(navigation, creature.current_position, player.position).is_clear()

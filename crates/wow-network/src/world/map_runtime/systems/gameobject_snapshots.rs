@@ -111,7 +111,7 @@ impl MapRuntime {
                 let Some(player) = self.players.get_mut(&player_guid) else {
                     continue;
                 };
-                if gameobject.is_consumed(now) || !player.visible_objects.insert(guid) {
+                if gameobject.is_unavailable(now) || !player.visible_objects.insert(guid) {
                     continue;
                 }
                 let create_block = build_db_gameobject_runtime_create_block_for_quest_statuses(
@@ -127,6 +127,91 @@ impl MapRuntime {
             }
         }
         Ok(packets)
+    }
+
+    pub(in crate::world) fn create_temporary_gameobject(
+        &mut self,
+        owner_character_guid: u32,
+        spawn: wow_db::GameObjectSpawnQuery,
+        created_by: ObjectGuid,
+        expires_at: Instant,
+    ) -> anyhow::Result<
+        Option<(
+            Vec<OutboundWorldPacket>,
+            Vec<(SessionId, OutboundWorldPacket)>,
+        )>,
+    > {
+        let Some(owner) = self.players.get(&owner_character_guid) else {
+            return Ok(None);
+        };
+        if owner.client_session_id().is_none() {
+            return Ok(None);
+        }
+
+        let counter = self.next_temporary_gameobject_counter;
+        self.next_temporary_gameobject_counter = self
+            .next_temporary_gameobject_counter
+            .wrapping_add(1)
+            .max(0x00F0_0000);
+
+        let mut spawn = spawn;
+        spawn.guid = counter;
+        let gameobject = DbGameObjectRuntime::temporary(spawn, created_by, expires_at);
+        let guid = gameobject.guid();
+        let position = gameobject.position();
+        let grid_coord = grid_coord_for_position(position);
+        let cell_coord = cell_coord_for_position(position);
+
+        self.grids.entry(grid_coord).or_default().last_touched = Instant::now();
+        self.grids
+            .entry(grid_coord)
+            .or_default()
+            .cells
+            .entry(cell_coord)
+            .or_default()
+            .gameobjects
+            .insert(guid.raw());
+        self.gameobjects.insert(guid.raw(), gameobject.clone());
+        self.refresh_grid_state(grid_coord);
+
+        let dynamic_flags =
+            gameobject_dynamic_flags_for_quest_statuses(&gameobject, &HashMap::new());
+        let create_body = build_update_object_body(&[
+            build_db_gameobject_runtime_create_block_with_dynamic_flags(
+                &gameobject,
+                dynamic_flags,
+            )?,
+        ]);
+
+        let direct_packets = vec![OutboundWorldPacket {
+            opcode: WorldOpcode::SmsgUpdateObject as u16,
+            body: create_body.clone(),
+        }];
+
+        let mut observer_packets = Vec::new();
+        for player_guid in self.nearby_player_guids(position, CREATURE_SPAWN_RADIUS_YARDS, None) {
+            let Some(player) = self.players.get_mut(&player_guid) else {
+                continue;
+            };
+            if !player.visible_objects.insert(guid) || player_guid == owner_character_guid {
+                continue;
+            }
+            let Some(session_id) = player.client_session_id() else {
+                continue;
+            };
+            observer_packets.push((
+                session_id,
+                OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgUpdateObject as u16,
+                    body: create_body.clone(),
+                },
+            ));
+        }
+        if let Some(player) = self.players.get_mut(&owner_character_guid) {
+            player.visible_objects.insert(guid);
+        }
+
+        Ok(Some((direct_packets, observer_packets)))
     }
 
     pub(in crate::world) fn delete_db_gameobject_runtime(
@@ -259,7 +344,7 @@ impl MapRuntime {
             .copied()
             .filter(|guid| {
                 if let Some(gameobject) = nearby_by_guid.get(guid) {
-                    return gameobject.is_consumed(now);
+                    return gameobject.is_unavailable(now);
                 }
                 !self.gameobjects.get(guid).is_some_and(|gameobject| {
                     is_position_inside_radius(
@@ -276,7 +361,7 @@ impl MapRuntime {
         let mut create_guids = nearby_gameobjects
             .iter()
             .filter(|gameobject| {
-                !gameobject.is_consumed(now)
+                !gameobject.is_unavailable(now)
                     && !previously_visible.contains(&gameobject.guid().raw())
             })
             .map(|gameobject| gameobject.guid())
@@ -327,5 +412,27 @@ impl MapRuntime {
             })
             .collect();
         Some((snapshot, packets))
+    }
+
+    pub(in crate::world) fn advance_temporary_gameobjects(
+        &mut self,
+        now: Instant,
+    ) -> Vec<(SessionId, OutboundWorldPacket)> {
+        let mut packets = Vec::new();
+        let expired_guids = self
+            .gameobjects
+            .iter()
+            .filter_map(|(guid, gameobject)| {
+                (gameobject.expires_at.is_some() && gameobject.is_expired(now)).then_some(*guid)
+            })
+            .collect::<Vec<_>>();
+        for raw_guid in expired_guids {
+            if let Some(destroy_packets) =
+                self.delete_db_gameobject_runtime(ObjectGuid::from_raw(raw_guid), None)
+            {
+                packets.extend(destroy_packets);
+            }
+        }
+        packets
     }
 }

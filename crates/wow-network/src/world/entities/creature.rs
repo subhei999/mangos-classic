@@ -12,6 +12,7 @@ pub(in crate::world) struct CreatureCombatState {
 pub(in crate::world) struct CreatureThreatEntry {
     pub(in crate::world) victim: ObjectGuid,
     pub(in crate::world) threat: f32,
+    pub(in crate::world) fadeout_threat_reduction: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +69,7 @@ pub(in crate::world) struct Creature {
     pub(in crate::world) display_id_override: Option<u32>,
     pub(in crate::world) aura_display_id_override: Option<u32>,
     pub(in crate::world) pending_movement_scripts: Vec<u32>,
+    pub(in crate::world) pending_chase_launch: Option<PendingCreatureChaseLaunch>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

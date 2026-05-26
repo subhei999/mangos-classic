@@ -69,6 +69,7 @@ impl DbCreatureRuntime {
             display_id_override: None,
             aura_display_id_override: None,
             pending_movement_scripts: Vec::new(),
+            pending_chase_launch: None,
         }
     }
 

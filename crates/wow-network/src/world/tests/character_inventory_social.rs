@@ -458,6 +458,7 @@ fn self_spawn_update_includes_cmangos_player_vitals_and_defaults() {
         &world_stats,
         &world_stats,
         &skills,
+        &HashSet::new(),
         &std::collections::HashMap::new(),
         &equipped,
         None,
@@ -574,6 +575,7 @@ fn class_power_defaults_match_cmangos_create_powers() {
         &mage_stats,
         &mage_stats,
         &[],
+        &HashSet::new(),
         &std::collections::HashMap::new(),
         &[],
         None,
@@ -601,6 +603,7 @@ fn class_power_defaults_match_cmangos_create_powers() {
         &rogue_stats,
         &rogue_stats,
         &[],
+        &HashSet::new(),
         &std::collections::HashMap::new(),
         &[],
         None,
@@ -648,6 +651,7 @@ fn login_player_create_values_include_visible_saved_buffs() {
         &world_stats,
         &world_stats,
         &[],
+        &HashSet::new(),
         &std::collections::HashMap::new(),
         &[],
         None,
@@ -681,6 +685,7 @@ fn login_player_create_values_preserve_zero_health_corpse_state() {
         &world_stats,
         &world_stats,
         &[],
+        &HashSet::new(),
         &std::collections::HashMap::new(),
         &[],
         None,
@@ -1394,6 +1399,8 @@ fn inventory_recomputed_combat_stats_keep_passive_resistance_on_self_update() {
         world_stats,
         &[],
         None,
+        &[],
+        &HashSet::new(),
         &[nature_resistance],
     );
 
@@ -1459,7 +1466,16 @@ fn equipped_item_primary_stats_feed_world_and_combat_stats_like_cmangos() {
     assert_eq!(geared_world_stats.stats, [14, 13, 15, 12, 17]);
 
     let (_, combat_stats) =
-        inventory_recomputed_combat_stats(1, 10, world_stats, &equipped, None, &[]);
+        inventory_recomputed_combat_stats(
+            1,
+            10,
+            world_stats,
+            &equipped,
+            None,
+            &[],
+            &HashSet::new(),
+            &[],
+        );
     assert_eq!(combat_stats.intellect, 12);
     assert_eq!(combat_stats.armor, 46);
     assert_eq!(
@@ -1666,6 +1682,35 @@ fn inventory_use_validation_returns_cmangos_level_skill_spell_and_reputation_err
         ),
         EQUIP_ERR_CANT_EQUIP_REPUTATION
     );
+}
+
+#[test]
+fn trained_dual_wield_allows_one_hand_weapon_in_offhand() {
+    let sword = test_item_template(25, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    let without_dual_wield = HashSet::new();
+    let mut with_dual_wield = HashSet::new();
+    with_dual_wield.insert(SPELL_PASSIVE_DUAL_WIELD);
+
+    assert!(!item_fits_equipment_slot_for_character(
+        &sword,
+        EQUIPMENT_SLOT_OFFHAND,
+        &without_dual_wield,
+    ));
+    assert!(item_fits_equipment_slot_for_character(
+        &sword,
+        EQUIPMENT_SLOT_OFFHAND,
+        &with_dual_wield,
+    ));
+}
+
+#[test]
+fn trained_parry_shows_base_parry_percent_from_defense_skill() {
+    let mut active_spells = HashSet::new();
+    active_spells.insert(SPELL_PASSIVE_PARRY);
+    let skills = [test_skill(SKILL_DEFENSE, 50, 50)];
+
+    assert_eq!(player_parry_percent(10, &skills, &HashSet::new()), 0.0);
+    assert_eq!(player_parry_percent(10, &skills, &active_spells), 5.0);
 }
 
 #[test]
@@ -1972,7 +2017,7 @@ fn autoequip_bag_prefers_first_empty_bag_slot() {
     }];
 
     assert_eq!(
-        preferred_equipment_slot_for_inventory(&bag, &inventory),
+        preferred_equipment_slot_for_inventory(&bag, &inventory, &HashSet::new()),
         Some(INVENTORY_SLOT_BAG_START + 1)
     );
 }
@@ -2005,7 +2050,7 @@ fn autoequip_bag_has_no_destination_when_all_bag_slots_are_full() {
         .collect::<Vec<_>>();
 
     assert_eq!(
-        preferred_equipment_slot_for_inventory(&bag, &inventory),
+        preferred_equipment_slot_for_inventory(&bag, &inventory, &HashSet::new()),
         None
     );
 }
@@ -3054,7 +3099,7 @@ fn equipped_bag_to_backpack_move_updates_player_slot_and_clears_container_slot()
     let body = build_update_object_body(
         &build_inventory_move_update_blocks(character_guid, &inventory, &request).unwrap(),
     );
-    assert_eq!(&body[0..4], &2u32.to_le_bytes());
+    assert_eq!(&body[0..4], &3u32.to_le_bytes());
     assert_eq!(body[4], 0);
 
     let mut block = &body[5..];
@@ -3072,10 +3117,18 @@ fn equipped_bag_to_backpack_move_updates_player_slot_and_clears_container_slot()
     );
 
     let (container_values, rest) = decode_values_update_block(block, bag_guid);
-    assert!(rest.is_empty());
+    block = rest;
     let container_slot_field = CONTAINER_FIELD_SLOT_1 + 3 * 2;
     assert_eq!(container_values[container_slot_field], Some(0));
     assert_eq!(container_values[container_slot_field + 1], Some(0));
+
+    let (moved_values, rest) = decode_values_update_block(block, moved_guid);
+    assert!(rest.is_empty());
+    assert_eq!(
+        moved_values[0x008],
+        Some(ObjectGuid::new(HighGuid::Player, 0, character_guid).raw() as u32)
+    );
+    assert_eq!(moved_values[0x009], Some(0));
 }
 
 #[test]
@@ -3821,6 +3874,7 @@ fn maps_classic_race_gender_display_ids() {
                     next_level_xp: 400,
                 },
                 &[],
+                &HashSet::new(),
                 &std::collections::HashMap::new(),
                 &[],
                 None,

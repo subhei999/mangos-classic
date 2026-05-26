@@ -910,10 +910,14 @@ impl MapRuntime {
         target_position: WorldPosition,
     ) -> Option<(DbCreatureRuntime, WorldPosition, u32)> {
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
-        // CMaNGOS Unit::SetFacingToObject refuses in-place facing while a movement
-        // spline is active. Chase splines already carry the target-facing flag.
-        if !matches!(creature.motion, CreatureMotionState::Idle) {
-            return None;
+        // CMaNGOS Unit::SetFacingToObject refuses in-place facing while a
+        // movement spline is active. An arrived chase keeps its movement
+        // generator for repath timing, but its spline has completed.
+        match &creature.motion {
+            CreatureMotionState::Idle => {}
+            CreatureMotionState::Chase(chase)
+                if db_creature_chase_motion_arrived(creature, chase) => {}
+            _ => return None,
         }
         let dx = target_position.x - creature.current_position.x;
         let dy = target_position.y - creature.current_position.y;

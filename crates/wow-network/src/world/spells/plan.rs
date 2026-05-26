@@ -200,10 +200,14 @@ impl<'a> SpellInfo<'a> {
             Some(SpellCastKind::AuraApplication)
         } else if self.has_effect(SpellEffectDispatch::CreateItem) {
             Some(SpellCastKind::CreateItem)
+        } else if self.has_effect(SpellEffectDispatch::TransportDoor) {
+            Some(SpellCastKind::AuraApplication)
         } else if self.has_effect(SpellEffectDispatch::InterruptCast) {
             Some(SpellCastKind::Interrupt)
         } else if self.has_effect(SpellEffectDispatch::ApplyAura) {
             Some(SpellCastKind::AuraApplication)
+        } else if self.has_power_burn_effect() {
+            Some(SpellCastKind::InstantDamage)
         } else if self.has_direct_damage_effect() {
             Some(SpellCastKind::InstantDamage)
         } else if self.has_effect(SpellEffectDispatch::PersistentAreaAura) {

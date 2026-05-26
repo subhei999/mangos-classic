@@ -309,7 +309,7 @@ impl MapRuntime {
                 check: PlayerMeleeCheck::TargetNotAlive,
             };
         }
-        let reach = combined_melee_reach(PLAYER_COMBAT_REACH_YARDS, creature.combat_reach());
+        let reach = player_melee_reach_against_db_creature(player.movement_flags, &creature);
         let dx = player.position.x - creature.current_position.x;
         let dy = player.position.y - creature.current_position.y;
         let dz = player.position.z - creature.current_position.z;
@@ -984,6 +984,7 @@ impl MapRuntime {
             caster,
             target,
             spell_id: plan.spell_id,
+            reflectable: spell_template_is_reflectable(template),
             school_mask: spell_school_mask_from_school(template.school),
             mechanic: template.mechanic,
             requires_behind: plan.requires_behind,
@@ -1436,6 +1437,7 @@ impl MapRuntime {
                 ),
                 aura_event: None,
                 creature_aura_event: None,
+                reflected_creature_damage_event: None,
             }));
         }
         match self.active_creature_combats.get(&attacker.raw()) {
@@ -1466,6 +1468,7 @@ impl MapRuntime {
                 ),
                 aura_event: None,
                 creature_aura_event: None,
+                reflected_creature_damage_event: None,
             }));
         }
         self.active_creature_spell_casts.remove(&attacker.raw());
@@ -1477,11 +1480,18 @@ impl MapRuntime {
             destination: None,
         };
         let pending_aura = cast.aura.clone();
+        let reflected_pending_aura = pending_aura.clone();
         let aura_only_miss_info = if matches!(cast.effect, ActiveDbCreatureSpellEffect::None) {
             if cast.target.is_player() {
                 self.players.get(&cast.target.counter()).and_then(|player| {
-                    active_aura_has_mechanic_immunity(&player.active_auras, cast.mechanic)
-                        .then_some(SPELL_MISS_IMMUNE)
+                    if cast.reflectable
+                        && active_auras_reflect_spell_school(&player.active_auras, cast.school_mask)
+                    {
+                        Some(SPELL_MISS_REFLECT)
+                    } else {
+                        active_aura_has_mechanic_immunity(&player.active_auras, cast.mechanic)
+                            .then_some(SPELL_MISS_IMMUNE)
+                    }
                 })
             } else if cast.target.is_creature() {
                 self.creatures.get(&cast.target.raw()).and_then(|creature| {
@@ -1522,6 +1532,7 @@ impl MapRuntime {
                     dmg_class,
                     attributes_ex2,
                     attributes_ex3,
+                    cast.reflectable,
                     now,
                 )?
                 else {
@@ -1554,6 +1565,7 @@ impl MapRuntime {
             }
         };
         let mut creature_aura_event = None;
+        let mut reflected_creature_damage_event = None;
         let aura_event = match (pending_aura, &effect) {
             (Some(aura), DbCreatureCompletedSpellEffect::PlayerDamage(damage))
                 if cast.target.is_player()
@@ -1575,12 +1587,62 @@ impl MapRuntime {
             }
             _ => None,
         };
+        let reflected_spell_missed = match &effect {
+            DbCreatureCompletedSpellEffect::AuraOnly => {
+                aura_only_miss_info == Some(SPELL_MISS_REFLECT)
+            }
+            DbCreatureCompletedSpellEffect::PlayerDamage(damage) => {
+                damage.outcome.miss_info == Some(SPELL_MISS_REFLECT)
+            }
+            _ => false,
+        };
+        if reflected_spell_missed && cast.target.is_player() {
+            let reflector_character_guid = cast.target.counter();
+            if let ActiveDbCreatureSpellEffect::Damage { amount, school, .. } = cast.effect {
+                if amount > 0 {
+                    reflected_creature_damage_event =
+                        self.apply_db_creature_damage(DbCreatureDamageRequest {
+                            creature_guid: attacker,
+                            killer: cast.target,
+                            damage: amount,
+                            melee_outcome: None,
+                            spell_damage_outcome: Some(SpellDamageOutcome {
+                                original_damage: amount,
+                                final_damage: amount,
+                                absorb: 0,
+                                resist: 0,
+                                blocked: 0,
+                                hit_info: 0,
+                                miss_info: None,
+                            }),
+                            spell_id: Some(cast.spell_id),
+                            spell_school: school,
+                            suppress_attacker_state: true,
+                            now,
+                            now_epoch_secs: current_unix_epoch_secs(),
+                            exclude_character_guid: Some(reflector_character_guid),
+                            corpse_loot: None,
+                        })?;
+                }
+            }
+            let reflected_target_alive = reflected_creature_damage_event
+                .as_ref()
+                .map(|event| event.creature.is_alive())
+                .unwrap_or(true);
+            if reflected_target_alive {
+                if let Some(aura) = reflected_pending_aura {
+                    creature_aura_event =
+                        self.apply_db_creature_aura(attacker, reflector_character_guid, aura, now)?;
+                }
+            }
+        }
         self.sync_db_creature_ooc_event_ai_tracking(attacker.raw(), now);
         Ok(Some(DbCreatureCompletedSpellCastEvent {
             spell_go_body,
             effect,
             aura_event,
             creature_aura_event,
+            reflected_creature_damage_event,
         }))
     }
 
@@ -1706,6 +1768,66 @@ impl MapRuntime {
                 }
             }
             packets.extend(creature_aura_event.observer_packets);
+        }
+        if let Some(reflected_damage) = event.reflected_creature_damage_event {
+            if let Some(session_id) = direct_session_id {
+                if let Some(body) = reflected_damage.spell_miss_log_body.clone() {
+                    packets.push((
+                        session_id,
+                        OutboundWorldPacket {
+                            opcode: WorldOpcode::SmsgSpellLogMiss as u16,
+                            body,
+                        },
+                    ));
+                }
+                if let Some(body) = reflected_damage.spell_non_melee_log_body.clone() {
+                    packets.push((
+                        session_id,
+                        OutboundWorldPacket {
+                            opcode: WorldOpcode::SmsgSpellNonMeleeDamageLog as u16,
+                            body,
+                        },
+                    ));
+                }
+                if let Some(body) = reflected_damage.attacker_state_body.clone() {
+                    packets.push((
+                        session_id,
+                        OutboundWorldPacket {
+                            opcode: WorldOpcode::SmsgAttackerStateUpdate as u16,
+                            body,
+                        },
+                    ));
+                }
+                packets.push((
+                    session_id,
+                    OutboundWorldPacket {
+                        opcode: WorldOpcode::SmsgUpdateObject as u16,
+                        body: reflected_damage.update_body.clone(),
+                    },
+                ));
+                for packet in reflected_damage.direct_packets.clone() {
+                    packets.push((session_id, packet));
+                }
+                if let Some(target_switch) = reflected_damage.target_switch.as_ref() {
+                    for packet in target_switch.direct_packets.clone() {
+                        packets.push((session_id, packet));
+                    }
+                }
+                if let Some(death) = reflected_damage.death_finalization.as_ref() {
+                    if let Some(packet) = death.motion_stop_packet.clone() {
+                        packets.push((session_id, packet));
+                    }
+                    packets.push((session_id, death.combat_flag_packet.clone()));
+                    packets.push((session_id, death.attack_stop_packet.clone()));
+                }
+            }
+            if let Some(target_switch) = reflected_damage.target_switch {
+                packets.extend(target_switch.observer_packets);
+            }
+            if let Some(death) = reflected_damage.death_finalization {
+                packets.extend(death.observer_packets);
+            }
+            packets.extend(reflected_damage.observer_packets);
         }
         packets
     }
@@ -2340,11 +2462,10 @@ impl MapRuntime {
         let Some(player) = self.players.get(&victim.counter()) else {
             return false;
         };
-        let reach = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
+        let reach = db_creature_melee_reach_against_player(creature, player.movement_flags);
         let dx = creature.current_position.x - player.position.x;
         let dy = creature.current_position.y - player.position.y;
-        let dz = creature.current_position.z - player.position.z;
-        dx * dx + dy * dy + dz * dz <= reach * reach
+        dx * dx + dy * dy <= reach * reach
     }
 
     pub(in crate::world) fn db_creature_has_player_in_arc(
@@ -2427,13 +2548,30 @@ impl MapRuntime {
             false
         };
         let damage = outcome.total_damage;
+        let damage_taken_charge_consumed = if damage > 0 {
+            self.players
+                .get_mut(&victim.counter())
+                .is_some_and(|player| {
+                    consume_active_aura_proc_charges(
+                        &mut player.active_auras,
+                        PROC_FLAG_TAKE_MELEE_SWING,
+                        0,
+                        now,
+                    )
+                })
+        } else {
+            false
+        };
+        let aura_changed = reactive_defense_triggered
+            || shield_block_consumed
+            || damage_taken_charge_consumed;
         if damage == 0 {
             let Some(victim_player) = self.players.get(&victim.counter()) else {
                 return Ok(None);
             };
             let victim_health = victim_player.health;
             let victim_position = victim_player.position;
-            let aura_packet = if reactive_defense_triggered || shield_block_consumed {
+            let aura_packet = if aura_changed {
                 Some(OutboundWorldPacket {
                     opcode: WorldOpcode::SmsgUpdateObject as u16,
                     body: build_player_aura_update_body(
@@ -2476,7 +2614,7 @@ impl MapRuntime {
             return Ok(Some(DbCreaturePlayerDamageEvent {
                 damage,
                 victim_health,
-                aura_changed: shield_block_consumed,
+                aura_changed,
                 combat,
                 direct_packets: Vec::new(),
                 aura_packet,
@@ -2498,7 +2636,7 @@ impl MapRuntime {
         let victim_health = applied.remaining_health;
         let victim_position = applied.position;
         let direct_packets = applied.direct_packets;
-        let aura_packet = if reactive_defense_triggered || applied.aura_packet.is_some() {
+        let aura_packet = if aura_changed || applied.aura_packet.is_some() {
             let Some(victim_player) = self.players.get(&victim.counter()) else {
                 return Ok(None);
             };
@@ -2516,7 +2654,7 @@ impl MapRuntime {
             None
         };
         let health_update_body = applied.health_packet.body.clone();
-        if damage > 0 {
+        if damage > 0 && self.db_creature_melee_hit_refreshes_combat_leash(attacker, victim) {
             self.refresh_db_creature_combat_leash(attacker, now);
         }
         let mut packet_outcome = outcome;
@@ -2561,7 +2699,7 @@ impl MapRuntime {
         Ok(Some(DbCreaturePlayerDamageEvent {
             damage,
             victim_health,
-            aura_changed: shield_block_consumed,
+            aura_changed,
             combat,
             direct_packets,
             aura_packet,
@@ -2569,6 +2707,24 @@ impl MapRuntime {
             health_update_body,
             observer_packets,
         }))
+    }
+
+    fn db_creature_melee_hit_refreshes_combat_leash(
+        &self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+    ) -> bool {
+        let Some(creature) = self.creatures.get(&attacker.raw()) else {
+            return false;
+        };
+        let (creature_moving, _) = db_creature_movement_for_melee_leeway(creature);
+        if creature_moving {
+            return false;
+        }
+        let Some(player) = self.players.get(&victim.counter()) else {
+            return false;
+        };
+        !unit_movement_flags_count_as_moving(player.movement_flags)
     }
 
     #[allow(clippy::too_many_arguments, dead_code)]
@@ -2582,6 +2738,7 @@ impl MapRuntime {
         dmg_class: u32,
         attributes_ex2: u32,
         attributes_ex3: u32,
+        reflectable: bool,
         now: Instant,
     ) -> anyhow::Result<Option<DbCreaturePlayerSpellDamageEvent>> {
         let Some(combat) = self.active_creature_combats.get(&attacker.raw()).copied() else {
@@ -2602,19 +2759,35 @@ impl MapRuntime {
         if victim_player.health == 0 || victim_player.death_state != PlayerDeathState::Alive {
             return Ok(None);
         }
-        let outcome = roll_spell_damage_outcome(spell_damage_outcome_input(
-            damage,
-            school,
-            dmg_class,
-            attributes_ex2,
-            attributes_ex3,
-            db_creature_spell_snapshot(creature),
-            player_spell_snapshot(
-                victim_player.level,
-                victim_player.class,
-                &victim_player.combat_stats,
-            ),
-        ));
+        let outcome = if reflectable
+            && active_auras_reflect_spell_school(
+                &victim_player.active_auras,
+                spell_school_mask_from_school(u32::from(school)),
+            ) {
+            SpellDamageOutcome {
+                original_damage: damage,
+                final_damage: 0,
+                absorb: 0,
+                resist: 0,
+                blocked: 0,
+                hit_info: 0,
+                miss_info: Some(SPELL_MISS_REFLECT),
+            }
+        } else {
+            roll_spell_damage_outcome(spell_damage_outcome_input(
+                damage,
+                school,
+                dmg_class,
+                attributes_ex2,
+                attributes_ex3,
+                db_creature_spell_snapshot(creature),
+                player_spell_snapshot(
+                    victim_player.level,
+                    victim_player.class,
+                    &victim_player.combat_stats,
+                ),
+            ))
+        };
         let requested_damage = outcome.final_damage;
         let spell_miss_log_body = outcome
             .miss_info
@@ -2970,14 +3143,13 @@ impl MapRuntime {
         if let Some(entry) = threats.iter_mut().find(|entry| entry.victim == victim) {
             entry.threat += threat;
         } else {
-            threats.push(CreatureThreatEntry { victim, threat });
+            threats.push(CreatureThreatEntry {
+                victim,
+                threat,
+                fadeout_threat_reduction: 0.0,
+            });
         }
-        threats.sort_by(|left, right| {
-            right
-                .threat
-                .total_cmp(&left.threat)
-                .then_with(|| left.victim.raw().cmp(&right.victim.raw()))
-        });
+        Self::sort_creature_threat_entries(threats);
     }
 
     pub(in crate::world) fn apply_db_creature_taunt_threat(
@@ -3009,8 +3181,78 @@ impl MapRuntime {
             threats.push(CreatureThreatEntry {
                 victim: taunter,
                 threat: max_threat,
+                fadeout_threat_reduction: 0.0,
             });
         }
+        Self::sort_creature_threat_entries(threats);
+    }
+
+    pub(in crate::world) fn apply_db_creature_temporary_fade_to_player(
+        &mut self,
+        victim: ObjectGuid,
+        threat: f32,
+    ) {
+        if !victim.is_player() || threat >= 0.0 || !threat.is_finite() {
+            return;
+        }
+
+        let mut touched_attackers = Vec::new();
+        for (&attacker_raw, threats) in &mut self.creature_threats {
+            let Some(entry) = threats.iter_mut().find(|entry| entry.victim == victim) else {
+                continue;
+            };
+
+            if entry.fadeout_threat_reduction != 0.0 {
+                entry.threat -= entry.fadeout_threat_reduction;
+                entry.fadeout_threat_reduction = 0.0;
+            }
+
+            let reduced_threat = threat.max(-entry.threat);
+            entry.fadeout_threat_reduction = reduced_threat;
+            entry.threat += reduced_threat;
+            Self::sort_creature_threat_entries(threats);
+            touched_attackers.push(attacker_raw);
+        }
+
+        for attacker_raw in touched_attackers {
+            let attacker = ObjectGuid::from_raw(attacker_raw);
+            let _ =
+                self.switch_db_creature_threat_victim_if_needed(attacker, Some(victim.counter()));
+        }
+    }
+
+    pub(in crate::world) fn reset_db_creature_temporary_fade_from_player(
+        &mut self,
+        victim: ObjectGuid,
+    ) {
+        if !victim.is_player() {
+            return;
+        }
+
+        let mut touched_attackers = Vec::new();
+        for (&attacker_raw, threats) in &mut self.creature_threats {
+            let Some(entry) = threats.iter_mut().find(|entry| entry.victim == victim) else {
+                continue;
+            };
+
+            if entry.fadeout_threat_reduction == 0.0 {
+                continue;
+            }
+
+            entry.threat -= entry.fadeout_threat_reduction;
+            entry.fadeout_threat_reduction = 0.0;
+            Self::sort_creature_threat_entries(threats);
+            touched_attackers.push(attacker_raw);
+        }
+
+        for attacker_raw in touched_attackers {
+            let attacker = ObjectGuid::from_raw(attacker_raw);
+            let _ =
+                self.switch_db_creature_threat_victim_if_needed(attacker, Some(victim.counter()));
+        }
+    }
+
+    fn sort_creature_threat_entries(threats: &mut [CreatureThreatEntry]) {
         threats.sort_by(|left, right| {
             right
                 .threat
@@ -3162,7 +3404,7 @@ impl MapRuntime {
         let Some(player) = self.players.get(&victim.counter()) else {
             return false;
         };
-        let reach = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
+        let reach = db_creature_melee_reach_against_player(creature, player.movement_flags);
         let dx = creature.current_position.x - player.position.x;
         let dy = creature.current_position.y - player.position.y;
         dx * dx + dy * dy <= reach * reach

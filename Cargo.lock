@@ -5242,6 +5242,7 @@ dependencies = [
 name = "wow-db"
 version = "0.1.0"
 dependencies = [
+ "rand 0.8.5",
  "serde",
  "sqlx",
  "thiserror 2.0.18",

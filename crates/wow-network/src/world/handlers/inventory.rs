@@ -810,6 +810,8 @@ pub(in crate::world) async fn handle_inventory_swap(
                 world_stats,
                 &equipped_templates,
                 ammo_template.as_ref(),
+                &session.character.character_skills,
+                &session.character.active_spells,
                 &session.auras.active_auras,
             );
             let equipped_world_stats =
@@ -1557,6 +1559,8 @@ pub(in crate::world) async fn apply_player_ammo_selection(
         world_stats,
         &equipped_templates,
         ammo_template.as_ref(),
+        &session.character.character_skills,
+        &session.character.active_spells,
         &session.auras.active_auras,
     );
     let observer_packets = deps
@@ -1681,9 +1685,11 @@ impl InventoryMoveRequest {
         else {
             return Ok(None);
         };
-        let Some(dst_slot) =
-            preferred_equipment_slot_for_inventory(&template, &session.inventory.items)
-        else {
+        let Some(dst_slot) = preferred_equipment_slot_for_inventory(
+            &template,
+            &session.inventory.items,
+            &session.character.active_spells,
+        ) else {
             return Ok(None);
         };
         Ok(Some(Self {
@@ -2206,6 +2212,7 @@ pub(in crate::world) async fn load_bag_infos_for_slots(
 pub(in crate::world) fn preferred_equipment_slot_for_inventory(
     template: &ItemTemplateQuery,
     inventory: &[CharacterInventoryItem],
+    active_spells: &HashSet<u32>,
 ) -> Option<u8> {
     if template.inventory_type == INVTYPE_BAG && template.container_slots > 0 {
         return (INVENTORY_SLOT_BAG_START..INVENTORY_SLOT_BAG_END).find(|slot| {
@@ -2213,6 +2220,17 @@ pub(in crate::world) fn preferred_equipment_slot_for_inventory(
                 .iter()
                 .all(|item| item.bag != INVENTORY_SLOT_BAG_0 as u32 || item.slot != *slot)
         });
+    }
+    if template.inventory_type == 13
+        && character_can_dual_wield(active_spells)
+        && inventory.iter().any(|item| {
+            item.bag == INVENTORY_SLOT_BAG_0 as u32 && item.slot == EQUIPMENT_SLOT_MAINHAND
+        })
+        && inventory.iter().all(|item| {
+            item.bag != INVENTORY_SLOT_BAG_0 as u32 || item.slot != EQUIPMENT_SLOT_OFFHAND
+        })
+    {
+        return Some(EQUIPMENT_SLOT_OFFHAND);
     }
     preferred_equipment_slot(template.inventory_type)
 }
@@ -2589,6 +2607,9 @@ impl InventoryUpdatePlan {
             if !self.player_slots.contains(&position.slot) {
                 self.player_slots.push(position.slot);
             }
+            if !self.contained_positions.contains(&position) {
+                self.contained_positions.push(position);
+            }
             return;
         }
         if is_bag_slot(position.bag) {
@@ -2603,21 +2624,26 @@ impl InventoryUpdatePlan {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::world) fn inventory_recomputed_combat_stats(
     class: u8,
     level: u8,
     world_stats: PlayerWorldStats,
     equipped_templates: &[EquippedItemTemplate],
     ammo_template: Option<&ItemTemplateQuery>,
+    skills: &[CharacterSkill],
+    active_spells: &HashSet<u32>,
     active_auras: &[ActiveAura],
 ) -> (PlayerCombatStats, PlayerCombatStats) {
     let equipped_world_stats = player_world_stats_with_equipment(world_stats, equipped_templates);
     let effective_world_stats =
         player_world_stats_with_active_auras(equipped_world_stats, active_auras);
-    let base_combat_stats = player_combat_stats_for_values_with_ammo(
+    let base_combat_stats = player_combat_stats_for_values_with_known_spells_and_ammo(
         class,
         level,
         &effective_world_stats,
+        skills,
+        active_spells,
         equipped_templates,
         ammo_template,
     );
@@ -2704,7 +2730,7 @@ pub(in crate::world) fn build_contained_item_position_update_blocks(
     bag: u8,
     slot: u8,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
-    if !is_bag_slot(bag) {
+    if bag != INVENTORY_SLOT_BAG_0 && !is_bag_slot(bag) {
         return Ok(Vec::new());
     }
     let mut blocks = Vec::new();
@@ -2932,6 +2958,26 @@ pub(in crate::world) fn item_fits_equipment_slot(inventory_type: u32, slot: u8) 
     }
 }
 
+pub(in crate::world) const SPELL_PASSIVE_DUAL_WIELD: u32 = 674;
+
+pub(in crate::world) fn character_can_dual_wield(active_spells: &HashSet<u32>) -> bool {
+    active_spells.contains(&SPELL_PASSIVE_DUAL_WIELD)
+}
+
+pub(in crate::world) fn item_fits_equipment_slot_for_character(
+    template: &ItemTemplateQuery,
+    slot: u8,
+    active_spells: &HashSet<u32>,
+) -> bool {
+    if slot == EQUIPMENT_SLOT_OFFHAND
+        && template.inventory_type == 13
+        && character_can_dual_wield(active_spells)
+    {
+        return true;
+    }
+    item_fits_equipment_slot(template.inventory_type, slot)
+}
+
 pub(in crate::world) fn item_can_change_equip_state_in_combat(
     template: &ItemTemplateQuery,
 ) -> bool {
@@ -2978,7 +3024,7 @@ pub(in crate::world) fn item_can_enter_bag0_equipment_or_bag_slot(
         return Some((EQUIP_ERR_NOT_IN_COMBAT, None));
     }
     let fits_destination = if slot < EQUIPMENT_SLOT_END {
-        item_fits_equipment_slot(template.inventory_type, slot)
+        item_fits_equipment_slot_for_character(template, slot, context.active_spells)
     } else {
         template.inventory_type == INVTYPE_BAG && template.container_slots > 0
     };

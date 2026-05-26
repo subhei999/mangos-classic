@@ -72,6 +72,115 @@ pub(in crate::world) async fn apply_player_direct_energize_effect(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_power_burn_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    effect: SpellInfoEffect,
+    value_context: SpellEffectValueContext,
+    targets: &SpellCastTargets,
+    target_outcome: Option<PlayerSpellTargetOutcome>,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    let Some(target) = targets.unit_target.filter(|target| target.is_creature()) else {
+        return Ok(false);
+    };
+    if target_outcome
+        .filter(|outcome| outcome.target == target)
+        .is_some_and(|outcome| outcome.miss_info.is_some())
+    {
+        return Ok(false);
+    }
+
+    let Some(mut target_creature) = deps
+        .shared_world
+        .maps
+        .db_creature_snapshot(map_id, target)
+        .await
+    else {
+        return Ok(false);
+    };
+    let Ok(required_power_type) = u32::try_from(effect.misc_value) else {
+        return Ok(false);
+    };
+    if creature_unit_power_type(&target_creature.spawn.template) != required_power_type {
+        return Ok(false);
+    }
+
+    let Some(requested_burn) = spell_effect_calculated_u32(effect, value_context) else {
+        return Ok(false);
+    };
+    let burned_power = target_creature.power1.min(requested_burn);
+    if burned_power == 0 {
+        return Ok(false);
+    }
+
+    target_creature.power1 = target_creature.power1.saturating_sub(burned_power);
+    mirror_session_db_creature(session, target.raw(), target_creature.clone());
+    let power_update_body = build_db_creature_power_update_body(target, target_creature.power1)?;
+    let observer_packets = deps
+        .shared_world
+        .maps
+        .update_db_creature_snapshot_and_broadcast(
+            map_id,
+            target_creature,
+            Some(character_guid),
+            OutboundWorldPacket {
+                opcode: WorldOpcode::SmsgUpdateObject as u16,
+                body: power_update_body.clone(),
+            },
+        )
+        .await;
+
+    send_packet(
+        stream,
+        WorldOpcode::SmsgUpdateObject as u16,
+        &power_update_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    deps.shared_world.sessions.dispatch(observer_packets).await;
+
+    let damage = ((burned_power as f32) * effect.multiple_value.max(0.0)).trunc() as u32;
+    if damage == 0 {
+        return Ok(false);
+    }
+
+    apply_db_creature_spell_damage(
+        stream,
+        deps,
+        session,
+        caster,
+        character_guid,
+        map_id,
+        PlayerDirectDamageEffect {
+            spell_id: spell_template.id,
+            damage,
+            weapon_damage_percent: 100,
+            school: spell_template.school as u8,
+            dmg_class: spell_template.dmg_class,
+            attributes_ex2: spell_template.attributes_ex2,
+            attributes_ex3: spell_template.attributes_ex3,
+            requires_melee: false,
+            uses_weapon_outcome: false,
+            suppress_attacker_state: true,
+            caster_centered_hostile_area: false,
+            destination_hostile_area: false,
+            caster_centered_hostile_cone: false,
+            radius_index: 0,
+        },
+        targets,
+        target_outcome,
+        header_crypto,
+    )
+    .await
+}
+
 pub(in crate::world) async fn apply_player_taunt_effect(
     deps: SpellCastDeps<'_>,
     caster: ObjectGuid,

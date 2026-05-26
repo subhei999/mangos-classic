@@ -747,29 +747,87 @@ fn area_trigger_dbc_parser_reads_cmangos_geometry() {
     files.area_triggers = parse_area_triggers(&bytes);
 
     assert_eq!(
-        files.area_trigger_contains_position(100, WorldPosition::new(0, 13.0, 24.0, 30.0, 0.0), 0.0),
+        files.area_trigger_contains_position(
+            100,
+            WorldPosition::new(0, 13.0, 24.0, 30.0, 0.0),
+            0.0
+        ),
         Some(true)
     );
     assert_eq!(
-        files.area_trigger_contains_position(100, WorldPosition::new(0, 16.0, 20.0, 30.0, 0.0), 0.0),
+        files.area_trigger_contains_position(
+            100,
+            WorldPosition::new(0, 16.0, 20.0, 30.0, 0.0),
+            0.0
+        ),
         Some(false)
     );
     assert_eq!(
-        files.area_trigger_contains_position(100, WorldPosition::new(1, 10.0, 20.0, 30.0, 0.0), 0.0),
+        files.area_trigger_contains_position(
+            100,
+            WorldPosition::new(1, 10.0, 20.0, 30.0, 0.0),
+            0.0
+        ),
         Some(false)
     );
     assert_eq!(
-        files.area_trigger_contains_position(200, WorldPosition::new(1, 104.0, 100.0, 42.0, 0.0), 0.0),
+        files.area_trigger_contains_position(
+            200,
+            WorldPosition::new(1, 104.0, 100.0, 42.0, 0.0),
+            0.0
+        ),
         Some(true)
     );
     assert_eq!(
-        files.area_trigger_contains_position(200, WorldPosition::new(1, 106.0, 100.0, 42.0, 0.0), 0.0),
+        files.area_trigger_contains_position(
+            200,
+            WorldPosition::new(1, 106.0, 100.0, 42.0, 0.0),
+            0.0
+        ),
         Some(false)
     );
     assert_eq!(
-        files.area_trigger_contains_position(999, WorldPosition::new(1, 100.0, 100.0, 40.0, 0.0), 0.0),
+        files.area_trigger_contains_position(
+            999,
+            WorldPosition::new(1, 100.0, 100.0, 40.0, 0.0),
+            0.0
+        ),
         None
     );
+}
+
+#[test]
+fn area_trigger_opcode_validation_uses_cmangos_five_yard_tolerance() {
+    let bytes = test_u32_dbc(&[[
+        100,
+        0,
+        10.0f32.to_bits(),
+        20.0f32.to_bits(),
+        30.0f32.to_bits(),
+        5.0f32.to_bits(),
+        0,
+        0,
+        0,
+        0,
+    ]]);
+    let mut files = WorldDataFiles::fallback();
+    files.area_triggers = parse_area_triggers(&bytes);
+
+    assert!(handlers::misc::area_trigger_contains_client_position(
+        &files,
+        100,
+        WorldPosition::new(0, 20.0, 20.0, 30.0, 0.0)
+    ));
+    assert!(!handlers::misc::area_trigger_contains_client_position(
+        &files,
+        100,
+        WorldPosition::new(0, 20.1, 20.0, 30.0, 0.0)
+    ));
+    assert!(!handlers::misc::area_trigger_contains_client_position(
+        &files,
+        999,
+        WorldPosition::new(0, 10.0, 20.0, 30.0, 0.0)
+    ));
 }
 
 #[test]
@@ -1175,6 +1233,303 @@ fn db_gameobject_create_block_sets_quest_chest_dynamic_flags_for_condition_chest
     );
 }
 
+#[tokio::test]
+async fn conditional_questgiver_gameobject_activates_for_involved_turnin_quest() {
+    let mut spawn = test_gameobject_spawn(55, GO_TYPE_QUESTGIVER);
+    spawn.template.flags = GO_FLAG_INTERACT_COND;
+    let runtime = DbGameObjectRuntime::new(spawn);
+    let mut quest = test_quest_template(37);
+    quest.title = "Find the Lost Guards".to_string();
+    let mut session = WorldSessionState::default();
+    session.quests.quest_statuses.insert(
+        quest.entry,
+        CharacterQuestStatus {
+            quest: quest.entry,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            explored: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    let block = build_db_gameobject_runtime_create_block_for_quest_statuses(
+        &runtime,
+        &session.quests.quest_statuses,
+    )
+    .unwrap();
+    let (values, trailing) =
+        decode_positioned_create_update_block(&block, runtime.guid(), TYPEID_GAMEOBJECT);
+    assert!(trailing.is_empty());
+    assert_eq!(
+        values[GAMEOBJECT_DYN_FLAGS],
+        Some(GO_DYNFLAG_LO_ACTIVATE | GO_DYNFLAG_LO_SPARKLE)
+    );
+
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_quest_template_for_test(quest.entry, Some(quest.clone()))
+        .await;
+    object_mgr
+        .gameobject_start_quest_ids
+        .lock()
+        .await
+        .insert(runtime.spawn.entry, Vec::new());
+    object_mgr
+        .gameobject_complete_quest_ids
+        .lock()
+        .await
+        .insert(runtime.spawn.entry, vec![quest.entry]);
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    assert_eq!(
+        gameobject_dynamic_flags_for_player(&object_mgr, &world_db_pool, &session, &runtime)
+            .await
+            .unwrap(),
+        GO_DYNFLAG_LO_ACTIVATE | GO_DYNFLAG_LO_SPARKLE
+    );
+
+    session.quests.quest_statuses.clear();
+    assert_eq!(
+        gameobject_dynamic_flags_for_player(&object_mgr, &world_db_pool, &session, &runtime)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn conditional_questgiver_use_opens_single_involved_turnin_offer_reward() {
+    let guid = ObjectGuid::new(HighGuid::GameObject, 55, 77);
+    let mut quest = test_quest_template(37);
+    quest.title = "Find the Lost Guards".to_string();
+    quest.offer_reward_text =
+        "Although much has been stripped from the corpse, a medallion remains.".to_string();
+    let mut session = WorldSessionState::default();
+    session.quests.quest_statuses.insert(
+        quest.entry,
+        CharacterQuestStatus {
+            quest: quest.entry,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            explored: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_quest_template_for_test(quest.entry, Some(quest.clone()))
+        .await;
+    object_mgr
+        .gameobject_start_quest_ids
+        .lock()
+        .await
+        .insert(guid.entry(), Vec::new());
+    object_mgr
+        .gameobject_complete_quest_ids
+        .lock()
+        .await
+        .insert(guid.entry(), vec![quest.entry]);
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(outbound_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+
+    assert!(
+        handle_gameobject_questgiver_use(
+            &mut sink,
+            &object_mgr,
+            &world_db_pool,
+            &session,
+            guid,
+            &mut header_crypto,
+        )
+        .await
+        .unwrap()
+    );
+
+    let packet = outbound_rx.try_recv().unwrap();
+    assert_eq!(packet.opcode, WorldOpcode::SmsgQuestgiverOfferReward as u16);
+    let mut cursor = 8;
+    assert_eq!(read_u32(&packet.body, &mut cursor).unwrap(), quest.entry);
+    assert!(outbound_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn locked_questgiver_opening_spell_starts_progress_then_opens_turnin() {
+    let position = WorldPosition::new(0, -8948.0, -131.0, 83.4, 0.0);
+    let guid = ObjectGuid::new(HighGuid::GameObject, 55, 77);
+    let mut spawn = test_gameobject_spawn(55, GO_TYPE_QUESTGIVER);
+    spawn.template.flags = GO_FLAG_INTERACT_COND;
+    spawn.template.raw_data[0] = 43;
+    let runtime = DbGameObjectRuntime::new(spawn);
+
+    let mut quest = test_quest_template(37);
+    quest.title = "Find the Lost Guards".to_string();
+    quest.request_items_text.clear();
+    quest.offer_reward_text =
+        "Although much has been stripped from the corpse, a medallion remains.".to_string();
+
+    let mut opening = test_spell_template(OPENING_SPELL_ID);
+    opening.spell_name = "Opening".to_string();
+    opening.effect1 = 33;
+    opening.effect_misc_value1 = 13;
+
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(opening.id, Some(opening))
+        .await;
+    object_mgr
+        .prime_quest_template_for_test(quest.entry, Some(quest.clone()))
+        .await;
+    object_mgr
+        .gameobject_start_quest_ids
+        .lock()
+        .await
+        .insert(guid.entry(), Vec::new());
+    object_mgr
+        .gameobject_complete_quest_ids
+        .lock()
+        .await
+        .insert(guid.entry(), vec![quest.entry]);
+
+    let maps = Arc::new(MapRuntimeManager::default());
+    maps.add_player(test_player_runtime(7, SessionId(7), position))
+        .await
+        .unwrap();
+    maps.ensure_db_gameobject_grids_loaded_for_test(0, position, 8.0, |_| vec![runtime.clone()])
+        .await;
+
+    let sessions = Arc::new(SessionRegistry::default());
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let character_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/characters").unwrap();
+    let parties = PartyManager::default();
+    let mut session = WorldSessionState {
+        account: AccountSessionState {
+            account_id: 1,
+            ..AccountSessionState::default()
+        },
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.quests.quest_statuses.insert(
+        quest.entry,
+        CharacterQuestStatus {
+            quest: quest.entry,
+            status: QUEST_STATUS_INCOMPLETE,
+            rewarded: 0,
+            explored: 0,
+            mobcount1: 0,
+            mobcount2: 0,
+            mobcount3: 0,
+            mobcount4: 0,
+        },
+    );
+
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+    let mut sink = WorldPacketSink::new(outbound_tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let mut cast_body = Vec::new();
+    wow_proto::CastSpellRequest {
+        spell_id: OPENING_SPELL_ID,
+        targets: SpellCastTargets {
+            target_mask: SPELL_CAST_TARGET_GAMEOBJECT,
+            unit_target: None,
+            gameobject_target: Some(guid),
+            source_location: None,
+            destination: None,
+        },
+    }
+    .write(&mut cast_body)
+    .unwrap();
+
+    handle_cast_spell(
+        &mut sink,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &parties,
+        },
+        read_cast_spell_request(&cast_body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packet = outbound_rx.try_recv().unwrap();
+    assert_eq!(packet.opcode, WorldOpcode::SmsgSpellStart as u16);
+    assert!(outbound_rx.try_recv().is_err());
+
+    let due_at = maps
+        .next_pending_player_spell_cast_due_at(0, 7)
+        .await
+        .expect("Opening should create a pending cast for the progress bar");
+    let pending_cast = maps
+        .take_due_active_player_spell_cast(0, 7, due_at)
+        .await
+        .expect("Opening cast should become due");
+    complete_opening_spell_cast(
+        &mut sink,
+        &world_db_pool,
+        shared_world,
+        &mut session,
+        pending_cast.spell_id,
+        SpellCastTargets {
+            target_mask: pending_cast.targets.target_mask,
+            unit_target: pending_cast.targets.unit_target,
+            gameobject_target: pending_cast.targets.gameobject_target,
+            source_location: pending_cast.targets.source_location,
+            destination: pending_cast.targets.destination,
+        },
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| outbound_rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    let reward = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgQuestgiverOfferReward as u16)
+        .expect("Opening the locked questgiver should show the turn-in reward pane");
+    let mut cursor = 8;
+    assert_eq!(read_u32(&reward.body, &mut cursor).unwrap(), quest.entry);
+}
+
 #[test]
 fn quest_objective_gameobject_requires_active_incomplete_objective() {
     assert!(gameobject_type_uses_quest_objective_gate(GO_TYPE_CHEST));
@@ -1197,6 +1552,7 @@ fn quest_objective_gameobject_requires_active_incomplete_objective() {
             quest: quest.entry,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 7,
             mobcount2: 0,
             mobcount3: 0,
@@ -1269,6 +1625,7 @@ fn self_spawn_update_chunks_without_synthetic_fixture_blocks() {
         base_world_stats: &world_stats,
         world_stats: &world_stats,
         skills: &[],
+        active_spells: &HashSet::new(),
         quest_statuses: &quest_statuses,
         equipped_templates: &[],
         ammo_template: None,

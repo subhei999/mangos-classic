@@ -349,6 +349,7 @@ pub struct CharacterQuestStatus {
     pub quest: u32,
     pub status: u32,
     pub rewarded: u8,
+    pub explored: u8,
     pub mobcount1: u32,
     pub mobcount2: u32,
     pub mobcount3: u32,

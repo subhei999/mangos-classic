@@ -176,7 +176,8 @@ fn lethal_player_world_damage_clears_rage_immediately() {
 
     assert!(applied.died);
     assert_eq!(player.power2, 0);
-    let (values, trailing) = decode_values_update_block(&applied.health_packet.body[5..], player_guid);
+    let (values, trailing) =
+        decode_values_update_block(&applied.health_packet.body[5..], player_guid);
     assert!(trailing.is_empty());
     assert_eq!(values[UNIT_FIELD_POWER2], Some(0));
 }
@@ -1234,7 +1235,9 @@ fn creature_dot_death_clears_auras_before_respawn() {
     assert_eq!(creature.life_state, DbCreatureLifeState::Corpse);
     assert!(matches!(creature.motion, CreatureMotionState::Idle));
     assert!(creature.active_auras.is_empty());
-    assert!(!map.active_creature_combats.contains_key(&creature_guid.raw()));
+    assert!(!map
+        .active_creature_combats
+        .contains_key(&creature_guid.raw()));
     assert!(!map.player_runtime_snapshot(7).unwrap().in_combat);
     assert!(packets
         .iter()
@@ -1943,7 +1946,7 @@ fn shield_wall_aura_reduces_player_world_damage_by_seventy_five_percent() {
             20,
             WorldDamageKind::Melee,
             Instant::now(),
-    )
+        )
         .unwrap()
         .unwrap();
     assert_eq!(melee.applied_damage, 5);
@@ -2044,8 +2047,7 @@ fn berserker_stance_passive_updates_player_crit_fields() {
     let player = map.players.get(&7).unwrap();
     assert!((player.combat_stats.crit_percent - (base.crit_percent + 3.0)).abs() < 0.001);
     assert!(
-        (player.combat_stats.ranged_crit_percent - (base.ranged_crit_percent + 3.0)).abs()
-            < 0.001
+        (player.combat_stats.ranged_crit_percent - (base.ranged_crit_percent + 3.0)).abs() < 0.001
     );
 
     let combat_update = event
@@ -2064,6 +2066,120 @@ fn berserker_stance_passive_updates_player_crit_fields() {
     assert_eq!(
         combat_update[PLAYER_RANGED_CRIT_PERCENTAGE],
         Some(player.combat_stats.ranged_crit_percent.to_bits())
+    );
+}
+
+#[tokio::test]
+async fn fade_live_rank_one_builds_total_threat_modifier() {
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let fade = wow_db::get_spell_template_query(&world_db_pool, 586)
+        .await
+        .unwrap()
+        .expect("Fade rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&world_db_pool, 586)
+        .await
+        .unwrap()
+        .expect("Fade rank 1 should exist in spell_chain");
+
+    assert_eq!(chain.spell_id, 586);
+    assert_eq!(chain.prev_spell, 0);
+    assert_eq!(chain.first_spell, 586);
+    assert_eq!(chain.rank, 1);
+    assert_eq!(fade.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(fade.spell_level, 8);
+    assert!(matches!(
+        spell_aura_support(SPELL_AURA_MOD_TOTAL_THREAT),
+        SpellMechanicSupport::Implemented
+    ));
+
+    let aura = build_active_aura(
+        &fade,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        fade.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&fade),
+        Instant::now(),
+        None,
+    );
+    assert!(aura
+        .stat_modifiers
+        .contains(&AuraStatModifier::TotalThreat { amount: -55 }));
+}
+
+#[test]
+fn fade_temporarily_reduces_db_creature_threat_and_restores_on_expiry() {
+    let now = Instant::now();
+    let mut map = MapRuntime::new(0, 0);
+    let first_position = WorldPosition::new(0, 1.0, 0.0, 0.0, 0.0);
+    let second_position = WorldPosition::new(0, 2.0, 0.0, 0.0, 0.0);
+    insert_map_runtime_player_for_test(&mut map, 7, first_position);
+    insert_map_runtime_player_for_test(&mut map, 8, second_position);
+
+    let mut spawn = test_creature_spawn(6);
+    spawn.guid = 460;
+    spawn.position_x = 0.0;
+    spawn.position_y = 0.0;
+    let attacker = creature_spawn_guid(&spawn);
+    map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
+
+    let faded_player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let rival_player = ObjectGuid::new(HighGuid::Player, 0, 8);
+    map.begin_db_creature_combat(attacker, faded_player, now)
+        .expect("creature combat should start");
+    map.add_db_creature_threat(attacker, faded_player, 155.0);
+    map.add_db_creature_threat(attacker, rival_player, 120.0);
+
+    let fade = ActiveAura {
+        spell_id: 586,
+        caster: faded_player,
+        level: 8,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: Some(10_000),
+        expires_at: Some(now + Duration::from_secs(10)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::TotalThreat { amount: -55 }],
+        proc_triggers: Vec::new(),
+    };
+
+    map.apply_player_aura(7, fade).unwrap().unwrap();
+
+    let threats = map.db_creature_threat_entries(attacker);
+    assert_eq!(
+        threats
+            .iter()
+            .find(|entry| entry.victim == faded_player)
+            .map(|entry| entry.threat),
+        Some(100.0)
+    );
+    assert_eq!(
+        map.active_creature_combats
+            .get(&attacker.raw())
+            .map(|combat| combat.victim),
+        Some(rival_player),
+        "Fade should immediately lower the faded player below a nearby melee rival"
+    );
+
+    let _ = map
+        .advance_player_aura_expirations(now + Duration::from_millis(10_001))
+        .unwrap();
+
+    let threats = map.db_creature_threat_entries(attacker);
+    assert_eq!(
+        threats
+            .iter()
+            .find(|entry| entry.victim == faded_player)
+            .map(|entry| entry.threat),
+        Some(155.0)
+    );
+    assert_eq!(
+        map.active_creature_combats
+            .get(&attacker.raw())
+            .map(|combat| combat.victim),
+        Some(faded_player),
+        "Fade expiry should restore the stored threat reduction and let the creature retarget"
     );
 }
 
@@ -2125,20 +2241,21 @@ fn shapeshift_aura_updates_player_form_bytes_and_replaces_previous_form() {
         .iter()
         .find_map(|packet| {
             (packet.opcode == WorldOpcode::SmsgUpdateObject as u16).then(|| {
-                decode_values_update_block(&packet.body[5..], ObjectGuid::new(HighGuid::Player, 0, 7))
-                    .0
+                decode_values_update_block(
+                    &packet.body[5..],
+                    ObjectGuid::new(HighGuid::Player, 0, 7),
+                )
+                .0
             })
         })
         .expect("shapeshift aura should emit a values update");
     assert_eq!(
         update[UNIT_FIELD_BYTES_1],
-        Some(
-            player_unit_bytes_1_with_auras(
-                1,
-                PLAYER_STAND_STATE_STAND,
-                &map.players.get(&7).unwrap().active_auras,
-            ),
-        )
+        Some(player_unit_bytes_1_with_auras(
+            1,
+            PLAYER_STAND_STATE_STAND,
+            &map.players.get(&7).unwrap().active_auras,
+        ),)
     );
 
     let packets = map
@@ -2152,12 +2269,16 @@ fn shapeshift_aura_updates_player_form_bytes_and_replaces_previous_form() {
         let (values, _) =
             decode_values_update_block(&packet.body[5..], ObjectGuid::new(HighGuid::Player, 0, 7));
         values[UNIT_FIELD_BYTES_1]
-            == Some(player_unit_bytes_1_with_auras(1, PLAYER_STAND_STATE_STAND, &[]))
+            == Some(player_unit_bytes_1_with_auras(
+                1,
+                PLAYER_STAND_STATE_STAND,
+                &[],
+            ))
     }));
 }
 
 #[test]
-fn ghost_and_water_walk_auras_are_distinct_runtime_modifiers() {
+fn ghost_hover_and_water_walk_auras_are_distinct_runtime_modifiers() {
     let now = Instant::now();
     let caster = ObjectGuid::new(HighGuid::Unit, 6, 68);
 
@@ -2189,6 +2310,20 @@ fn ghost_and_water_walk_auras_are_distinct_runtime_modifiers() {
     let (values, trailing) = decode_values_update_block(&clear[5..], creature);
     assert!(trailing.is_empty());
     assert_eq!(values[UNIT_FIELD_BYTES_1], Some(0));
+
+    let mut hover_template = test_spell_template(1706);
+    hover_template.spell_name = "Levitate Hover".to_string();
+    hover_template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    hover_template.effect_apply_aura_name1 = SPELL_AURA_HOVER;
+    let hover = build_active_aura(
+        &hover_template,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        34,
+        test_spell_effect_value_context(&hover_template),
+        now,
+        None,
+    );
+    assert_eq!(hover.stat_modifiers, vec![AuraStatModifier::Hover]);
 
     let mut water_walk_template = test_spell_template(546);
     water_walk_template.spell_name = "Water Walking".to_string();
@@ -5020,6 +5155,7 @@ fn map_runtime_player_gameplay_sync_owns_session_mutable_state() {
             quest: 33,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 1,
             mobcount2: 0,
             mobcount3: 0,
@@ -5508,6 +5644,167 @@ fn map_runtime_evocation_modifiers_regen_mana_during_interrupt() {
     assert!(
         map.players.get(&1).unwrap().power1 > 10,
         "Evocation's generic aura modifiers should restore mana during the recent-cast window"
+    );
+}
+
+#[tokio::test]
+async fn mage_armor_live_rank_one_regens_mana_during_interrupt_and_updates_arcane_resistance() {
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let mage_armor = wow_db::get_spell_template_query(&world_db_pool, 6117)
+        .await
+        .unwrap()
+        .expect("Mage Armor rank 1 should exist in the local spell_template");
+
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.class = 8;
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 500,
+        stats: [23, 20, 22, 20, 80],
+        next_level_xp: 400,
+    };
+    player.base_world_stats = world_stats;
+    player.effective_world_stats = world_stats;
+    player.spirit = world_stats.stats[4];
+    player.max_power1 = world_stats.max_mana();
+    player.power1 = 10;
+    let now = Instant::now();
+    player.last_mana_use_at = Some(now);
+    map.add_player(player).unwrap();
+    let base = map.players.get(&7).unwrap().base_combat_stats;
+
+    let aura = build_active_aura(
+        &mage_armor,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        mage_armor.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&mage_armor),
+        now,
+        None,
+    );
+    let event = map.apply_player_aura(7, aura).unwrap().unwrap();
+    let player = map.players.get(&7).unwrap();
+    assert_eq!(player.combat_stats.resistances[6], base.resistances[6] + 5);
+    assert_eq!(player.combat_stats.resistance_buff_mod_positive[6], 5);
+
+    let combat_update = event
+        .direct_packets
+        .iter()
+        .filter(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+        .map(|packet| {
+            decode_values_update_block(&packet.body[5..], ObjectGuid::new(HighGuid::Player, 0, 7)).0
+        })
+        .find(|values| values[UNIT_FIELD_RESISTANCES + 6].is_some())
+        .expect("Mage Armor should update arcane resistance fields");
+    assert_eq!(
+        combat_update[UNIT_FIELD_RESISTANCES + 6],
+        Some(base.resistances[6] + 5)
+    );
+    assert_eq!(
+        combat_update[PLAYER_FIELD_RESISTANCEBUFFMODSPOSITIVE + 6],
+        Some(5)
+    );
+
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    let packets = map
+        .advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(packets.len(), 2);
+    assert_eq!(
+        map.players.get(&7).unwrap().power1,
+        19,
+        "Mage Armor should restore 30% of spirit-based mana regen during the recent-cast window"
+    );
+}
+
+#[tokio::test]
+async fn ice_armor_live_rank_one_updates_armor_and_frost_resistance_fields() {
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let ice_armor = wow_db::get_spell_template_query(&world_db_pool, 7302)
+        .await
+        .unwrap()
+        .expect("Ice Armor rank 1 should exist in the local spell_template");
+
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.class = 8;
+    map.add_player(player).unwrap();
+    let base = map.players.get(&7).unwrap().base_combat_stats;
+    let now = Instant::now();
+
+    let aura = build_active_aura(
+        &ice_armor,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        ice_armor.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&ice_armor),
+        now,
+        None,
+    );
+    let armor_bonus = aura
+        .stat_modifiers
+        .iter()
+        .find_map(|modifier| match modifier {
+            AuraStatModifier::Resistance {
+                school_mask: 1,
+                amount,
+            } => Some(*amount as u32),
+            _ => None,
+        })
+        .expect("Ice Armor rank 1 should expose a physical armor bonus");
+    let frost_bonus = aura
+        .stat_modifiers
+        .iter()
+        .find_map(|modifier| match modifier {
+            AuraStatModifier::Resistance {
+                school_mask,
+                amount,
+            } if *school_mask == (1 << 4) => Some(*amount as u32),
+            _ => None,
+        })
+        .expect("Ice Armor rank 1 should expose a frost resistance bonus");
+
+    let event = map.apply_player_aura(7, aura).unwrap().unwrap();
+    let player = map.players.get(&7).unwrap();
+    assert_eq!(player.combat_stats.resistances[0], base.resistances[0] + armor_bonus);
+    assert_eq!(player.combat_stats.resistances[4], base.resistances[4] + frost_bonus);
+    assert_eq!(player.combat_stats.armor, base.armor + armor_bonus);
+    assert_eq!(
+        player.combat_stats.resistance_buff_mod_positive[0],
+        armor_bonus as i32
+    );
+    assert_eq!(
+        player.combat_stats.resistance_buff_mod_positive[4],
+        frost_bonus as i32
+    );
+
+    let combat_update = event
+        .direct_packets
+        .iter()
+        .filter(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+        .map(|packet| {
+            decode_values_update_block(&packet.body[5..], ObjectGuid::new(HighGuid::Player, 0, 7)).0
+        })
+        .find(|values| values[UNIT_FIELD_RESISTANCES].is_some())
+        .expect("Ice Armor should update armor and frost resistance fields");
+    assert_eq!(
+        combat_update[UNIT_FIELD_RESISTANCES],
+        Some(base.resistances[0] + armor_bonus)
+    );
+    assert_eq!(
+        combat_update[UNIT_FIELD_RESISTANCES + 4],
+        Some(base.resistances[4] + frost_bonus)
+    );
+    assert_eq!(
+        combat_update[PLAYER_FIELD_RESISTANCEBUFFMODSPOSITIVE],
+        Some(armor_bonus)
+    );
+    assert_eq!(
+        combat_update[PLAYER_FIELD_RESISTANCEBUFFMODSPOSITIVE + 4],
+        Some(frost_bonus)
     );
 }
 
@@ -7247,7 +7544,8 @@ async fn active_cast_suppresses_melee_without_extending_resume_timer_to_cast_end
     .await;
 
     assert_eq!(
-        maps.player_auto_attack_due(map_id, character_guid, now).await,
+        maps.player_auto_attack_due(map_id, character_guid, now)
+            .await,
         None,
         "white swings must stay suppressed while a combat-interruptible cast is active"
     );

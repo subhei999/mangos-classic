@@ -265,6 +265,7 @@ pub(in crate::world) struct QuestSourceItemGrant {
 #[derive(Debug, Clone, Copy)]
 pub(in crate::world) struct QuestSourceItemTemplate {
     pub(in crate::world) max_durability: u32,
+    #[cfg(test)]
     pub(in crate::world) max_stack: u32,
     pub(in crate::world) container_slots: Option<u32>,
 }
@@ -277,6 +278,7 @@ pub(in crate::world) enum QuestSourceItemDestination {
         grant_count: u32,
     },
     NewStack {
+        bag: u8,
         slot: u8,
         count: u32,
     },
@@ -1220,6 +1222,23 @@ pub(in crate::world) async fn gameobject_dynamic_flags_for_player(
     session: &WorldSessionState,
     gameobject: &DbGameObjectRuntime,
 ) -> anyhow::Result<u32> {
+    if gameobject.spawn.template.object_type == GO_TYPE_QUESTGIVER {
+        return Ok(
+            if gameobject_questgiver_activates_for_player(
+                object_mgr,
+                world_db_pool,
+                session,
+                gameobject.guid(),
+            )
+            .await?
+            {
+                GO_DYNFLAG_LO_ACTIVATE | GO_DYNFLAG_LO_SPARKLE
+            } else {
+                0
+            },
+        );
+    }
+
     let dynamic_flags =
         gameobject_dynamic_flags_for_quest_statuses(gameobject, &session.quests.quest_statuses);
     if dynamic_flags == 0 {
@@ -1244,6 +1263,40 @@ pub(in crate::world) async fn gameobject_dynamic_flags_for_player(
         }
     }
     Ok(dynamic_flags)
+}
+
+pub(in crate::world) async fn gameobject_questgiver_activates_for_player(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    guid: ObjectGuid,
+) -> anyhow::Result<bool> {
+    if !guid.is_game_object() {
+        return Ok(false);
+    }
+
+    for quest in questgiver_start_quests(object_mgr, world_db_pool, guid).await? {
+        if can_take_start_quest(object_mgr, world_db_pool, &quest, session).await? {
+            return Ok(true);
+        }
+    }
+
+    for quest in questgiver_complete_quests(object_mgr, world_db_pool, guid).await? {
+        if session
+            .quests
+            .quest_statuses
+            .get(&quest.entry)
+            .is_some_and(|status| {
+                status.rewarded == 0
+                    && (status.status == QUEST_STATUS_INCOMPLETE
+                        || status.status == QUEST_STATUS_COMPLETE)
+            })
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 pub(in crate::world) async fn quest_gameobject_needs_dynamic_refresh(
@@ -1476,7 +1529,7 @@ pub(in crate::world) async fn grant_quest_source_item_if_needed(
                 }
                 granted.push((item_guid, grant_count, false));
             }
-            QuestSourceItemDestination::NewStack { slot, count } => {
+            QuestSourceItemDestination::NewStack { bag, slot, count } => {
                 let random_properties = generate_item_instance_random_properties(
                     world_db_pool,
                     &session.movement.db_creature_navigation.world_data_files,
@@ -1495,7 +1548,7 @@ pub(in crate::world) async fn grant_quest_source_item_if_needed(
                     character_db_pool,
                     wow_db::AddCharacterInventoryItemRequest {
                         guid: character_guid,
-                        bag: INVENTORY_SLOT_BAG_0 as u32,
+                        bag: bag as u32,
                         slot,
                         item_template: plan.item_id,
                         count,
@@ -1558,16 +1611,83 @@ pub(in crate::world) async fn quest_source_item_storage_plan(
     };
     let item_template = QuestSourceItemTemplate {
         max_durability: template.max_durability,
+        #[cfg(test)]
         max_stack: template.stackable.max(1),
         container_slots: (template.container_slots > 0).then_some(template.container_slots),
     };
-    Ok(plan_quest_source_item_storage(
+    let bag_model = InventoryBagModel::load_inventory(world_db_pool, inventory).await?;
+    Ok(plan_quest_source_item_storage_in_inventory(
         quest,
         inventory,
+        &template,
         item_template,
+        &bag_model,
     ))
 }
 
+pub(in crate::world) fn plan_quest_source_item_storage_in_inventory(
+    quest: &QuestTemplateQuery,
+    inventory: &[CharacterInventoryItem],
+    template: &ItemTemplateQuery,
+    item_template: QuestSourceItemTemplate,
+    bag_model: &InventoryBagModel,
+) -> QuestSourceItemStorage {
+    if quest.src_item_id == 0 {
+        return QuestSourceItemStorage::NoGrantNeeded;
+    }
+    let required_count = quest.src_item_count.max(1);
+    let current_count = inventory
+        .iter()
+        .filter(|item| item.item_template == quest.src_item_id)
+        .map(|item| item.count)
+        .sum::<u32>();
+    if current_count >= required_count {
+        return QuestSourceItemStorage::NoGrantNeeded;
+    }
+
+    let grant_count = required_count - current_count;
+    let Some(store_plan) = bag_model.plan_store_item(
+        InventoryStorageScope::Inventory,
+        inventory,
+        template,
+        grant_count,
+        None,
+        None,
+    ) else {
+        return QuestSourceItemStorage::NoSpace;
+    };
+
+    let mut destinations = Vec::with_capacity(store_plan.len());
+    for slot in store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            let current = inventory
+                .iter()
+                .find(|item| item.item == item_guid)
+                .map(|item| item.count)
+                .unwrap_or(0);
+            destinations.push(QuestSourceItemDestination::ExistingStack {
+                item_guid,
+                new_count: current.saturating_add(slot.count),
+                grant_count: slot.count,
+            });
+        } else {
+            destinations.push(QuestSourceItemDestination::NewStack {
+                bag: slot.bag,
+                slot: slot.slot,
+                count: slot.count,
+            });
+        }
+    }
+
+    QuestSourceItemStorage::Grant(QuestSourceItemStoragePlan {
+        item_id: quest.src_item_id,
+        max_durability: item_template.max_durability,
+        container_slots: item_template.container_slots,
+        destinations,
+    })
+}
+
+#[cfg(test)]
 pub(in crate::world) fn plan_quest_source_item_storage(
     quest: &QuestTemplateQuery,
     inventory: &[CharacterInventoryItem],
@@ -1620,7 +1740,11 @@ pub(in crate::world) fn plan_quest_source_item_storage(
         }
         let count = remaining.min(max_stack);
         remaining -= count;
-        destinations.push(QuestSourceItemDestination::NewStack { slot, count });
+        destinations.push(QuestSourceItemDestination::NewStack {
+            bag: INVENTORY_SLOT_BAG_0,
+            slot,
+            count,
+        });
     }
 
     if remaining != 0 {
@@ -1640,6 +1764,9 @@ pub(in crate::world) fn quest_can_complete_from_inventory(
     inventory: &[CharacterInventoryItem],
 ) -> bool {
     if quest_has_unsupported_completion_requirements(quest) {
+        return false;
+    }
+    if (quest.special_flags & QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT) != 0 {
         return false;
     }
 
@@ -1961,6 +2088,7 @@ pub(in crate::world) fn quest_required_item_inventory_slots(
     consumes
 }
 
+#[cfg(test)]
 pub(in crate::world) fn empty_backpack_slots(inventory: &[CharacterInventoryItem]) -> Vec<u8> {
     (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
         .filter(|slot| {
@@ -2080,6 +2208,10 @@ pub(in crate::world) fn quest_completion_requirements_satisfied(
     if quest_has_unsupported_completion_requirements(quest) {
         return false;
     }
+    if (quest.special_flags & QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT) != 0 && status.explored == 0
+    {
+        return false;
+    }
 
     quest_creature_or_go_objectives_satisfied(status, quest)
         && quest_required_items_satisfied(quest, inventory)
@@ -2088,9 +2220,7 @@ pub(in crate::world) fn quest_completion_requirements_satisfied(
 pub(in crate::world) fn quest_has_unsupported_completion_requirements(
     quest: &QuestTemplateQuery,
 ) -> bool {
-    const QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT: u32 = 0x002;
-    (quest.special_flags & QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT) != 0
-        || quest.rep_objective_faction != 0
+    quest.rep_objective_faction != 0
 }
 
 pub(in crate::world) fn quest_creature_or_go_objectives_satisfied(
@@ -2156,6 +2286,93 @@ pub(in crate::world) fn quest_has_required_items(quest: &QuestTemplateQuery) -> 
         .iter()
         .zip(quest.req_item_count.iter())
         .any(|(item_id, required_count)| *item_id != 0 && *required_count != 0)
+}
+
+pub(in crate::world) fn quest_area_exploration_credit_status(
+    status: &CharacterQuestStatus,
+    quest: &QuestTemplateQuery,
+    inventory: &[CharacterInventoryItem],
+) -> Option<(CharacterQuestStatus, bool)> {
+    if status.status != QUEST_STATUS_INCOMPLETE || status.rewarded != 0 || status.explored != 0 {
+        return None;
+    }
+    if (quest.special_flags & QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT) == 0 {
+        return None;
+    }
+
+    let mut updated = status.clone();
+    updated.explored = 1;
+    let complete = quest_status_can_complete(&updated, quest, inventory);
+    if complete {
+        updated.status = QUEST_STATUS_COMPLETE;
+    }
+    Some((updated, complete))
+}
+
+pub(in crate::world) async fn grant_area_trigger_exploration_credit(
+    stream: &mut WorldPacketSink,
+    character_db_pool: &MySqlPool,
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    trigger_id: u32,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<bool> {
+    let Some(character) = &session.character.active_character else {
+        return Ok(false);
+    };
+    if session.character.player_health == 0
+        || session.character.player_flags & PLAYER_FLAGS_GHOST != 0
+    {
+        return Ok(false);
+    }
+    let Some(quest_id) = wow_db::get_area_trigger_quest(world_db_pool, trigger_id).await? else {
+        return Ok(false);
+    };
+    let Some(current_status) = session.quests.quest_statuses.get(&quest_id).cloned() else {
+        return Ok(false);
+    };
+    let Some(quest) = object_mgr.quest_template(world_db_pool, quest_id).await? else {
+        return Ok(false);
+    };
+    let Some((_, complete)) =
+        quest_area_exploration_credit_status(&current_status, &quest, &session.inventory.items)
+    else {
+        return Ok(false);
+    };
+
+    let updated =
+        wow_db::explore_character_quest(character_db_pool, character.guid, quest_id, complete)
+            .await?;
+    session
+        .quests
+        .quest_statuses
+        .insert(quest_id, updated.clone());
+
+    let Some(slot) = quest_log_slot_for_quest(session, quest_id) else {
+        warn!(
+            quest = quest_id,
+            trigger = trigger_id,
+            "Area trigger quest explored but no quest-log slot was available"
+        );
+        return Ok(true);
+    };
+    send_packet(
+        stream,
+        WorldOpcode::SmsgUpdateObject as u16,
+        &build_player_quest_log_update_body(character.guid, slot, &updated)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    send_packet(
+        stream,
+        WorldOpcode::SmsgQuestUpdateComplete as u16,
+        &quest_id.to_le_bytes(),
+        Some(&mut *header_crypto),
+    )
+    .await?;
+
+    Ok(true)
 }
 
 pub(in crate::world) async fn complete_inventory_item_quests(
@@ -2852,6 +3069,7 @@ pub(in crate::world) async fn grant_db_creature_kill_credit(
                 quest: quest_id,
                 status: QUEST_STATUS_INCOMPLETE,
                 rewarded: 0,
+                explored: 0,
                 mobcount1: 0,
                 mobcount2: 0,
                 mobcount3: 0,

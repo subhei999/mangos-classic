@@ -676,6 +676,17 @@ pub(in crate::world) async fn player_db_creature_spell_target_outcome(
             miss_info: Some(SPELL_MISS_EVADE),
         }));
     }
+    if spell_template_is_reflectable(spell_template)
+        && active_auras_reflect_spell_school(
+            &target_creature.active_auras,
+            spell_school_mask_from_school(spell_template.school),
+        )
+    {
+        return Ok(Some(PlayerSpellTargetOutcome {
+            target,
+            miss_info: Some(SPELL_MISS_REFLECT),
+        }));
+    }
     if active_auras_are_immune_to_spell(&target_creature.active_auras, spell_template) {
         return Ok(Some(PlayerSpellTargetOutcome {
             target,
@@ -797,48 +808,88 @@ pub(in crate::world) async fn spell_heal_cast_failure(
     None
 }
 
-pub(in crate::world) async fn spell_unit_target_cast_failure(
+async fn spell_friendly_player_target_cast_failure(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    target: ObjectGuid,
+) -> Option<u8> {
+    let character = session.character.active_character.as_ref()?;
+    if !target.is_player() {
+        return Some(SPELL_FAILED_OUT_OF_RANGE);
+    }
+    let Some(snapshot) = shared_world
+        .maps
+        .player_runtime_snapshot(character.position.map_id, target.counter())
+        .await
+    else {
+        return Some(SPELL_FAILED_OUT_OF_RANGE);
+    };
+    (snapshot.health == 0).then_some(SPELL_FAILED_OUT_OF_RANGE)
+}
+
+pub(in crate::world) fn creature_type_matches_target_mask(
+    creature_type: u32,
+    target_creature_type: u32,
+) -> bool {
+    if target_creature_type == 0 {
+        return true;
+    }
+    let Some(creature_type_bit) = creature_type
+        .checked_sub(1)
+        .and_then(|bit| 1u32.checked_shl(bit))
+    else {
+        return false;
+    };
+    target_creature_type & creature_type_bit != 0
+}
+
+fn spell_hostile_creature_power_burn_cast_failure(
+    spell_template: &wow_db::SpellTemplateQuery,
+    target_creature: &DbCreatureRuntime,
+) -> Option<u8> {
+    let target_power_type = creature_unit_power_type(&target_creature.spawn.template);
+    SpellInfo::from_template(spell_template)
+        .effects
+        .into_iter()
+        .filter(|effect| {
+            effect.dispatch == SpellEffectDispatch::PowerBurn
+                && plan_effect_target(*effect).is_hostile()
+        })
+        .find_map(|effect| {
+            let Ok(required_power_type) = u32::try_from(effect.misc_value) else {
+                return Some(SPELL_FAILED_BAD_TARGETS);
+            };
+            (target_power_type != required_power_type).then_some(SPELL_FAILED_BAD_TARGETS)
+        })
+}
+
+async fn spell_hostile_creature_target_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     world_db_pool: &MySqlPool,
     session: &WorldSessionState,
     spell_template: &wow_db::SpellTemplateQuery,
-    spell_profile: &SpellCastProfile,
-    targets: &SpellCastTargets,
+    target: ObjectGuid,
 ) -> Option<u8> {
-    let spell_info = SpellInfo::from_template(spell_template);
-    let target_kind = spell_info
-        .player_spell_plan()
-        .filter(|plan| plan.profile.kind == spell_profile.kind)
-        .map(|plan| plan.target.target_kind())
-        .unwrap_or(SpellTargetKind::Caster);
-    if target_kind.requires_unit_target() && targets.unit_target.is_none() {
-        return Some(SPELL_FAILED_BAD_IMPLICIT_TARGETS);
-    }
-    if target_kind == SpellTargetKind::FriendlyUnit {
-        let character = session.character.active_character.as_ref()?;
-        let target = targets.unit_target?;
-        if !target.is_player() {
-            return Some(SPELL_FAILED_OUT_OF_RANGE);
-        }
-        let Some(snapshot) = shared_world
-            .maps
-            .player_runtime_snapshot(character.position.map_id, target.counter())
-            .await
-        else {
-            return Some(SPELL_FAILED_OUT_OF_RANGE);
-        };
-        return (snapshot.health == 0).then_some(SPELL_FAILED_OUT_OF_RANGE);
-    }
-    if target_kind != SpellTargetKind::HostileUnit
-        || spell_profile.requires_melee
-        || matches!(spell_profile.kind, SpellCastKind::NextMeleeSwing)
-    {
-        return None;
-    }
     let character = session.character.active_character.as_ref()?;
-    let target = targets.unit_target?;
     if !target.is_creature() {
         return Some(SPELL_FAILED_BAD_TARGETS);
+    }
+    let Some(snapshot) = shared_world
+        .maps
+        .db_creature_snapshot(character.position.map_id, target)
+        .await
+    else {
+        return Some(SPELL_FAILED_OUT_OF_RANGE);
+    };
+    if !creature_type_matches_target_mask(
+        snapshot.spawn.template.creature_type,
+        spell_template.target_creature_type,
+    ) {
+        return Some(SPELL_FAILED_BAD_TARGETS);
+    }
+    if let Some(failure) = spell_hostile_creature_power_burn_cast_failure(spell_template, &snapshot)
+    {
+        return Some(failure);
     }
     let range = if spell_template.range_index == 0 {
         None
@@ -880,6 +931,65 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
         | PlayerSpellTargetCheck::NavigationBlocked(_)
         | PlayerSpellTargetCheck::OutOfRange => Some(SPELL_FAILED_OUT_OF_RANGE),
     }
+}
+
+pub(in crate::world) async fn spell_unit_target_cast_failure(
+    shared_world: SharedWorldDeps<'_>,
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
+    targets: &SpellCastTargets,
+) -> Option<u8> {
+    let spell_info = SpellInfo::from_template(spell_template);
+    let target_kind = spell_info
+        .player_spell_plan()
+        .filter(|plan| plan.profile.kind == spell_profile.kind)
+        .map(|plan| plan.target.target_kind())
+        .unwrap_or(SpellTargetKind::Caster);
+    if target_kind.requires_unit_target() && targets.unit_target.is_none() {
+        return Some(SPELL_FAILED_BAD_IMPLICIT_TARGETS);
+    }
+    let target = targets.unit_target;
+    if target_kind == SpellTargetKind::FriendlyUnit {
+        return spell_friendly_player_target_cast_failure(shared_world, session, target?).await;
+    }
+    if target_kind == SpellTargetKind::Unit {
+        let target = target?;
+        if target.is_player() {
+            return spell_friendly_player_target_cast_failure(shared_world, session, target).await;
+        }
+        if target.is_creature() {
+            if spell_profile.requires_melee
+                || matches!(spell_profile.kind, SpellCastKind::NextMeleeSwing)
+            {
+                return None;
+            }
+            return spell_hostile_creature_target_cast_failure(
+                shared_world,
+                world_db_pool,
+                session,
+                spell_template,
+                target,
+            )
+            .await;
+        }
+        return Some(SPELL_FAILED_BAD_TARGETS);
+    }
+    if target_kind != SpellTargetKind::HostileUnit
+        || spell_profile.requires_melee
+        || matches!(spell_profile.kind, SpellCastKind::NextMeleeSwing)
+    {
+        return None;
+    }
+    spell_hostile_creature_target_cast_failure(
+        shared_world,
+        world_db_pool,
+        session,
+        spell_template,
+        target?,
+    )
+    .await
 }
 
 pub(in crate::world) async fn spell_requires_infront_target(
@@ -1084,9 +1194,9 @@ pub(in crate::world) async fn aura_rank_conflict_resolution(
     caster: ObjectGuid,
     active_auras: &[ActiveAura],
 ) -> anyhow::Result<AuraRankConflictResolution> {
-    let stack_limit = object_mgr
-        .spell_template(world_db_pool, spell_id)
-        .await?
+    let spell_template = object_mgr.spell_template(world_db_pool, spell_id).await?;
+    let stack_limit = spell_template
+        .as_ref()
         .map(|template| template.stack_amount.clamp(1, u32::from(u8::MAX)) as u8)
         .unwrap_or(1);
     let conflicting_auras = active_auras
@@ -1097,6 +1207,20 @@ pub(in crate::world) async fn aura_rank_conflict_resolution(
         return Ok(AuraRankConflictResolution {
             stack_limit,
             ..AuraRankConflictResolution::clear()
+        });
+    }
+    if spell_template
+        .as_ref()
+        .is_some_and(spell_is_priest_power_word_shield)
+        && conflicting_auras
+            .iter()
+            .any(|aura| aura.spell_id == PRIEST_WEAKENED_SOUL_SPELL_ID)
+    {
+        return Ok(AuraRankConflictResolution {
+            failure: Some(SPELL_FAILED_AURA_BOUNCED),
+            replace_spell_ids: Vec::new(),
+            replace_any_caster_spell_ids: Vec::new(),
+            stack_limit,
         });
     }
     let new_chain = object_mgr.spell_chain(world_db_pool, spell_id).await?;
@@ -1396,6 +1520,17 @@ pub(in crate::world) fn spell_is_mage_polymorph(template: &wow_db::SpellTemplate
             .any(|effect| effect.aura_name == SPELL_AURA_MOD_CONFUSE)
 }
 
+pub(in crate::world) fn spell_is_priest_power_word_shield(
+    template: &wow_db::SpellTemplateQuery,
+) -> bool {
+    template.spell_family_name == SPELL_FAMILY_PRIEST
+        && template.spell_family_flags & 0x0000_0001 != 0
+        && SpellInfo::from_template(template)
+            .effects
+            .iter()
+            .any(|effect| effect.aura_name == SPELL_AURA_SCHOOL_ABSORB)
+}
+
 pub(in crate::world) fn spell_is_single_target_aura_template(
     template: &wow_db::SpellTemplateQuery,
 ) -> bool {
@@ -1508,15 +1643,16 @@ pub(in crate::world) fn apply_spell_proc_event_to_active_aura(
     spell_template: &wow_db::SpellTemplateQuery,
     spell_proc_event: Option<wow_db::SpellProcEventQuery>,
 ) {
-    let Some(spell_proc_event) = spell_proc_event else {
-        return;
-    };
-    let overridden_chance = (spell_proc_event.custom_chance > 0.0)
-        .then_some(spell_proc_event.custom_chance.round().clamp(0.0, 100.0) as u32);
-    for trigger in &mut aura.proc_triggers {
-        trigger.proc_ex = spell_proc_event.proc_ex;
-        if let Some(proc_chance) = overridden_chance {
-            trigger.proc_chance = proc_chance;
+    let overridden_chance = spell_proc_event.and_then(|spell_proc_event| {
+        (spell_proc_event.custom_chance > 0.0)
+            .then_some(spell_proc_event.custom_chance.round().clamp(0.0, 100.0) as u32)
+    });
+    if let Some(spell_proc_event) = spell_proc_event {
+        for trigger in &mut aura.proc_triggers {
+            trigger.proc_ex = spell_proc_event.proc_ex;
+            if let Some(proc_chance) = overridden_chance {
+                trigger.proc_chance = proc_chance;
+            }
         }
     }
     if !aura.proc_triggers.is_empty()
@@ -1528,7 +1664,9 @@ pub(in crate::world) fn apply_spell_proc_event_to_active_aura(
     aura.proc_triggers.push(AuraProcTrigger {
         triggered_spell_id: 0,
         proc_flags: spell_template.proc_flags,
-        proc_ex: spell_proc_event.proc_ex,
+        proc_ex: spell_proc_event
+            .map(|spell_proc_event| spell_proc_event.proc_ex)
+            .unwrap_or(0),
         proc_chance: overridden_chance.unwrap_or(spell_template.proc_chance),
         remaining_charges: Some(spell_template.proc_charges),
     });
@@ -1682,6 +1820,9 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
                 school_mask: spell_school_mask_from_misc_value(effect.misc_value),
                 percent: spell_effect_calculated_i32(effect, value_context),
             }),
+            SPELL_AURA_MOD_TOTAL_THREAT => Some(AuraStatModifier::TotalThreat {
+                amount: spell_effect_calculated_i32(effect, value_context),
+            }),
             SPELL_AURA_MOD_TAUNT => Some(AuraStatModifier::Taunt),
             SPELL_AURA_MOD_DAMAGE_PERCENT_DONE => Some(AuraStatModifier::DamageDonePercent {
                 school_mask: spell_school_mask_from_misc_value(effect.misc_value),
@@ -1711,6 +1852,10 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
                 school_mask: spell_school_mask_from_misc_value(effect.misc_value),
                 percent: spell_effect_calculated_i32(effect, value_context),
             }),
+            SPELL_AURA_MOD_HEALING_DONE => Some(AuraStatModifier::HealingDone {
+                school_mask: spell_school_mask_from_misc_value(effect.misc_value),
+                amount: spell_effect_calculated_i32(effect, value_context),
+            }),
             SPELL_AURA_MOD_HEALING => Some(AuraStatModifier::HealingTaken {
                 school_mask: spell_school_mask_from_misc_value(effect.misc_value),
                 amount: spell_effect_calculated_i32(effect, value_context),
@@ -1734,9 +1879,15 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
             SPELL_AURA_MOD_SILENCE => Some(AuraStatModifier::Silence),
             SPELL_AURA_MOD_PACIFY_SILENCE => Some(AuraStatModifier::PacifySilence),
             SPELL_AURA_FEATHER_FALL => Some(AuraStatModifier::FeatherFall),
+            SPELL_AURA_HOVER => Some(AuraStatModifier::Hover),
             SPELL_AURA_SCHOOL_ABSORB => Some(AuraStatModifier::SchoolAbsorb {
                 school_mask: spell_school_mask_from_misc_value(effect.misc_value),
-                amount: spell_effect_calculated_i32(effect, value_context),
+                amount: spell_effect_calculated_i32(effect, value_context)
+                    + spell_effect_healing_done_bonus(effect, value_context),
+            }),
+            SPELL_AURA_REFLECT_SPELLS_SCHOOL => Some(AuraStatModifier::ReflectSpellsSchool {
+                school_mask: spell_school_mask_from_misc_value(effect.misc_value),
+                percent: spell_effect_calculated_i32(effect, value_context),
             }),
             SPELL_AURA_MANA_SHIELD => Some(AuraStatModifier::ManaShield {
                 school_mask: spell_school_mask_from_misc_value(effect.misc_value),
@@ -1986,6 +2137,59 @@ pub(in crate::world) fn active_auras_are_immune_to_spell(
     spell_template_mechanics(template)
         .into_iter()
         .any(|mechanic| active_aura_has_mechanic_immunity(active_auras, mechanic))
+}
+
+pub(in crate::world) fn spell_template_is_reflectable(
+    template: &wow_db::SpellTemplateQuery,
+) -> bool {
+    template.dmg_class == SPELL_DAMAGE_CLASS_MAGIC
+        && template.attributes & SPELL_ATTR_IS_ABILITY == 0
+        && template.attributes_ex & SPELL_ATTR_EX_NO_REFLECTION == 0
+        && template.attributes & SPELL_ATTR_NO_IMMUNITIES == 0
+        && template.attributes & SPELL_ATTR_PASSIVE == 0
+}
+
+pub(in crate::world) fn active_aura_spell_reflect_chance(
+    active_auras: &[ActiveAura],
+    school_mask: u32,
+) -> u32 {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .filter_map(|modifier| match modifier {
+            AuraStatModifier::ReflectSpellsSchool {
+                school_mask: modifier_mask,
+                percent,
+            } if aura_school_mask_matches(*modifier_mask, school_mask) => Some(*percent),
+            _ => None,
+        })
+        .sum::<i32>()
+        .clamp(0, 100) as u32
+}
+
+pub(in crate::world) fn active_aura_spell_healing_done_bonus(
+    active_auras: &[ActiveAura],
+    school_mask: u32,
+) -> i32 {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .filter_map(|modifier| match modifier {
+            AuraStatModifier::HealingDone {
+                school_mask: modifier_mask,
+                amount,
+            } if aura_school_mask_matches(*modifier_mask, school_mask) => Some(*amount),
+            _ => None,
+        })
+        .sum()
+}
+
+pub(in crate::world) fn active_auras_reflect_spell_school(
+    active_auras: &[ActiveAura],
+    school_mask: u32,
+) -> bool {
+    let reflect_chance = active_aura_spell_reflect_chance(active_auras, school_mask);
+    reflect_chance > 0 && aura_proc_roll_succeeds(reflect_chance)
 }
 
 pub(in crate::world) async fn mechanic_immunity_purge_spell_ids(
@@ -2453,6 +2657,27 @@ pub(in crate::world) fn active_aura_spell_healing_taken_bonus(
         .sum()
 }
 
+pub(in crate::world) fn spell_effect_healing_done_bonus(
+    effect: SpellInfoEffect,
+    context: SpellEffectValueContext,
+) -> i32 {
+    if effect.bonus_coefficient <= 0.0 || context.spell_healing_bonus_done <= 0 {
+        return 0;
+    }
+    ((context.spell_healing_bonus_done as f32)
+        * effect.bonus_coefficient
+        * spell_level_penalty_multiplier(context.spell_level))
+    .trunc() as i32
+}
+
+pub(in crate::world) fn spell_level_penalty_multiplier(spell_level: u32) -> f32 {
+    if spell_level > 0 && spell_level < 20 {
+        1.0 - ((20.0 - spell_level as f32) * 0.0375)
+    } else {
+        1.0
+    }
+}
+
 pub(in crate::world) fn apply_flat_spell_bonus(amount: u32, bonus: i32) -> u32 {
     (i64::from(amount) + i64::from(bonus)).max(0) as u32
 }
@@ -2474,6 +2699,16 @@ pub(in crate::world) fn active_aura_threat_multiplier(
         .fold(1.0, |multiplier, percent| {
             multiplier * percent_modifier_multiplier(percent)
         })
+}
+
+pub(in crate::world) fn active_aura_total_threat_amount(aura: &ActiveAura) -> i32 {
+    aura.stat_modifiers
+        .iter()
+        .filter_map(|modifier| match modifier {
+            AuraStatModifier::TotalThreat { amount } => Some(*amount),
+            _ => None,
+        })
+        .sum()
 }
 
 fn aura_school_mask_matches(modifier_mask: u32, school_mask: u32) -> bool {
@@ -2695,6 +2930,47 @@ pub(in crate::world) fn apply_active_aura(active_auras: &mut Vec<ActiveAura>, au
     } else {
         active_auras.push(aura);
     }
+}
+
+pub(in crate::world) fn consumable_regen_conflicting_spell_ids(
+    active_auras: &[ActiveAura],
+    aura: &ActiveAura,
+) -> Vec<u32> {
+    let Some(new_regen) = aura.periodic_regen else {
+        return Vec::new();
+    };
+    if !new_regen.makes_player_sit {
+        return Vec::new();
+    }
+    let mut spell_ids = Vec::new();
+    for existing in active_auras {
+        let Some(existing_regen) = existing.periodic_regen else {
+            continue;
+        };
+        if !existing_regen.makes_player_sit {
+            continue;
+        }
+        let same_food = new_regen.health_amount > 0 && existing_regen.health_amount > 0;
+        let same_drink = new_regen.mana_amount > 0 && existing_regen.mana_amount > 0;
+        if same_food || same_drink {
+            push_unique_spell_id(&mut spell_ids, existing.spell_id);
+        }
+    }
+    spell_ids
+}
+
+#[cfg(test)]
+pub(in crate::world) fn apply_consumable_regen_aura(
+    active_auras: &mut Vec<ActiveAura>,
+    aura: ActiveAura,
+) {
+    let replace_spell_ids = consumable_regen_conflicting_spell_ids(active_auras, &aura);
+    if !replace_spell_ids.is_empty() {
+        active_auras.retain(|existing| {
+            existing.caster != aura.caster || !replace_spell_ids.contains(&existing.spell_id)
+        });
+    }
+    apply_active_aura(active_auras, aura);
 }
 
 #[cfg(test)]

@@ -65,6 +65,7 @@ pub(in crate::world) async fn dispatch_npc_packet(
                     world_db_pool: ctx.world_db_pool,
                     object_mgr: ctx.runtime_state.object_mgr.as_ref(),
                     maps: &ctx.runtime_state.maps,
+                    parties: &ctx.runtime_state.parties,
                     sessions: &ctx.runtime_state.sessions,
                 },
                 packet.gameobject_use()?,

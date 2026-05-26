@@ -467,7 +467,17 @@ pub(in crate::world) async fn apply_item_aura_effect(
     let makes_player_sit = aura
         .periodic_regen
         .is_some_and(|regen| regen.makes_player_sit);
-    apply_player_aura(session, aura.clone());
+    let consumable_conflicts =
+        consumable_regen_conflicting_spell_ids(&session.auras.active_auras, &aura);
+    let consumable_resolution = AuraRankConflictResolution {
+        replace_spell_ids: consumable_conflicts,
+        ..AuraRankConflictResolution::clear()
+    };
+    if consumable_resolution.replace_spell_ids.is_empty() {
+        apply_player_aura(session, aura.clone());
+    } else {
+        apply_player_aura_replacing_conflicts(session, aura.clone(), &consumable_resolution);
+    }
     if makes_player_sit {
         session.character.player_stand_state = PLAYER_STAND_STATE_SIT;
         update_bodies.push(build_player_stand_state_update_body(
@@ -475,12 +485,23 @@ pub(in crate::world) async fn apply_item_aura_effect(
             session.character.player_stand_state,
         )?);
     }
-    if let Some(event) = deps
-        .shared_world
-        .maps
-        .apply_player_aura(map_id, character_guid, aura)
-        .await?
-    {
+    let aura_event = if consumable_resolution.replace_spell_ids.is_empty() {
+        deps.shared_world
+            .maps
+            .apply_player_aura(map_id, character_guid, aura)
+            .await?
+    } else {
+        deps.shared_world
+            .maps
+            .apply_player_aura_replacing_conflicts(
+                map_id,
+                character_guid,
+                aura,
+                &consumable_resolution,
+            )
+            .await?
+    };
+    if let Some(event) = aura_event {
         for packet in event.direct_packets {
             send_packet(
                 stream,

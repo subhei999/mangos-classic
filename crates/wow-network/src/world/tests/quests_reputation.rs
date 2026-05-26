@@ -163,6 +163,7 @@ fn repeatable_quest_status_can_be_started_again_after_reward() {
         quest: 7,
         status: QUEST_STATUS_COMPLETE,
         rewarded: 1,
+        explored: 0,
         mobcount1: 0,
         mobcount2: 0,
         mobcount3: 0,
@@ -190,6 +191,7 @@ fn quest_accept_requires_free_quest_log_slot() {
                 quest,
                 status: QUEST_STATUS_INCOMPLETE,
                 rewarded: 0,
+                explored: 0,
                 mobcount1: 0,
                 mobcount2: 0,
                 mobcount3: 0,
@@ -221,6 +223,7 @@ fn rewarded_historical_quests_do_not_consume_quest_log_slots() {
                 quest,
                 status: QUEST_STATUS_COMPLETE,
                 rewarded: 1,
+                explored: 0,
                 mobcount1: 0,
                 mobcount2: 0,
                 mobcount3: 0,
@@ -257,6 +260,7 @@ fn prev_quest_requirements_follow_positive_and_negative_rules() {
             quest: 99,
             status: QUEST_STATUS_COMPLETE,
             rewarded: 1,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -272,6 +276,7 @@ fn prev_quest_requirements_follow_positive_and_negative_rules() {
             quest: 99,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -300,6 +305,7 @@ async fn prev_quest_requirements_follow_cmangos_any_satisfied_rule() {
             quest: 99,
             status: QUEST_STATUS_COMPLETE,
             rewarded: 1,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -324,6 +330,7 @@ async fn prev_quest_requirements_follow_cmangos_any_satisfied_rule() {
             quest: 100,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -372,6 +379,7 @@ async fn prev_quest_requirements_require_all_rewarded_in_negative_exclusive_grou
             quest: 10,
             status: QUEST_STATUS_COMPLETE,
             rewarded: 1,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -391,6 +399,7 @@ async fn prev_quest_requirements_require_all_rewarded_in_negative_exclusive_grou
             quest: 11,
             status: QUEST_STATUS_COMPLETE,
             rewarded: 1,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -434,6 +443,7 @@ async fn prev_quest_requirements_require_all_active_in_negative_active_exclusive
             quest: 10,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -453,6 +463,7 @@ async fn prev_quest_requirements_require_all_active_in_negative_active_exclusive
             quest: 11,
             status: QUEST_STATUS_COMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -543,6 +554,7 @@ async fn object_mgr_cached_loot_templates_feed_quest_drop_selection_without_db_l
             quest: 33,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -577,6 +589,7 @@ fn exclusive_group_rejects_other_active_quests_in_group() {
             quest: 11,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -591,6 +604,7 @@ fn exclusive_group_rejects_other_active_quests_in_group() {
             quest: 11,
             status: QUEST_STATUS_COMPLETE,
             rewarded: 1,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -983,6 +997,7 @@ async fn quest_state_refresh_updates_visible_gameobject_dynamic_flags() {
             quest: 18,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -1061,6 +1076,7 @@ async fn quest_dialog_status_allows_any_satisfied_previous_quest() {
             quest: 10,
             status: QUEST_STATUS_COMPLETE,
             rewarded: 1,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -1380,6 +1396,7 @@ async fn quest_required_condition_uses_quest_taken_rewarded_and_boolean_conditio
             quest: 7,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -1392,6 +1409,7 @@ async fn quest_required_condition_uses_quest_taken_rewarded_and_boolean_conditio
             quest: 8,
             status: QUEST_STATUS_COMPLETE,
             rewarded: 1,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -1579,6 +1597,7 @@ async fn rewarded_chain_quest_opens_next_quest_details_from_same_questgiver() {
                     quest: rewarded.entry,
                     status: QUEST_STATUS_COMPLETE,
                     rewarded: 1,
+                    explored: 0,
                     mobcount1: 0,
                     mobcount2: 0,
                     mobcount3: 0,
@@ -1593,27 +1612,29 @@ async fn rewarded_chain_quest_opens_next_quest_details_from_same_questgiver() {
     let mut sink = WorldPacketSink::new(outbound_tx);
     let mut header_crypto = HeaderCrypto::new(&[0; 40]);
 
-    assert!(
-        send_next_chain_quest_details_after_reward(
-            &mut sink,
-            &object_mgr,
-            &pool,
-            giver,
-            &rewarded,
-            &session,
-            &mut header_crypto,
-        )
-        .await
-        .unwrap()
-    );
+    assert!(send_next_chain_quest_details_after_reward(
+        &mut sink,
+        &object_mgr,
+        &pool,
+        giver,
+        &rewarded,
+        &session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap());
 
     let packet = outbound_rx.try_recv().unwrap();
-    assert_eq!(packet.opcode, WorldOpcode::SmsgQuestgiverQuestDetails as u16);
+    assert_eq!(
+        packet.opcode,
+        WorldOpcode::SmsgQuestgiverQuestDetails as u16
+    );
     let mut cursor = 8;
     assert_eq!(read_u32(&packet.body, &mut cursor).unwrap(), next.entry);
-    assert!(packet.body.windows(next.title.len()).any(|window| {
-        window == next.title.as_bytes()
-    }));
+    assert!(packet
+        .body
+        .windows(next.title.len())
+        .any(|window| { window == next.title.as_bytes() }));
     assert!(outbound_rx.try_recv().is_err());
 }
 
@@ -1808,6 +1829,7 @@ fn active_quest_log_slots_skip_abandoned_status_rows() {
             quest: 7,
             status: 0,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -1820,6 +1842,7 @@ fn active_quest_log_slots_skip_abandoned_status_rows() {
             quest: 8,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -1864,6 +1887,7 @@ fn quest_log_count_state_packs_all_objective_counters() {
         quest: 456,
         status: QUEST_STATUS_INCOMPLETE,
         rewarded: 0,
+        explored: 0,
         mobcount1: 2,
         mobcount2: 3,
         mobcount3: 4,
@@ -1896,6 +1920,7 @@ fn quest_log_refresh_rewrites_shifted_slots_after_sorted_insert() {
             quest: 5261,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -1908,6 +1933,7 @@ fn quest_log_refresh_rewrites_shifted_slots_after_sorted_insert() {
             quest: 7,
             status: QUEST_STATUS_INCOMPLETE,
             rewarded: 0,
+            explored: 0,
             mobcount1: 0,
             mobcount2: 0,
             mobcount3: 0,
@@ -1938,6 +1964,7 @@ fn completed_delivery_quest_requires_items_to_reward() {
         quest: 3100,
         status: QUEST_STATUS_COMPLETE,
         rewarded: 0,
+        explored: 0,
         mobcount1: 0,
         mobcount2: 0,
         mobcount3: 0,
@@ -1979,6 +2006,7 @@ fn quest_completion_requires_every_objective() {
         quest: 3104,
         status: QUEST_STATUS_INCOMPLETE,
         rewarded: 0,
+        explored: 0,
         mobcount1: 1,
         mobcount2: 1,
         mobcount3: 0,
@@ -1991,6 +2019,65 @@ fn quest_completion_requires_every_objective() {
 
     assert!(!quest_status_can_complete(&partial, &quest, &[]));
     assert!(quest_status_can_complete(&complete, &quest, &[]));
+}
+
+#[test]
+fn exploration_or_event_quest_requires_area_trigger_credit() {
+    let mut quest = test_quest_template(3105);
+    quest.special_flags = QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT;
+    let pending = CharacterQuestStatus {
+        quest: 3105,
+        status: QUEST_STATUS_INCOMPLETE,
+        rewarded: 0,
+        explored: 0,
+        mobcount1: 0,
+        mobcount2: 0,
+        mobcount3: 0,
+        mobcount4: 0,
+    };
+
+    assert!(!quest_status_can_complete(&pending, &quest, &[]));
+    assert!(!quest_can_complete_from_inventory(&quest, &[]));
+
+    let (credited, complete) = quest_area_exploration_credit_status(&pending, &quest, &[]).unwrap();
+
+    assert!(complete);
+    assert_eq!(credited.explored, 1);
+    assert_eq!(credited.status, QUEST_STATUS_COMPLETE);
+    assert!(quest_area_exploration_credit_status(&credited, &quest, &[]).is_none());
+}
+
+#[test]
+fn exploration_credit_waits_for_other_required_objectives() {
+    let mut quest = test_quest_template(3106);
+    quest.special_flags = QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT;
+    quest.req_creature_or_go_id = [38, 0, 0, 0];
+    quest.req_creature_or_go_count = [1, 0, 0, 0];
+    let pending = CharacterQuestStatus {
+        quest: 3106,
+        status: QUEST_STATUS_INCOMPLETE,
+        rewarded: 0,
+        explored: 0,
+        mobcount1: 0,
+        mobcount2: 0,
+        mobcount3: 0,
+        mobcount4: 0,
+    };
+
+    let (credited, complete) = quest_area_exploration_credit_status(&pending, &quest, &[]).unwrap();
+
+    assert!(!complete);
+    assert_eq!(credited.explored, 1);
+    assert_eq!(credited.status, QUEST_STATUS_INCOMPLETE);
+    assert!(!quest_status_can_complete(&credited, &quest, &[]));
+    assert!(quest_status_can_complete(
+        &CharacterQuestStatus {
+            mobcount1: 1,
+            ..credited
+        },
+        &quest,
+        &[]
+    ));
 }
 
 #[test]
@@ -2025,6 +2112,126 @@ fn quest_source_item_storage_rejects_full_backpack_without_stack_room() {
             },
         ),
         QuestSourceItemStorage::NoSpace
+    );
+}
+
+#[test]
+fn quest_source_item_storage_uses_equipped_bag_when_backpack_is_full() {
+    let mut quest = test_quest_template(3104);
+    quest.src_item_id = 9542;
+    quest.src_item_count = 1;
+    let mut inventory: Vec<_> = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .enumerate()
+        .map(|(index, slot)| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 1000 + index as u32,
+            item_template: 8000 + index as u32,
+            count: 1,
+            flags: 0,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        })
+        .collect();
+    inventory.push(CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_BAG_START,
+        item: 2000,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    });
+    let template = test_item_template(9542, 0, 0, 0.0, 0.0, 0);
+    let bag_model = InventoryBagModel::inventory_only(&[EquippedBagInfo {
+        slot: INVENTORY_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    }]);
+
+    assert_eq!(
+        plan_quest_source_item_storage_in_inventory(
+            &quest,
+            &inventory,
+            &template,
+            QuestSourceItemTemplate {
+                max_durability: 0,
+                max_stack: 1,
+                container_slots: None,
+            },
+            &bag_model,
+        ),
+        QuestSourceItemStorage::Grant(QuestSourceItemStoragePlan {
+            item_id: 9542,
+            max_durability: 0,
+            container_slots: None,
+            destinations: vec![QuestSourceItemDestination::NewStack {
+                bag: INVENTORY_SLOT_BAG_START,
+                slot: 0,
+                count: 1,
+            }],
+        })
+    );
+}
+
+#[test]
+fn quest_reward_storage_uses_equipped_bag_when_backpack_is_full() {
+    let mut inventory: Vec<_> = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+        .enumerate()
+        .map(|(index, slot)| CharacterInventoryItem {
+            bag: INVENTORY_SLOT_BAG_0 as u32,
+            slot,
+            item: 1000 + index as u32,
+            item_template: 8000 + index as u32,
+            count: 1,
+            flags: 0,
+            random_property_id: 0,
+            charges: String::new(),
+            enchantments: String::new(),
+            durability: 0,
+        })
+        .collect();
+    inventory.push(CharacterInventoryItem {
+        bag: INVENTORY_SLOT_BAG_0 as u32,
+        slot: INVENTORY_SLOT_BAG_START,
+        item: 2000,
+        item_template: RUST_VENDOR_BAG_ITEM,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 0,
+    });
+    let template = test_item_template(9542, 0, 0, 0.0, 0.0, 0);
+    let reward = QuestRewardGrant {
+        item: 9542,
+        count: 1,
+        max_durability: 0,
+        container_slots: None,
+        template,
+    };
+    let bag_model = InventoryBagModel::inventory_only(&[EquippedBagInfo {
+        slot: INVENTORY_SLOT_BAG_START,
+        container_slots: 6,
+        class: ITEM_CLASS_CONTAINER,
+        subclass: ITEM_SUBCLASS_CONTAINER,
+    }]);
+
+    assert_eq!(
+        plan_quest_reward_storage(&inventory, &[reward], &bag_model, &[]),
+        Some(vec![vec![StoreSlot {
+            bag: INVENTORY_SLOT_BAG_START,
+            slot: 0,
+            count: 1,
+            existing_item: None,
+        }]])
     );
 }
 
@@ -2115,10 +2322,12 @@ fn quest_source_item_storage_splits_large_grants_across_empty_slots() {
                     grant_count: 1,
                 },
                 QuestSourceItemDestination::NewStack {
+                    bag: INVENTORY_SLOT_BAG_0,
                     slot: INVENTORY_SLOT_ITEM_START + 1,
                     count: 2,
                 },
                 QuestSourceItemDestination::NewStack {
+                    bag: INVENTORY_SLOT_BAG_0,
                     slot: INVENTORY_SLOT_ITEM_START + 2,
                     count: 1,
                 },
@@ -2264,6 +2473,7 @@ fn incomplete_item_quest_can_reward_when_inventory_satisfies_objective() {
         quest: 33,
         status: QUEST_STATUS_INCOMPLETE,
         rewarded: 0,
+        explored: 0,
         mobcount1: 0,
         mobcount2: 0,
         mobcount3: 0,

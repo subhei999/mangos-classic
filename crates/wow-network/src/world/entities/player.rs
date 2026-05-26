@@ -194,6 +194,7 @@ pub(in crate::world) fn write_minimal_player_update_values(
     base_world_stats: &PlayerWorldStats,
     world_stats: &PlayerWorldStats,
     skills: &[CharacterSkill],
+    active_spells: &HashSet<u32>,
     quest_statuses: &HashMap<u32, CharacterQuestStatus>,
     equipped_templates: &[EquippedItemTemplate],
     ammo_template: Option<&ItemTemplateQuery>,
@@ -219,10 +220,12 @@ pub(in crate::world) fn write_minimal_player_update_values(
     )?;
     set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, None)?;
     let combat_stats = combat_stats_with_active_auras(
-        player_combat_stats_for_values_with_ammo(
+        player_combat_stats_for_values_with_known_spells_and_ammo(
             character.class,
             character.level,
             world_stats,
+            skills,
+            active_spells,
             equipped_templates,
             ammo_template,
         ),
@@ -871,6 +874,49 @@ pub(in crate::world) fn player_combat_stats_for_values_with_ammo(
     equipped_templates: &[EquippedItemTemplate],
     ammo_template: Option<&ItemTemplateQuery>,
 ) -> PlayerCombatStats {
+    player_combat_stats_for_values_with_known_spells_and_ammo(
+        class,
+        level,
+        world_stats,
+        &[],
+        &HashSet::new(),
+        equipped_templates,
+        ammo_template,
+    )
+}
+
+pub(in crate::world) const SPELL_PASSIVE_PARRY: u32 = 3127;
+
+pub(in crate::world) fn character_can_parry(active_spells: &HashSet<u32>) -> bool {
+    active_spells.contains(&SPELL_PASSIVE_PARRY)
+}
+
+pub(in crate::world) fn player_parry_percent(
+    level: u8,
+    skills: &[CharacterSkill],
+    active_spells: &HashSet<u32>,
+) -> f32 {
+    if !character_can_parry(active_spells) {
+        return 0.0;
+    }
+    let defense = skills
+        .iter()
+        .find(|skill| skill.skill == SKILL_DEFENSE)
+        .map(|skill| skill.value)
+        .unwrap_or(u16::from(level).saturating_mul(5));
+    let max_for_level = u16::from(level).saturating_mul(5);
+    (5.0 + (i32::from(defense) - i32::from(max_for_level)) as f32 * 0.04).clamp(0.0, 100.0)
+}
+
+pub(in crate::world) fn player_combat_stats_for_values_with_known_spells_and_ammo(
+    class: u8,
+    level: u8,
+    world_stats: &PlayerWorldStats,
+    skills: &[CharacterSkill],
+    active_spells: &HashSet<u32>,
+    equipped_templates: &[EquippedItemTemplate],
+    ammo_template: Option<&ItemTemplateQuery>,
+) -> PlayerCombatStats {
     let strength = world_stats.stats[0];
     let agility = world_stats.stats[1];
     let intellect = world_stats.stats[3];
@@ -930,7 +976,7 @@ pub(in crate::world) fn player_combat_stats_for_values_with_ammo(
             0.0
         },
         dodge_percent: dodge_percent(class, level as u8, agility),
-        parry_percent: 0.0,
+        parry_percent: player_parry_percent(level as u8, skills, active_spells),
         crit_percent: melee_crit_percent(class, level as u8, agility),
         ranged_crit_percent: melee_crit_percent(class, level as u8, agility),
     }

@@ -1,6 +1,38 @@
 use super::*;
 
 impl MapRuntimeManager {
+    pub(in crate::world) async fn transfer_player(
+        &self,
+        old_map_id: u32,
+        character_guid: u32,
+        position: WorldPosition,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        if old_map_id == position.map_id {
+            return self
+                .set_player_position(old_map_id, character_guid, position)
+                .await;
+        }
+
+        let old_map = { self.maps.lock().await.get(&(old_map_id, 0)).cloned() };
+        let Some(old_map) = old_map else {
+            return Ok(Vec::new());
+        };
+
+        let mut player = {
+            let map = old_map.lock().await;
+            let Some(player) = map.players.get(&character_guid).cloned() else {
+                return Ok(Vec::new());
+            };
+            player
+        };
+
+        prepare_player_runtime_for_cross_map_transfer(&mut player, position);
+
+        let mut packets = self.remove_player(old_map_id, character_guid).await;
+        packets.extend(self.add_player(player).await?);
+        Ok(packets)
+    }
+
     pub(in crate::world) async fn add_player(
         &self,
         player: PlayerRuntime,
@@ -325,6 +357,17 @@ impl MapRuntimeManager {
         let map = map?;
         let snapshot = map.lock().await.player_runtime_snapshot(character_guid);
         snapshot
+    }
+
+    pub(in crate::world) async fn player_runtime(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Option<PlayerRuntime> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let map = map?;
+        let runtime = map.lock().await.players.get(&character_guid).cloned();
+        runtime
     }
 
     pub(in crate::world) async fn player_runtime_session_snapshot(
@@ -873,4 +916,37 @@ impl MapRuntimeManager {
         let mut map = map.lock().await;
         map.set_player_position(character_guid, position)
     }
+}
+
+fn prepare_player_runtime_for_cross_map_transfer(
+    player: &mut PlayerRuntime,
+    position: WorldPosition,
+) {
+    player.selected_target = None;
+    player.unit_target = None;
+    player.active_combat_target = None;
+    player.active_combat_attack_kind = PlayerAutoAttackKind::Melee;
+    player.active_combat_next_swing_at = None;
+    player.ranged_auto_attack_next_shot_at = None;
+    player.in_combat = false;
+    player.looting = false;
+    player.position = position;
+    player.movement_flags = 0;
+    player.client_time = 0;
+    player.server_time = 0;
+    player.fall_time = 0;
+    player.last_fall_z = None;
+    player.last_fall_time = 0;
+    player.jump = JumpInfo::default();
+    player.cell = cell_coord_for_position(position);
+    player.visible_objects.clear();
+    player.next_sight_aggro_check_at = None;
+    player.last_sight_aggro_check_position = None;
+    player.last_player_visibility_refresh_position = None;
+    player.last_creature_visibility_position = None;
+    player.last_gameobject_visibility_position = None;
+    player.last_player_corpse_visibility_position = None;
+    player.combo_target = None;
+    player.combo_points = 0;
+    player.queued_next_melee_spell = None;
 }

@@ -41,6 +41,8 @@ pub(in crate::world) async fn apply_player_spell_effects(
 
     let mut create_item_applied = false;
 
+    let mut transport_door_applied = false;
+
     let mut weapon_damage_applied = false;
 
     let mut landed_damage = false;
@@ -125,6 +127,29 @@ pub(in crate::world) async fn apply_player_spell_effects(
 
                     direct_damage_processed = true;
                 }
+            }
+
+            SpellEffectDispatch::PowerBurn
+                if spell_profile.kind != SpellCastKind::Charge
+                    && spell_profile.kind != SpellCastKind::NextMeleeSwing =>
+            {
+                landed_damage |= apply_player_power_burn_effect(
+                    stream,
+                    deps,
+                    session,
+                    caster,
+                    character_guid,
+                    map_id,
+                    spell_template,
+                    effect,
+                    effect_value_context,
+                    targets,
+                    target_outcome,
+                    header_crypto,
+                )
+                .await?;
+
+                direct_damage_processed = true;
             }
 
             SpellEffectDispatch::WeaponDamage | SpellEffectDispatch::WeaponPercentDamage
@@ -216,6 +241,25 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 .await?;
 
                 create_item_applied = true;
+            }
+
+            SpellEffectDispatch::TransportDoor if !transport_door_applied => {
+                apply_player_transport_door_effect(
+                    stream,
+                    deps,
+                    session,
+                    caster,
+                    character_guid,
+                    map_id,
+                    spell_template,
+                    effect,
+                    targets,
+                    now,
+                    header_crypto,
+                )
+                .await?;
+
+                transport_door_applied = true;
             }
 
             SpellEffectDispatch::Leap | SpellEffectDispatch::Teleport

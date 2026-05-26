@@ -1,11 +1,21 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
+use rand::seq::SliceRandom;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::MySqlPool;
 use sqlx::{FromRow, MySql, QueryBuilder};
 
 use crate::character::ItemRandomPropertyRoll;
 use crate::pool::DbError;
+
+const CMANGOS_SPELL_FIXES_SQL: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../sql/base/dbc/cmangos_fixes/Spell.sql"
+));
+
+static SPELL_EFFECT_BONUS_COEFFICIENT_FIXES: OnceLock<HashMap<u32, [f32; 3]>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, FromRow, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExplorationBaseXpQuery {
@@ -125,6 +135,10 @@ pub struct CreatureSpawnQuery {
     pub entry: u32,
     pub map: u32,
     pub game_event: Option<i16>,
+    pub guid_pool_id: Option<u16>,
+    pub entry_pool_id: Option<u16>,
+    pub pool_max_limit: Option<u32>,
+    pub pool_chance: f32,
     pub addon_emote: u32,
     pub position_x: f32,
     pub position_y: f32,
@@ -436,6 +450,10 @@ pub struct GameObjectSpawnQuery {
     pub entry: u32,
     pub map: u32,
     pub game_event: Option<i16>,
+    pub guid_pool_id: Option<u16>,
+    pub entry_pool_id: Option<u16>,
+    pub pool_max_limit: Option<u32>,
+    pub pool_chance: f32,
     pub position_x: f32,
     pub position_y: f32,
     pub position_z: f32,
@@ -476,8 +494,14 @@ pub struct ConditionQuery {
 }
 
 const GAMEOBJECT_SPAWN_SELECT: &str =
-    "SELECT gameobject.guid, gameobject.id AS entry, gameobject.map, \
+    "SELECT gameobject.guid, \
+                CAST(COALESCE(NULLIF(gameobject.id, 0), gameobject_spawn_entry_choice.entry) AS UNSIGNED) AS entry, \
+                gameobject.map, \
                 CAST(game_event_gameobject.event AS SIGNED) AS game_event, \
+                CAST(pool_gameobject.pool_entry AS UNSIGNED) AS guid_pool_id, \
+                CAST(pool_gameobject_template.pool_entry AS UNSIGNED) AS entry_pool_id, \
+                CAST(COALESCE(guid_pool_template.max_limit, entry_pool_template.max_limit) AS UNSIGNED) AS pool_max_limit, \
+                CAST(COALESCE(pool_gameobject.chance, pool_gameobject_template.chance, 0) AS DOUBLE) AS pool_chance, \
                 CAST(gameobject.position_x AS DOUBLE) AS position_x, \
                 CAST(gameobject.position_y AS DOUBLE) AS position_y, \
                 CAST(gameobject.position_z AS DOUBLE) AS position_z, \
@@ -523,12 +547,27 @@ const GAMEOBJECT_SPAWN_SELECT: &str =
                 CAST(gameobject_template.data22 AS SIGNED) AS template_data22, \
                 CAST(gameobject_template.data23 AS SIGNED) AS template_data23 \
          FROM gameobject \
-         JOIN gameobject_template ON gameobject.id = gameobject_template.entry \
+         LEFT JOIN ( \
+             SELECT guid, CAST(SUBSTRING_INDEX(GROUP_CONCAT(entry ORDER BY RAND()), ',', 1) AS UNSIGNED) AS entry \
+             FROM gameobject_spawn_entry \
+             GROUP BY guid \
+         ) AS gameobject_spawn_entry_choice ON gameobject.guid = gameobject_spawn_entry_choice.guid \
+         JOIN gameobject_template ON COALESCE(NULLIF(gameobject.id, 0), gameobject_spawn_entry_choice.entry) = gameobject_template.entry \
          LEFT JOIN gameobject_addon ON gameobject.guid = gameobject_addon.guid \
-         LEFT JOIN game_event_gameobject ON gameobject.guid = game_event_gameobject.guid";
+         LEFT JOIN game_event_gameobject ON gameobject.guid = game_event_gameobject.guid \
+         LEFT JOIN pool_gameobject ON gameobject.guid = pool_gameobject.guid \
+         LEFT JOIN pool_gameobject_template ON gameobject.id = pool_gameobject_template.id \
+         LEFT JOIN pool_template AS guid_pool_template ON pool_gameobject.pool_entry = guid_pool_template.entry \
+         LEFT JOIN pool_template AS entry_pool_template ON pool_gameobject_template.pool_entry = entry_pool_template.entry";
 
-const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry, creature.map, \
+const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, \
+                CAST(COALESCE(NULLIF(creature.id, 0), creature_spawn_entry_choice.entry) AS UNSIGNED) AS entry, \
+                creature.map, \
                 CAST(game_event_creature.event AS SIGNED) AS game_event, \
+                CAST(pool_creature.pool_entry AS UNSIGNED) AS guid_pool_id, \
+                CAST(pool_creature_template.pool_entry AS UNSIGNED) AS entry_pool_id, \
+                CAST(COALESCE(guid_pool_template.max_limit, entry_pool_template.max_limit) AS UNSIGNED) AS pool_max_limit, \
+                CAST(COALESCE(pool_creature.chance, pool_creature_template.chance, 0) AS DOUBLE) AS pool_chance, \
                 CAST(COALESCE(creature_addon.emote, creature_template_addon.emote, 0) AS UNSIGNED) AS addon_emote, \
                 CAST(creature.position_x AS DOUBLE) AS position_x, \
                 CAST(creature.position_y AS DOUBLE) AS position_y, \
@@ -640,7 +679,12 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
                 CAST(COALESCE(equip_3.sheath, 0) AS UNSIGNED) AS template_equip_sheath3, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
-         JOIN creature_template ON creature.id = creature_template.Entry \
+         LEFT JOIN ( \
+             SELECT guid, CAST(SUBSTRING_INDEX(GROUP_CONCAT(entry ORDER BY RAND()), ',', 1) AS UNSIGNED) AS entry \
+             FROM creature_spawn_entry \
+             GROUP BY guid \
+         ) AS creature_spawn_entry_choice ON creature.guid = creature_spawn_entry_choice.guid \
+         JOIN creature_template ON COALESCE(NULLIF(creature.id, 0), creature_spawn_entry_choice.entry) = creature_template.Entry \
          LEFT JOIN creature_template_classlevelstats AS cls \
            ON cls.Class = creature_template.UnitClass \
           AND cls.Level = CASE \
@@ -648,8 +692,12 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, creature.id AS entry,
                 ELSE creature_template.MinLevel \
               END \
          LEFT JOIN game_event_creature ON creature.guid = game_event_creature.guid \
+         LEFT JOIN pool_creature ON creature.guid = pool_creature.guid \
+         LEFT JOIN pool_creature_template ON creature.id = pool_creature_template.id \
+         LEFT JOIN pool_template AS guid_pool_template ON pool_creature.pool_entry = guid_pool_template.entry \
+         LEFT JOIN pool_template AS entry_pool_template ON pool_creature_template.pool_entry = entry_pool_template.entry \
          LEFT JOIN creature_addon ON creature.guid = creature_addon.guid \
-         LEFT JOIN creature_template_addon ON creature.id = creature_template_addon.entry \
+         LEFT JOIN creature_template_addon ON creature_template.Entry = creature_template_addon.entry \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
          LEFT JOIN creature_model_info AS cmi1 ON cmi1.modelid = creature_template.DisplayId1 \
@@ -695,6 +743,7 @@ pub struct SpellTemplateQuery {
     pub attributes_ex2: u32,
     pub attributes_ex3: u32,
     pub attributes_serverside: u32,
+    pub target_creature_type: u32,
     pub interrupt_flags: u32,
     pub aura_interrupt_flags: u32,
     pub channel_interrupt_flags: u32,
@@ -737,6 +786,9 @@ pub struct SpellTemplateQuery {
     pub effect_points_per_combo_point1: f32,
     pub effect_points_per_combo_point2: f32,
     pub effect_points_per_combo_point3: f32,
+    pub effect_bonus_coefficient1: f32,
+    pub effect_bonus_coefficient2: f32,
+    pub effect_bonus_coefficient3: f32,
     pub effect_multiple_value1: f32,
     pub effect_multiple_value2: f32,
     pub effect_multiple_value3: f32,
@@ -788,6 +840,16 @@ pub struct SpellChainQuery {
     pub first_spell: u32,
     pub rank: u8,
     pub req_spell: u32,
+}
+
+#[derive(Debug, Clone, Copy, FromRow, Serialize, Deserialize, PartialEq)]
+pub struct SpellTargetPositionQuery {
+    pub id: u32,
+    pub target_map: u32,
+    pub target_position_x: f32,
+    pub target_position_y: f32,
+    pub target_position_z: f32,
+    pub target_orientation: f32,
 }
 
 #[derive(Debug, Clone, Copy, FromRow, Serialize, Deserialize, PartialEq, Eq)]
@@ -1007,7 +1069,7 @@ pub async fn get_spell_template_query(
     spell: u32,
 ) -> Result<Option<SpellTemplateQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("spell_template_load");
-    sqlx::query_as::<_, SpellTemplateQuery>(
+    let mut row = sqlx::query_as::<_, SpellTemplateQuery>(
         "SELECT Id AS id, SpellName AS spell_name, Rank1 AS rank, School AS school, \
                 Dispel AS dispel, Mechanic AS mechanic, \
                 Attributes AS attributes, AttributesEx AS attributes_ex, CastingTimeIndex AS casting_time_index, \
@@ -1015,6 +1077,7 @@ pub async fn get_spell_template_query(
                 Speed AS speed, \
                 AttributesEx2 AS attributes_ex2, AttributesEx3 AS attributes_ex3, \
                 AttributesServerside AS attributes_serverside, \
+                TargetCreatureType AS target_creature_type, \
                 InterruptFlags AS interrupt_flags, AuraInterruptFlags AS aura_interrupt_flags, \
                 ChannelInterruptFlags AS channel_interrupt_flags, \
                 CasterAuraState AS caster_aura_state, TargetAuraState AS target_aura_state, \
@@ -1039,6 +1102,9 @@ pub async fn get_spell_template_query(
                 EffectPointsPerComboPoint1 AS effect_points_per_combo_point1, \
                 EffectPointsPerComboPoint2 AS effect_points_per_combo_point2, \
                 EffectPointsPerComboPoint3 AS effect_points_per_combo_point3, \
+                CAST(0 AS DOUBLE) AS effect_bonus_coefficient1, \
+                CAST(0 AS DOUBLE) AS effect_bonus_coefficient2, \
+                CAST(0 AS DOUBLE) AS effect_bonus_coefficient3, \
                 EffectMultipleValue1 AS effect_multiple_value1, \
                 EffectMultipleValue2 AS effect_multiple_value2, \
                 EffectMultipleValue3 AS effect_multiple_value3, \
@@ -1079,8 +1145,13 @@ pub async fn get_spell_template_query(
     )
     .bind(spell)
     .fetch_optional(pool)
-    .await
-    .map_err(Into::into)
+    .await?;
+
+    if let Some(template) = row.as_mut() {
+        apply_spell_effect_bonus_coefficient_fixes(template);
+    }
+
+    Ok(row)
 }
 
 pub async fn get_spell_proc_event_query(
@@ -1096,6 +1167,55 @@ pub async fn get_spell_proc_event_query(
     .fetch_optional(pool)
     .await
     .map_err(Into::into)
+}
+
+fn apply_spell_effect_bonus_coefficient_fixes(template: &mut SpellTemplateQuery) {
+    let Some(coefficients) = spell_effect_bonus_coefficient_fixes().get(&template.id) else {
+        return;
+    };
+    template.effect_bonus_coefficient1 = coefficients[0];
+    template.effect_bonus_coefficient2 = coefficients[1];
+    template.effect_bonus_coefficient3 = coefficients[2];
+}
+
+fn spell_effect_bonus_coefficient_fixes() -> &'static HashMap<u32, [f32; 3]> {
+    SPELL_EFFECT_BONUS_COEFFICIENT_FIXES.get_or_init(|| {
+        let mut fixes = HashMap::new();
+
+        for line in CMANGOS_SPELL_FIXES_SQL.lines() {
+            let line = line.trim();
+            let Some(line) = line.strip_prefix("UPDATE spell_template SET EffectBonusCoefficient")
+            else {
+                continue;
+            };
+            let Some((coefficient_part, id_part)) = line.split_once(" WHERE Id IN (") else {
+                continue;
+            };
+            let Some((slot, value)) = coefficient_part.split_once('=') else {
+                continue;
+            };
+            let Ok(slot) = slot.trim().parse::<usize>() else {
+                continue;
+            };
+            if !(1..=3).contains(&slot) {
+                continue;
+            }
+            let Ok(value) = value.trim().parse::<f32>() else {
+                continue;
+            };
+            let Some((ids, _)) = id_part.split_once(')') else {
+                continue;
+            };
+            for id in ids.split(',') {
+                let Ok(id) = id.trim().parse::<u32>() else {
+                    continue;
+                };
+                fixes.entry(id).or_insert([0.0; 3])[slot - 1] = value;
+            }
+        }
+
+        fixes
+    })
 }
 
 pub async fn get_page_text_query(
@@ -1245,6 +1365,26 @@ pub async fn get_spell_chain_query(
                 CAST(rank AS UNSIGNED) AS rank, \
                 CAST(req_spell AS UNSIGNED) AS req_spell \
          FROM spell_chain WHERE spell_id = ?",
+    )
+    .bind(spell)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub async fn get_spell_target_position_query(
+    pool: &MySqlPool,
+    spell: u32,
+) -> Result<Option<SpellTargetPositionQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("spell_target_position_load");
+    sqlx::query_as::<_, SpellTargetPositionQuery>(
+        "SELECT CAST(id AS UNSIGNED) AS id, \
+                CAST(target_map AS UNSIGNED) AS target_map, \
+                target_position_x, \
+                target_position_y, \
+                target_position_z, \
+                target_orientation \
+         FROM spell_target_position WHERE id = ?",
     )
     .bind(spell)
     .fetch_optional(pool)
@@ -1759,6 +1899,20 @@ pub async fn get_gameobject_complete_quests(
         }
     }
     Ok(quests)
+}
+
+pub async fn get_area_trigger_quest(
+    pool: &MySqlPool,
+    trigger_id: u32,
+) -> Result<Option<u32>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("area_trigger_quest_lookup");
+    sqlx::query_scalar(
+        "SELECT quest FROM areatrigger_involvedrelation WHERE id = ? ORDER BY quest LIMIT 1",
+    )
+    .bind(trigger_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
 }
 
 pub async fn get_gameobject_objective_quest_ids(
@@ -2349,8 +2503,14 @@ pub async fn get_nearby_creature_spawns(
 ) -> Result<Vec<CreatureSpawnQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("creature_nearby_load");
     let rows = sqlx::query_as::<_, CreatureSpawnRow>(
-        "SELECT creature.guid, creature.id AS entry, creature.map, \
+        "SELECT creature.guid, \
+                CAST(COALESCE(NULLIF(creature.id, 0), creature_spawn_entry_choice.entry) AS UNSIGNED) AS entry, \
+                creature.map, \
                 CAST(game_event_creature.event AS SIGNED) AS game_event, \
+                CAST(pool_creature.pool_entry AS UNSIGNED) AS guid_pool_id, \
+                CAST(pool_creature_template.pool_entry AS UNSIGNED) AS entry_pool_id, \
+                CAST(COALESCE(guid_pool_template.max_limit, entry_pool_template.max_limit) AS UNSIGNED) AS pool_max_limit, \
+                CAST(COALESCE(pool_creature.chance, pool_creature_template.chance, 0) AS DOUBLE) AS pool_chance, \
                 CAST(COALESCE(creature_addon.emote, creature_template_addon.emote, 0) AS UNSIGNED) AS addon_emote, \
                 CAST(creature.position_x AS DOUBLE) AS position_x, \
                 CAST(creature.position_y AS DOUBLE) AS position_y, \
@@ -2462,7 +2622,12 @@ pub async fn get_nearby_creature_spawns(
                 CAST(COALESCE(equip_3.sheath, 0) AS UNSIGNED) AS template_equip_sheath3, \
                 creature_template.ExperienceMultiplier AS template_experience_multiplier \
          FROM creature \
-         JOIN creature_template ON creature.id = creature_template.Entry \
+         LEFT JOIN ( \
+             SELECT guid, CAST(SUBSTRING_INDEX(GROUP_CONCAT(entry ORDER BY RAND()), ',', 1) AS UNSIGNED) AS entry \
+             FROM creature_spawn_entry \
+             GROUP BY guid \
+         ) AS creature_spawn_entry_choice ON creature.guid = creature_spawn_entry_choice.guid \
+         JOIN creature_template ON COALESCE(NULLIF(creature.id, 0), creature_spawn_entry_choice.entry) = creature_template.Entry \
          LEFT JOIN creature_template_classlevelstats AS cls \
            ON cls.Class = creature_template.UnitClass \
           AND cls.Level = CASE \
@@ -2470,8 +2635,12 @@ pub async fn get_nearby_creature_spawns(
                 ELSE creature_template.MinLevel \
               END \
          LEFT JOIN game_event_creature ON creature.guid = game_event_creature.guid \
+         LEFT JOIN pool_creature ON creature.guid = pool_creature.guid \
+         LEFT JOIN pool_creature_template ON creature.id = pool_creature_template.id \
+         LEFT JOIN pool_template AS guid_pool_template ON pool_creature.pool_entry = guid_pool_template.entry \
+         LEFT JOIN pool_template AS entry_pool_template ON pool_creature_template.pool_entry = entry_pool_template.entry \
          LEFT JOIN creature_addon ON creature.guid = creature_addon.guid \
-         LEFT JOIN creature_template_addon ON creature.id = creature_template_addon.entry \
+         LEFT JOIN creature_template_addon ON creature_template.Entry = creature_template_addon.entry \
          LEFT JOIN creature_model_info \
            ON creature_model_info.modelid = COALESCE(NULLIF(creature_template.DisplayId1, 0), NULLIF(creature_template.DisplayId2, 0), NULLIF(creature_template.DisplayId3, 0), NULLIF(creature_template.DisplayId4, 0), 0) \
          LEFT JOIN creature_model_info AS cmi1 ON cmi1.modelid = creature_template.DisplayId1 \
@@ -2518,10 +2687,11 @@ pub async fn get_nearby_creature_spawns(
     .fetch_all(pool)
     .await?;
 
-    let mut spawns = rows
-        .into_iter()
-        .map(CreatureSpawnRow::into_query)
-        .collect::<Vec<_>>();
+    let mut spawns = filter_creature_pool_spawns(
+        rows.into_iter()
+            .map(CreatureSpawnRow::into_query)
+            .collect::<Vec<_>>(),
+    );
     for spawn in &mut spawns {
         if creature_effective_movement_type(spawn) == 2
             || creature_effective_movement_type(spawn) == 4
@@ -2549,8 +2719,14 @@ pub async fn get_nearby_gameobject_spawns(
 ) -> Result<Vec<GameObjectSpawnQuery>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("gameobject_nearby_load");
     let rows = sqlx::query_as::<_, GameObjectSpawnRow>(
-        "SELECT gameobject.guid, gameobject.id AS entry, gameobject.map, \
+        "SELECT gameobject.guid, \
+                CAST(COALESCE(NULLIF(gameobject.id, 0), gameobject_spawn_entry_choice.entry) AS UNSIGNED) AS entry, \
+                gameobject.map, \
                 CAST(game_event_gameobject.event AS SIGNED) AS game_event, \
+                CAST(pool_gameobject.pool_entry AS UNSIGNED) AS guid_pool_id, \
+                CAST(pool_gameobject_template.pool_entry AS UNSIGNED) AS entry_pool_id, \
+                CAST(COALESCE(guid_pool_template.max_limit, entry_pool_template.max_limit) AS UNSIGNED) AS pool_max_limit, \
+                CAST(COALESCE(pool_gameobject.chance, pool_gameobject_template.chance, 0) AS DOUBLE) AS pool_chance, \
                 CAST(gameobject.position_x AS DOUBLE) AS position_x, \
                 CAST(gameobject.position_y AS DOUBLE) AS position_y, \
                 CAST(gameobject.position_z AS DOUBLE) AS position_z, \
@@ -2596,9 +2772,18 @@ pub async fn get_nearby_gameobject_spawns(
                 CAST(gameobject_template.data22 AS SIGNED) AS template_data22, \
                 CAST(gameobject_template.data23 AS SIGNED) AS template_data23 \
          FROM gameobject \
-         JOIN gameobject_template ON gameobject.id = gameobject_template.entry \
+         LEFT JOIN ( \
+             SELECT guid, CAST(SUBSTRING_INDEX(GROUP_CONCAT(entry ORDER BY RAND()), ',', 1) AS UNSIGNED) AS entry \
+             FROM gameobject_spawn_entry \
+             GROUP BY guid \
+         ) AS gameobject_spawn_entry_choice ON gameobject.guid = gameobject_spawn_entry_choice.guid \
+         JOIN gameobject_template ON COALESCE(NULLIF(gameobject.id, 0), gameobject_spawn_entry_choice.entry) = gameobject_template.entry \
          LEFT JOIN gameobject_addon ON gameobject.guid = gameobject_addon.guid \
          LEFT JOIN game_event_gameobject ON gameobject.guid = game_event_gameobject.guid \
+         LEFT JOIN pool_gameobject ON gameobject.guid = pool_gameobject.guid \
+         LEFT JOIN pool_gameobject_template ON gameobject.id = pool_gameobject_template.id \
+         LEFT JOIN pool_template AS guid_pool_template ON pool_gameobject.pool_entry = guid_pool_template.entry \
+         LEFT JOIN pool_template AS entry_pool_template ON pool_gameobject_template.pool_entry = entry_pool_template.entry \
          WHERE gameobject.map = ? \
            AND gameobject.position_x BETWEEN ? AND ? \
            AND gameobject.position_y BETWEEN ? AND ? \
@@ -2627,10 +2812,11 @@ pub async fn get_nearby_gameobject_spawns(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(GameObjectSpawnRow::into_query)
-        .collect())
+    Ok(filter_gameobject_pool_spawns(
+        rows.into_iter()
+            .map(GameObjectSpawnRow::into_query)
+            .collect(),
+    ))
 }
 
 pub async fn get_gameobject_spawns_in_rect(
@@ -2659,10 +2845,11 @@ pub async fn get_gameobject_spawns_in_rect(
         .fetch_all(pool)
         .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(GameObjectSpawnRow::into_query)
-        .collect())
+    Ok(filter_gameobject_pool_spawns(
+        rows.into_iter()
+            .map(GameObjectSpawnRow::into_query)
+            .collect(),
+    ))
 }
 
 pub async fn get_all_static_gameobject_spawns(
@@ -2677,10 +2864,11 @@ pub async fn get_all_static_gameobject_spawns(
         .fetch_all(pool)
         .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(GameObjectSpawnRow::into_query)
-        .collect())
+    Ok(filter_gameobject_pool_spawns(
+        rows.into_iter()
+            .map(GameObjectSpawnRow::into_query)
+            .collect(),
+    ))
 }
 
 pub async fn get_creature_spawns_in_rect(
@@ -2724,10 +2912,11 @@ pub async fn get_all_static_creature_spawns(
         .fetch_all(pool)
         .await?;
 
-    let mut spawns = rows
-        .into_iter()
-        .map(CreatureSpawnRow::into_query)
-        .collect::<Vec<_>>();
+    let mut spawns = filter_creature_pool_spawns(
+        rows.into_iter()
+            .map(CreatureSpawnRow::into_query)
+            .collect::<Vec<_>>(),
+    );
     let waypoint_paths = load_bulk_creature_waypoint_paths(pool, &spawns).await?;
     attach_bulk_creature_waypoint_paths(&mut spawns, &waypoint_paths);
     Ok(spawns)
@@ -2737,10 +2926,11 @@ async fn creature_spawns_from_rows_with_waypoints(
     pool: &MySqlPool,
     rows: Vec<CreatureSpawnRow>,
 ) -> Result<Vec<CreatureSpawnQuery>, DbError> {
-    let mut spawns = rows
-        .into_iter()
-        .map(CreatureSpawnRow::into_query)
-        .collect::<Vec<_>>();
+    let mut spawns = filter_creature_pool_spawns(
+        rows.into_iter()
+            .map(CreatureSpawnRow::into_query)
+            .collect::<Vec<_>>(),
+    );
     for spawn in &mut spawns {
         if creature_effective_movement_type(spawn) == 2
             || creature_effective_movement_type(spawn) == 4
@@ -2916,6 +3106,126 @@ fn creature_effective_movement_type(spawn: &CreatureSpawnQuery) -> u8 {
     } else {
         spawn.template.movement_type
     }
+}
+
+fn spawn_pool_id(guid_pool_id: Option<u16>, entry_pool_id: Option<u16>) -> Option<u16> {
+    guid_pool_id.or(entry_pool_id)
+}
+
+fn filter_creature_pool_spawns(spawns: Vec<CreatureSpawnQuery>) -> Vec<CreatureSpawnQuery> {
+    let mut direct = Vec::new();
+    let mut pooled: HashMap<u16, (u32, Vec<CreatureSpawnQuery>)> = HashMap::new();
+
+    for spawn in spawns {
+        let Some(pool_id) = spawn_pool_id(spawn.guid_pool_id, spawn.entry_pool_id) else {
+            direct.push(spawn);
+            continue;
+        };
+        let limit = spawn.pool_max_limit.unwrap_or(0);
+        pooled
+            .entry(pool_id)
+            .or_insert_with(|| (limit, Vec::new()))
+            .1
+            .push(spawn);
+    }
+
+    let mut rng = rand::thread_rng();
+    for (_pool_id, (limit, members)) in pooled {
+        direct.extend(roll_creature_pool_members(members, limit, &mut rng));
+    }
+
+    direct.sort_by_key(|spawn| (spawn.map, spawn.guid));
+    direct
+}
+
+fn filter_gameobject_pool_spawns(spawns: Vec<GameObjectSpawnQuery>) -> Vec<GameObjectSpawnQuery> {
+    let mut direct = Vec::new();
+    let mut pooled: HashMap<u16, (u32, Vec<GameObjectSpawnQuery>)> = HashMap::new();
+
+    for spawn in spawns {
+        let Some(pool_id) = spawn_pool_id(spawn.guid_pool_id, spawn.entry_pool_id) else {
+            direct.push(spawn);
+            continue;
+        };
+        let limit = spawn.pool_max_limit.unwrap_or(0);
+        pooled
+            .entry(pool_id)
+            .or_insert_with(|| (limit, Vec::new()))
+            .1
+            .push(spawn);
+    }
+
+    let mut rng = rand::thread_rng();
+    for (_pool_id, (limit, members)) in pooled {
+        direct.extend(roll_gameobject_pool_members(members, limit, &mut rng));
+    }
+
+    direct.sort_by_key(|spawn| (spawn.map, spawn.guid));
+    direct
+}
+
+fn roll_creature_pool_members<R: Rng + ?Sized>(
+    mut members: Vec<CreatureSpawnQuery>,
+    limit: u32,
+    rng: &mut R,
+) -> Vec<CreatureSpawnQuery> {
+    let mut selected = Vec::new();
+    for _ in 0..limit {
+        let Some(index) = roll_pool_member_index(&members, |spawn| spawn.pool_chance, rng) else {
+            break;
+        };
+        selected.push(members.swap_remove(index));
+    }
+    selected
+}
+
+fn roll_gameobject_pool_members<R: Rng + ?Sized>(
+    mut members: Vec<GameObjectSpawnQuery>,
+    limit: u32,
+    rng: &mut R,
+) -> Vec<GameObjectSpawnQuery> {
+    let mut selected = Vec::new();
+    for _ in 0..limit {
+        let Some(index) = roll_pool_member_index(&members, |spawn| spawn.pool_chance, rng) else {
+            break;
+        };
+        selected.push(members.swap_remove(index));
+    }
+    selected
+}
+
+fn roll_pool_member_index<T, R: Rng + ?Sized>(
+    members: &[T],
+    chance: impl Fn(&T) -> f32,
+    rng: &mut R,
+) -> Option<usize> {
+    let mut explicit = members
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| chance(member) > 0.0)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    explicit.shuffle(rng);
+
+    let mut first_explicit = None;
+    if !explicit.is_empty() {
+        let roll = rng.gen_range(0.0..100.0);
+        for index in explicit {
+            first_explicit.get_or_insert(index);
+            if roll < chance(&members[index]) {
+                return Some(index);
+            }
+        }
+    }
+
+    let mut equal = members
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| chance(member) <= 0.0)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    equal.shuffle(rng);
+    equal.into_iter().next().or(first_explicit)
 }
 
 #[derive(Debug, Default)]
@@ -3199,6 +3509,69 @@ mod world_data_tests {
         assert!(path.is_empty());
     }
 
+    #[test]
+    fn creature_pool_filter_keeps_pool_limit_members() {
+        let direct = test_creature_spawn(10, 110, 0, None);
+        let mut pooled_first = test_creature_spawn(20, 120, 0, None);
+        pooled_first.guid_pool_id = Some(7);
+        pooled_first.pool_max_limit = Some(1);
+        let mut pooled_second = test_creature_spawn(30, 130, 0, None);
+        pooled_second.guid_pool_id = Some(7);
+        pooled_second.pool_max_limit = Some(1);
+
+        let spawns = filter_creature_pool_spawns(vec![pooled_second, direct, pooled_first]);
+
+        assert_eq!(spawns.len(), 2);
+        assert!(spawns.iter().any(|spawn| spawn.guid == 10));
+        assert_eq!(
+            spawns
+                .iter()
+                .filter(|spawn| spawn.guid_pool_id == Some(7))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn gameobject_pool_filter_keeps_pool_limit_members() {
+        let direct = test_gameobject_spawn(10, 110);
+        let mut pooled_first = test_gameobject_spawn(20, 120);
+        pooled_first.guid_pool_id = Some(9);
+        pooled_first.pool_max_limit = Some(1);
+        let mut pooled_second = test_gameobject_spawn(30, 130);
+        pooled_second.guid_pool_id = Some(9);
+        pooled_second.pool_max_limit = Some(1);
+
+        let spawns = filter_gameobject_pool_spawns(vec![pooled_second, direct, pooled_first]);
+
+        assert_eq!(spawns.len(), 2);
+        assert!(spawns.iter().any(|spawn| spawn.guid == 10));
+        assert_eq!(
+            spawns
+                .iter()
+                .filter(|spawn| spawn.guid_pool_id == Some(9))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn pool_roll_prefers_explicit_chance_hit_before_equal_members() {
+        let mut rng = rand::thread_rng();
+        let mut explicit = test_creature_spawn(20, 120, 0, None);
+        explicit.guid_pool_id = Some(7);
+        explicit.pool_max_limit = Some(1);
+        explicit.pool_chance = 100.0;
+        let mut equal = test_creature_spawn(30, 130, 0, None);
+        equal.guid_pool_id = Some(7);
+        equal.pool_max_limit = Some(1);
+
+        let selected = roll_creature_pool_members(vec![equal, explicit], 1, &mut rng);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].guid, 20);
+    }
+
     fn test_waypoint(point: u32) -> CreatureWaypointQuery {
         CreatureWaypointQuery {
             point,
@@ -3234,6 +3607,10 @@ mod world_data_tests {
             entry,
             map: 0,
             game_event: None,
+            guid_pool_id: None,
+            entry_pool_id: None,
+            pool_max_limit: None,
+            pool_chance: 0.0,
             addon_emote: 0,
             position_x: 0.0,
             position_y: 0.0,
@@ -3349,6 +3726,42 @@ mod world_data_tests {
                 experience_multiplier: 1.0,
             },
             waypoint_path: Vec::new(),
+        }
+    }
+
+    fn test_gameobject_spawn(guid: u32, entry: u32) -> GameObjectSpawnQuery {
+        GameObjectSpawnQuery {
+            guid,
+            entry,
+            map: 0,
+            game_event: None,
+            guid_pool_id: None,
+            entry_pool_id: None,
+            pool_max_limit: None,
+            pool_chance: 0.0,
+            position_x: 0.0,
+            position_y: 0.0,
+            position_z: 0.0,
+            orientation: 0.0,
+            rotation0: 0.0,
+            rotation1: 0.0,
+            rotation2: 0.0,
+            rotation3: 1.0,
+            spawn_time_secs_min: 25,
+            spawn_time_secs_max: 25,
+            state: -1,
+            anim_progress: 100,
+            template: GameObjectTemplateQuery {
+                entry,
+                object_type: 3,
+                display_id: 0,
+                name: format!("GameObject {entry}"),
+                icon_name: String::new(),
+                faction: 0,
+                flags: 0,
+                size: 1.0,
+                raw_data: [0; 24],
+            },
         }
     }
 }
@@ -3782,6 +4195,10 @@ struct GameObjectSpawnRow {
     entry: u32,
     map: u32,
     game_event: Option<i16>,
+    guid_pool_id: Option<u16>,
+    entry_pool_id: Option<u16>,
+    pool_max_limit: Option<u32>,
+    pool_chance: f64,
     position_x: f64,
     position_y: f64,
     position_z: f64,
@@ -3931,6 +4348,10 @@ struct CreatureSpawnRow {
     entry: u32,
     map: u32,
     game_event: Option<i16>,
+    guid_pool_id: Option<u16>,
+    entry_pool_id: Option<u16>,
+    pool_max_limit: Option<u32>,
+    pool_chance: f64,
     addon_emote: u32,
     position_x: f64,
     position_y: f64,
@@ -4053,6 +4474,10 @@ impl CreatureSpawnRow {
             entry: self.entry,
             map: self.map,
             game_event: self.game_event,
+            guid_pool_id: self.guid_pool_id,
+            entry_pool_id: self.entry_pool_id,
+            pool_max_limit: self.pool_max_limit,
+            pool_chance: self.pool_chance as f32,
             addon_emote: self.addon_emote,
             position_x: self.position_x as f32,
             position_y: self.position_y as f32,
@@ -4179,6 +4604,10 @@ impl GameObjectSpawnRow {
             entry: self.entry,
             map: self.map,
             game_event: self.game_event,
+            guid_pool_id: self.guid_pool_id,
+            entry_pool_id: self.entry_pool_id,
+            pool_max_limit: self.pool_max_limit,
+            pool_chance: self.pool_chance as f32,
             position_x: self.position_x as f32,
             position_y: self.position_y as f32,
             position_z: self.position_z as f32,

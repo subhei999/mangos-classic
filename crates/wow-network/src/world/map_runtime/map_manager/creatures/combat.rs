@@ -376,6 +376,10 @@ impl MapRuntimeManager {
             if let Some(event) = map_guard.complete_ready_db_creature_spell_cast_with_navigation(
                 attacker, victim, now, navigation,
             )? {
+                let reflected_caster_died = event
+                    .reflected_creature_damage_event
+                    .as_ref()
+                    .is_some_and(|damage| damage.death_finalization.is_some());
                 let player_died = matches!(
                     &event.effect,
                     DbCreatureCompletedSpellEffect::PlayerDamage(damage)
@@ -399,6 +403,10 @@ impl MapRuntimeManager {
                 if player_died {
                     map_guard.clear_db_creature_combats_for_victim(victim);
                     return Ok(true);
+                }
+                if reflected_caster_died {
+                    map_guard.clear_db_creature_combat(attacker);
+                    return Ok(false);
                 }
                 return Ok(false);
             }
@@ -461,6 +469,12 @@ impl MapRuntimeManager {
                                             attacker, target, now, navigation,
                                         )?
                                     {
+                                        let reflected_caster_died = event
+                                            .reflected_creature_damage_event
+                                            .as_ref()
+                                            .is_some_and(|damage| {
+                                                damage.death_finalization.is_some()
+                                            });
                                         let player_died = matches!(
                                             &event.effect,
                                             DbCreatureCompletedSpellEffect::PlayerDamage(damage)
@@ -492,6 +506,10 @@ impl MapRuntimeManager {
                                         if player_died {
                                             map_guard.clear_db_creature_combats_for_victim(victim);
                                             return Ok(true);
+                                        }
+                                        if reflected_caster_died {
+                                            map_guard.clear_db_creature_combat(attacker);
+                                            return Ok(false);
                                         }
                                     }
                                 }
@@ -601,6 +619,7 @@ impl MapRuntimeManager {
                                         caster: attacker,
                                         target,
                                         spell_id: plan.spell_id,
+                                        reflectable: spell_template_is_reflectable(&template),
                                         school_mask: spell_school_mask_from_school(template.school),
                                         mechanic: template.mechanic,
                                         requires_behind: plan.requires_behind,
@@ -635,6 +654,10 @@ impl MapRuntimeManager {
                                                     navigation,
                                                 )?
                                             {
+                                                let reflected_caster_died = event
+                                                    .reflected_creature_damage_event
+                                                    .as_ref()
+                                                    .is_some_and(|damage| damage.death_finalization.is_some());
                                                 let player_died = matches!(
                                                     &event.effect,
                                                     DbCreatureCompletedSpellEffect::PlayerDamage(
@@ -671,6 +694,10 @@ impl MapRuntimeManager {
                                                         .clear_db_creature_combats_for_victim(victim);
                                                     return Ok(true);
                                                 }
+                                                if reflected_caster_died {
+                                                    map_guard.clear_db_creature_combat(attacker);
+                                                    return Ok(false);
+                                                }
                                             }
                                         }
                                         return Ok(false);
@@ -683,13 +710,8 @@ impl MapRuntimeManager {
             }
         }
 
-        let can_reach = map
-            .lock()
-            .await
-            .db_creature_can_reach_player_with_navigation(attacker, victim, navigation);
-        if !can_reach {
+        let chase_refreshed = {
             let mut map_guard = map.lock().await;
-            let _ = map_guard.defer_ready_db_creature_swing_retry(attacker, victim, now);
             if let Some((creature, motion)) = map_guard.start_db_creature_chase_motion(
                 navigation,
                 attacker,
@@ -717,6 +739,48 @@ impl MapRuntimeManager {
                     packet,
                     tick,
                 );
+                true
+            } else {
+                false
+            }
+        };
+
+        let can_reach = map
+            .lock()
+            .await
+            .db_creature_can_reach_player_with_navigation(attacker, victim, navigation);
+        if !can_reach {
+            let mut map_guard = map.lock().await;
+            let _ = map_guard.defer_ready_db_creature_swing_retry(attacker, victim, now);
+            if !chase_refreshed {
+                if let Some((creature, motion)) = map_guard.start_db_creature_chase_motion(
+                    navigation,
+                    attacker,
+                    victim,
+                    player_position,
+                    now,
+                ) {
+                    let packet = OutboundWorldPacket {
+                        opcode: WorldOpcode::SmsgMonsterMove as u16,
+                        body: build_monster_move_facing_target_path_body_with_run(
+                            attacker,
+                            motion.start,
+                            &motion.path,
+                            motion.spline_id,
+                            motion.duration.as_millis().max(1) as u32,
+                            victim,
+                            motion.run,
+                        )?,
+                    };
+                    Self::push_creature_broadcast_packet(
+                        &map_guard,
+                        victim,
+                        current_session_id,
+                        creature.current_position,
+                        packet,
+                        tick,
+                    );
+                }
             }
             return Ok(false);
         }

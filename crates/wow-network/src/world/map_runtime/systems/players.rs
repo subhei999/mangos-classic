@@ -2147,9 +2147,20 @@ impl MapRuntime {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return false;
         };
+        let previous_auras = player.active_auras.clone();
         let changed =
             remove_active_auras_with_interrupt_flag(&mut player.active_auras, interrupt_flag);
         if changed {
+            let current_auras = player.active_auras.clone();
+            let _ = player;
+            self.reconcile_player_total_threat_auras(
+                character_guid,
+                &previous_auras,
+                &current_auras,
+            );
+            let Some(player) = self.players.get_mut(&character_guid) else {
+                return false;
+            };
             refresh_player_runtime_stats_from_auras(player);
             player.combat_stats =
                 combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
@@ -2167,6 +2178,7 @@ impl MapRuntime {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return Ok(None);
         };
+        let previous_auras = player.active_auras.clone();
         let remove_count = count.max(1) as usize;
         let mut removed_spell_ids = Vec::new();
         let mut remaining = remove_count;
@@ -2183,6 +2195,12 @@ impl MapRuntime {
             return Ok(None);
         }
         let is_rooted = active_aura_has_root(&player.active_auras);
+        let current_auras = player.active_auras.clone();
+        let _ = player;
+        self.reconcile_player_total_threat_auras(character_guid, &previous_auras, &current_auras);
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(None);
+        };
         refresh_player_runtime_stats_from_auras(player);
         player.combat_stats =
             combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
@@ -2207,6 +2225,7 @@ impl MapRuntime {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return Ok(None);
         };
+        let previous_auras = player.active_auras.clone();
         let was_rooted = active_aura_has_root(&player.active_auras);
         let removed_spell_ids =
             remove_active_auras_by_spell_ids(&mut player.active_auras, spell_ids);
@@ -2214,6 +2233,12 @@ impl MapRuntime {
             return Ok(None);
         }
         let is_rooted = active_aura_has_root(&player.active_auras);
+        let current_auras = player.active_auras.clone();
+        let _ = player;
+        self.reconcile_player_total_threat_auras(character_guid, &previous_auras, &current_auras);
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(None);
+        };
         refresh_player_runtime_stats_from_auras(player);
         player.combat_stats =
             combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
@@ -2261,9 +2286,16 @@ impl MapRuntime {
         let Some(player) = self.players.get_mut(&character_guid) else {
             return Ok(None);
         };
+        let previous_auras = player.active_auras.clone();
         let was_rooted = active_aura_has_root(&player.active_auras);
         apply_active_aura_replacing_conflicts(&mut player.active_auras, aura, resolution);
         let is_rooted = active_aura_has_root(&player.active_auras);
+        let current_auras = player.active_auras.clone();
+        let _ = player;
+        self.reconcile_player_total_threat_auras(character_guid, &previous_auras, &current_auras);
+        let Some(player) = self.players.get_mut(&character_guid) else {
+            return Ok(None);
+        };
         refresh_player_runtime_stats_from_auras(player);
         player.combat_stats =
             combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);
@@ -2301,6 +2333,39 @@ impl MapRuntime {
         let active_cast = self.active_player_spell_casts.remove(&character_guid)?;
         self.clear_player_spell_recovery(character_guid, &active_cast.profile);
         Some((active_cast, failure))
+    }
+
+    fn reconcile_player_total_threat_auras(
+        &mut self,
+        character_guid: u32,
+        previous_auras: &[ActiveAura],
+        current_auras: &[ActiveAura],
+    ) {
+        let player = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+        let mut removed = previous_auras.to_vec();
+        for aura in current_auras {
+            if let Some(index) = removed.iter().position(|previous| previous == aura) {
+                removed.remove(index);
+            }
+        }
+        for aura in &removed {
+            if active_aura_total_threat_amount(aura) != 0 {
+                self.reset_db_creature_temporary_fade_from_player(player);
+            }
+        }
+
+        let mut added = current_auras.to_vec();
+        for aura in previous_auras {
+            if let Some(index) = added.iter().position(|current| current == aura) {
+                added.remove(index);
+            }
+        }
+        for aura in &added {
+            let amount = active_aura_total_threat_amount(aura);
+            if amount != 0 {
+                self.apply_db_creature_temporary_fade_to_player(player, amount as f32);
+            }
+        }
     }
 
     fn append_player_spell_interrupt_packets(
@@ -2495,11 +2560,13 @@ impl MapRuntime {
             let Some(player) = self.players.get_mut(&character_guid) else {
                 continue;
             };
+            let previous_auras = player.active_auras.clone();
             let was_rooted = active_aura_has_root(&player.active_auras);
             player
                 .active_auras
                 .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
             let is_rooted = active_aura_has_root(&player.active_auras);
+            let current_auras = player.active_auras.clone();
             if player_died {
                 self.active_player_spell_casts.remove(&character_guid);
             }
@@ -2510,6 +2577,15 @@ impl MapRuntime {
             {
                 continue;
             }
+            let _ = player;
+            self.reconcile_player_total_threat_auras(
+                character_guid,
+                &previous_auras,
+                &current_auras,
+            );
+            let Some(player) = self.players.get_mut(&character_guid) else {
+                continue;
+            };
             refresh_player_runtime_stats_from_auras(player);
             player.combat_stats =
                 combat_stats_with_active_auras(player.base_combat_stats, &player.active_auras);

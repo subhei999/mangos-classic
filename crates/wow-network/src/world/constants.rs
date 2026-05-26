@@ -114,11 +114,21 @@ pub(in crate::world) const MOVEFLAG_STRAFE_LEFT: u32 = 0x0000_0004;
 pub(in crate::world) const MOVEFLAG_STRAFE_RIGHT: u32 = 0x0000_0008;
 pub(in crate::world) const MOVEFLAG_PITCH_UP: u32 = 0x0000_0040;
 pub(in crate::world) const MOVEFLAG_PITCH_DOWN: u32 = 0x0000_0080;
+pub(in crate::world) const MOVEFLAG_WALK_MODE: u32 = 0x0000_0100;
 pub(in crate::world) const MOVEFLAG_JUMPING: u32 = 0x0000_2000;
 pub(in crate::world) const MOVEFLAG_FALLINGFAR: u32 = 0x0000_4000;
 pub(in crate::world) const MOVEFLAG_SWIMMING: u32 = 0x0020_0000;
 pub(in crate::world) const MOVEFLAG_ONTRANSPORT: u32 = 0x0200_0000;
 pub(in crate::world) const MOVEFLAG_SPLINE_ELEVATION: u32 = 0x0400_0000;
+pub(in crate::world) const MOVEFLAG_MASK_MOVING: u32 = MOVEFLAG_FORWARD
+    | MOVEFLAG_BACKWARD
+    | MOVEFLAG_STRAFE_LEFT
+    | MOVEFLAG_STRAFE_RIGHT
+    | MOVEFLAG_PITCH_UP
+    | MOVEFLAG_PITCH_DOWN
+    | MOVEFLAG_JUMPING
+    | MOVEFLAG_FALLINGFAR
+    | MOVEFLAG_SPLINE_ELEVATION;
 pub(in crate::world) const MOVEFLAG_MASK_SPELL_MOVING: u32 = MOVEFLAG_FORWARD
     | MOVEFLAG_BACKWARD
     | MOVEFLAG_STRAFE_LEFT
@@ -353,7 +363,9 @@ pub(in crate::world) const GO_TYPE_QUESTGIVER: u8 = 2;
 pub(in crate::world) const GO_TYPE_GENERIC: u8 = 5;
 pub(in crate::world) const GO_TYPE_SPELL_FOCUS: u8 = 8;
 pub(in crate::world) const GO_TYPE_GOOBER: u8 = 10;
+pub(in crate::world) const GO_TYPE_SPELLCASTER: u8 = 22;
 pub(in crate::world) const UNIT_DYNFLAG_LOOTABLE: u32 = 0x0000_0001;
+pub(in crate::world) const CREATURE_TYPE_UNDEAD: u32 = 6;
 pub(in crate::world) const CREATURE_TYPE_CRITTER: u32 = 8;
 pub(in crate::world) const CREATURE_ELITE_NORMAL: u32 = 1;
 pub(in crate::world) const CREATURE_ELITE_RARE_ELITE: u32 = 2;
@@ -371,6 +383,7 @@ pub(in crate::world) const MAX_QUEST_OFFSET: usize = 3;
 pub(in crate::world) const PLAYER_QUEST_LOG_1_1: usize = 0x0C6;
 pub(in crate::world) const MAX_QUEST_LOG_SIZE: usize = 20;
 pub(in crate::world) const QUEST_STATE_COMPLETE: u32 = 0x0001;
+pub(in crate::world) const QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT: u32 = 0x0002;
 pub(in crate::world) const HITINFO_NORMALSWING2: u32 = 0x0000_0002;
 pub(in crate::world) const HITINFO_MISS: u32 = 0x0000_0010;
 pub(in crate::world) const HITINFO_ABSORB: u32 = 0x0000_0020;
@@ -386,6 +399,7 @@ pub(in crate::world) const SPELL_MISS_PARRY: u8 = 4;
 pub(in crate::world) const SPELL_MISS_BLOCK: u8 = 5;
 pub(in crate::world) const SPELL_MISS_EVADE: u8 = 6;
 pub(in crate::world) const SPELL_MISS_IMMUNE: u8 = 7;
+pub(in crate::world) const SPELL_MISS_REFLECT: u8 = 11;
 pub(in crate::world) const VICTIMSTATE_UNAFFECTED: u32 = 0;
 pub(in crate::world) const VICTIMSTATE_NORMAL: u32 = 1;
 pub(in crate::world) const VICTIMSTATE_DODGE: u32 = 2;
@@ -449,6 +463,7 @@ pub(in crate::world) const DEFAULT_WORLD_OBJECT_SIZE: f32 = 0.389;
 pub(in crate::world) const DEFAULT_COLLISION_HEIGHT: f32 = 2.03128;
 pub(in crate::world) const ATTACK_DISTANCE_YARDS: f32 = 5.0;
 pub(in crate::world) const BASE_MELEE_RANGE_OFFSET_YARDS: f32 = 1.33;
+pub(in crate::world) const MELEE_LEEWAY_YARDS: f32 = 8.0 / 3.0;
 pub(in crate::world) const PLAYER_COMBAT_REACH_YARDS: f32 = 1.5;
 pub(in crate::world) const PLAYER_MELEE_ARC_RADIANS: f32 = 2.0 * std::f32::consts::PI / 3.0;
 pub(in crate::world) const PLAYER_MELEE_RETRY_MILLIS: u64 = 100;
@@ -456,7 +471,7 @@ pub(in crate::world) const DB_CREATURE_MELEE_RETRY_MILLIS: u64 = 100;
 pub(in crate::world) const DB_CREATURE_LEASH_RADIUS_YARDS: f32 = 30.0;
 pub(in crate::world) const DB_CREATURE_CHASE_DEFAULT_RANGE_FACTOR: f32 = 0.5;
 pub(in crate::world) const DB_CREATURE_CHASE_RECHECK_MILLIS: u64 = 250;
-pub(in crate::world) const DB_CREATURE_CHASE_REPATH_YARDS: f32 = ATTACK_DISTANCE_YARDS;
+pub(in crate::world) const DB_CREATURE_CHASE_STABLE_LAUNCH_MILLIS: u64 = 1000;
 pub(in crate::world) const DB_CREATURE_RUN_SPEED_YARDS_PER_SEC: f32 = 7.0;
 pub(in crate::world) const DB_CREATURE_WALK_SPEED_YARDS_PER_SEC: f32 = 2.5;
 pub(in crate::world) const DB_CREATURE_RUN_BACK_SPEED_YARDS_PER_SEC: f32 = 4.5;

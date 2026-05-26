@@ -495,6 +495,7 @@ pub(in crate::world) struct MapRuntime {
     pub(in crate::world) corpses: HashMap<u64, PlayerCorpseRuntime>,
     pub(in crate::world) dynamic_objects: HashMap<u64, DynamicObjectRuntime>,
     pub(in crate::world) next_dynamic_object_counter: u32,
+    pub(in crate::world) next_temporary_gameobject_counter: u32,
     pub(in crate::world) active_playerbot_count: usize,
     pub(in crate::world) playerbot_intents: HashMap<u32, PlayerbotQueuedIntents>,
     pub(in crate::world) next_idle_motion_tick_at: Option<Instant>,
@@ -587,6 +588,7 @@ pub(in crate::world) struct ActiveDbCreatureSpellCast {
     pub(in crate::world) caster: ObjectGuid,
     pub(in crate::world) target: ObjectGuid,
     pub(in crate::world) spell_id: u32,
+    pub(in crate::world) reflectable: bool,
     pub(in crate::world) school_mask: u32,
     pub(in crate::world) mechanic: u32,
     pub(in crate::world) requires_behind: bool,
@@ -763,6 +765,7 @@ pub(in crate::world) struct DbCreatureCompletedSpellCastEvent {
     pub(in crate::world) effect: DbCreatureCompletedSpellEffect,
     pub(in crate::world) aura_event: Option<PlayerAuraUpdateEvent>,
     pub(in crate::world) creature_aura_event: Option<DbCreatureAuraUpdateEvent>,
+    pub(in crate::world) reflected_creature_damage_event: Option<DbCreatureDamageEvent>,
 }
 
 #[derive(Debug)]
@@ -988,6 +991,7 @@ impl MapRuntime {
             corpses: HashMap::new(),
             dynamic_objects: HashMap::new(),
             next_dynamic_object_counter: 1,
+            next_temporary_gameobject_counter: 0x00F0_0000,
             active_playerbot_count: 0,
             playerbot_intents: HashMap::new(),
             next_idle_motion_tick_at: None,

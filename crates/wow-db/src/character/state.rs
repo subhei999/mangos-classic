@@ -82,7 +82,9 @@ pub async fn get_character_taximask(pool: &MySqlPool, guid: u32) -> Result<[u32;
             .fetch_optional(pool)
             .await?;
 
-    Ok(parse_character_taximask(taximask.as_deref().unwrap_or_default()))
+    Ok(parse_character_taximask(
+        taximask.as_deref().unwrap_or_default(),
+    ))
 }
 
 pub async fn save_character_taximask(
@@ -128,8 +130,7 @@ pub async fn update_character_position_and_vitals(
     power1: u32,
     power2: u32,
 ) -> Result<u64, DbError> {
-    let _query_timer =
-        crate::observability::DbQueryTimer::start("character_position_vitals_save");
+    let _query_timer = crate::observability::DbQueryTimer::start("character_position_vitals_save");
     let result = sqlx::query(
         "UPDATE characters \
          SET map = ?, position_x = ?, position_y = ?, position_z = ?, orientation = ?, \
@@ -553,8 +554,7 @@ pub async fn purchase_character_bank_slot(
     price: u32,
     player_bytes2: u32,
 ) -> Result<Option<u32>, DbError> {
-    let _query_timer =
-        crate::observability::DbQueryTimer::start("character_bank_slot_purchase");
+    let _query_timer = crate::observability::DbQueryTimer::start("character_bank_slot_purchase");
     let mut tx = pool.begin().await?;
     let result = sqlx::query(
         "UPDATE characters \
@@ -676,7 +676,7 @@ pub async fn get_character_quest_statuses(
 ) -> Result<Vec<CharacterQuestStatus>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("character_quests_load");
     let rows = sqlx::query_as::<_, CharacterQuestStatus>(
-        "SELECT quest, status, rewarded, mobcount1, mobcount2, mobcount3, mobcount4 \
+        "SELECT quest, status, rewarded, explored, mobcount1, mobcount2, mobcount3, mobcount4 \
          FROM character_queststatus \
          WHERE guid = ? \
          ORDER BY quest",
@@ -695,7 +695,7 @@ pub async fn get_character_quest_status(
 ) -> Result<Option<CharacterQuestStatus>, DbError> {
     let _query_timer = crate::observability::DbQueryTimer::start("character_quest_load");
     let row = sqlx::query_as::<_, CharacterQuestStatus>(
-        "SELECT quest, status, rewarded, mobcount1, mobcount2, mobcount3, mobcount4 \
+        "SELECT quest, status, rewarded, explored, mobcount1, mobcount2, mobcount3, mobcount4 \
          FROM character_queststatus \
          WHERE guid = ? AND quest = ?",
     )
@@ -774,6 +774,30 @@ pub async fn update_character_quest_mob_count(
         .expect("updated quest row must exist"))
 }
 
+pub async fn explore_character_quest(
+    pool: &MySqlPool,
+    guid: u32,
+    quest: u32,
+    complete: bool,
+) -> Result<CharacterQuestStatus, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("character_quest_explore");
+    let status = if complete { 1 } else { 3 };
+    sqlx::query(
+        "UPDATE character_queststatus \
+         SET explored = 1, status = ? \
+         WHERE guid = ? AND quest = ? AND status = 3 AND rewarded = 0",
+    )
+    .bind(status)
+    .bind(guid)
+    .bind(quest)
+    .execute(pool)
+    .await?;
+
+    Ok(get_character_quest_status(pool, guid, quest)
+        .await?
+        .expect("explored quest row must exist"))
+}
+
 pub async fn complete_character_quest(
     pool: &MySqlPool,
     guid: u32,
@@ -824,7 +848,8 @@ pub async fn abandon_character_quest(
     let _query_timer = crate::observability::DbQueryTimer::start("character_quest_abandon");
     let changed = sqlx::query(
         "UPDATE character_queststatus \
-         SET status = 0, rewarded = 0, mobcount1 = 0, mobcount2 = 0, mobcount3 = 0, mobcount4 = 0, \
+         SET status = 0, rewarded = 0, explored = 0, \
+             mobcount1 = 0, mobcount2 = 0, mobcount3 = 0, mobcount4 = 0, \
              itemcount1 = 0, itemcount2 = 0, itemcount3 = 0, itemcount4 = 0 \
          WHERE guid = ? AND quest = ? AND rewarded = 0",
     )

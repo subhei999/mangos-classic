@@ -46,7 +46,7 @@ pub(in crate::world) async fn handle_gameobject_use(
         return Ok(());
     }
     let now = Instant::now();
-    if runtime.is_consumed(now) {
+    if runtime.is_unavailable(now) {
         return Ok(());
     }
     if runtime.spawn.template.flags & (GO_FLAG_LOCKED | GO_FLAG_IN_USE | GO_FLAG_NO_INTERACT) != 0 {
@@ -80,6 +80,19 @@ pub(in crate::world) async fn handle_gameobject_use(
         {
             return Ok(());
         }
+    }
+
+    if runtime.spawn.template.object_type == GO_TYPE_SPELLCASTER {
+        return handle_spellcaster_gameobject_use(
+            stream,
+            deps,
+            runtime,
+            character,
+            session,
+            now,
+            header_crypto,
+        )
+        .await;
     }
 
     if gameobject_chest_has_loot_id(&runtime.spawn.template) {
@@ -200,12 +213,76 @@ pub(in crate::world) async fn open_gameobject_loot_from_use(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn handle_spellcaster_gameobject_use(
+    stream: &mut WorldPacketSink,
+    deps: GameObjectUseDeps<'_>,
+    runtime: DbGameObjectRuntime,
+    character: ActiveCharacter,
+    session: &mut WorldSessionState,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if runtime.spellcaster_party_only() {
+        let owner_guid = runtime
+            .created_by
+            .filter(|guid| guid.is_player())
+            .map(ObjectGuid::counter);
+        let Some(owner_guid) = owner_guid else {
+            return Ok(());
+        };
+        if !deps.parties.same_party(owner_guid, character.guid).await {
+            return Ok(());
+        }
+    }
+
+    let Some(spell_id) = runtime.spellcaster_spell_id() else {
+        return Ok(());
+    };
+    let Some(spell_template) = deps
+        .object_mgr
+        .spell_template(deps.world_db_pool, spell_id)
+        .await?
+    else {
+        return Ok(());
+    };
+    let spell_info = SpellInfo::from_template(&spell_template);
+    let Some(prepared_spell) = spell_info.prepare_gameobject_cast(runtime.guid()) else {
+        return Ok(());
+    };
+    let spell_profile = prepared_spell.profile;
+    complete_gameobject_use_spell_cast(
+        stream,
+        SpellCastDeps {
+            character_db_pool: deps.character_db_pool,
+            world_db_pool: deps.world_db_pool,
+            account_id: session.account.account_id,
+            shared_world: SharedWorldDeps {
+                object_mgr: deps.object_mgr,
+                maps: deps.maps,
+                sessions: deps.sessions,
+            },
+            parties: deps.parties,
+        },
+        session,
+        ObjectGuid::new(HighGuid::Player, 0, character.guid),
+        prepared_spell,
+        spell_template,
+        spell_profile,
+        SpellCastTargets::default(),
+        now,
+        header_crypto,
+    )
+    .await
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::world) struct GameObjectUseDeps<'a> {
     pub(in crate::world) character_db_pool: &'a MySqlPool,
     pub(in crate::world) world_db_pool: &'a MySqlPool,
     pub(in crate::world) object_mgr: &'a ObjectMgr,
     pub(in crate::world) maps: &'a Arc<MapRuntimeManager>,
+    pub(in crate::world) parties: &'a PartyManager,
     pub(in crate::world) sessions: &'a Arc<SessionRegistry>,
 }
 
@@ -271,7 +348,7 @@ pub(in crate::world) async fn stream_newly_visible_db_gameobjects(
     }
     let mut create_blocks = Vec::new();
     for runtime in create_candidates {
-        if !create_guids.contains(&runtime.guid().raw()) || runtime.is_consumed(now) {
+        if !create_guids.contains(&runtime.guid().raw()) || runtime.is_unavailable(now) {
             continue;
         }
         let dynamic_flags =
@@ -534,14 +611,42 @@ pub(in crate::world) async fn handle_gameobject_questgiver_use(
     if !guid.is_game_object() {
         return Ok(false);
     }
-    if let Some(quest) =
-        questgiver_completed_turnin_quest(object_mgr, world_db_pool, guid, session).await?
-    {
-        let displays = quest_reward_item_displays(world_db_pool, &quest).await?;
-        let response = build_quest_offer_reward_body(guid, &quest, &displays);
+
+    let quests = questgiver_visible_quests(object_mgr, world_db_pool, guid, session).await?;
+    if quests.is_empty() {
+        return Ok(false);
+    }
+    if quests.len() == 1 {
+        let item = &quests[0];
+        let displays = quest_reward_item_displays(world_db_pool, &item.quest).await?;
+        if item.dialog_status == DIALOG_STATUS_REWARD2
+            || item.dialog_status == DIALOG_STATUS_INCOMPLETE
+        {
+            let status = session.quests.quest_statuses.get(&item.quest.entry);
+            let complete = status.is_some_and(|status| {
+                quest_status_can_reward_from_inventory(
+                    status,
+                    &item.quest,
+                    &session.inventory.items,
+                )
+            });
+            send_questgiver_completion_response(
+                stream,
+                world_db_pool,
+                guid,
+                &item.quest,
+                complete,
+                true,
+                header_crypto,
+            )
+            .await?;
+            return Ok(true);
+        }
+
+        let response = build_quest_details_body(guid, &item.quest, &displays);
         send_packet(
             stream,
-            WorldOpcode::SmsgQuestgiverOfferReward as u16,
+            WorldOpcode::SmsgQuestgiverQuestDetails as u16,
             &response,
             Some(header_crypto),
         )
@@ -549,10 +654,6 @@ pub(in crate::world) async fn handle_gameobject_questgiver_use(
         return Ok(true);
     }
 
-    let quests = questgiver_visible_quests(object_mgr, world_db_pool, guid, session).await?;
-    if quests.is_empty() {
-        return Ok(false);
-    }
     let response = build_questgiver_quest_list_body(guid, &quests);
     send_packet(
         stream,

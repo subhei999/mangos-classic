@@ -517,7 +517,7 @@ impl LauncherApp {
         let mut args = vec![
             "-NoProfile".to_string(),
             "-ExecutionPolicy".to_string(),
-            "Bypass".to_string(),
+            "RemoteSigned".to_string(),
             "-File".to_string(),
             paths.script.display().to_string(),
             action.to_string(),

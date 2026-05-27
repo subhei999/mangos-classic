@@ -122,6 +122,39 @@ downloads the official Inno Setup installer and installs the compiler into
 `target\tooling\inno-setup`. This is build-machine tooling only; players only
 run `RustyMangosSetup.exe`.
 
+## Antivirus Reputation
+
+Unsigned game launchers are frequently flagged by reputation-based scanners,
+especially when they start hidden helper processes, download dependencies, edit
+game configuration, run PowerShell, or self-update. Those behaviors are normal
+for this launcher, but they also overlap with common malware heuristics.
+
+Before sharing public builds:
+
+- build on GitHub Actions or another clean, reproducible machine;
+- sign `RustyMangosLauncher.exe`, `authserver.exe`, `worldserver.exe`, and
+  `RustyMangosSetup.exe` with an Authenticode code-signing certificate;
+- publish the generated `SHA256SUMS.txt` next to the installer;
+- submit the signed installer to Microsoft Security Intelligence if Defender
+  still reports a false positive;
+- avoid repacking the installer with third-party compressors or wrapper tools.
+
+The packaging script signs automatically when either `RUSTY_MANGOS_SIGN_PFX`
+or `RUSTY_MANGOS_SIGN_CERT_SHA1` is set:
+
+```powershell
+$env:RUSTY_MANGOS_SIGN_PFX = "C:\certs\rusty-mangos-signing.pfx"
+$env:RUSTY_MANGOS_SIGN_PFX_PASSWORD = "<password>"
+.\scripts\package-rusty-mangos-launcher.ps1
+```
+
+For a certificate installed in the Windows certificate store:
+
+```powershell
+$env:RUSTY_MANGOS_SIGN_CERT_SHA1 = "<certificate-thumbprint>"
+.\scripts\package-rusty-mangos-launcher.ps1
+```
+
 ## Useful Options
 
 ```powershell

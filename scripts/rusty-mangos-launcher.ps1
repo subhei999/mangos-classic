@@ -1399,7 +1399,7 @@ while (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) {
 
 $launcherScript = Join-Path $AppRoot "scripts\rusty-mangos-launcher.ps1"
 if (Test-Path -LiteralPath $launcherScript -PathType Leaf) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launcherScript Stop | Out-Null
+    & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File $launcherScript Stop | Out-Null
 }
 
 Get-ChildItem -LiteralPath $StageRoot -Force | ForEach-Object {
@@ -1415,7 +1415,7 @@ Start-Process -FilePath (Join-Path $AppRoot "RustyMangosLauncher.exe") -WorkingD
     Start-Process -FilePath "powershell.exe" -ArgumentList @(
         "-NoProfile",
         "-ExecutionPolicy",
-        "Bypass",
+        "RemoteSigned",
         "-File",
         $helperPath,
         "-LauncherPid",

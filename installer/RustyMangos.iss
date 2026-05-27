@@ -8,6 +8,9 @@ AppId={{E174BC31-598D-4CB7-9C91-2F17161CE255}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppPublisherURL=https://github.com/subhei999/rusty-mangos
+AppSupportURL=https://github.com/subhei999/rusty-mangos/issues
+AppUpdatesURL=https://github.com/subhei999/rusty-mangos/releases
 DefaultDirName={autopf}\Rusty MaNGOS
 DefaultGroupName=Rusty MaNGOS
 DisableProgramGroupPage=yes
@@ -18,6 +21,12 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
+SetupLogging=yes
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription=Rusty MaNGOS Launcher Setup
+VersionInfoProductName={#MyAppName}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppVersion}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

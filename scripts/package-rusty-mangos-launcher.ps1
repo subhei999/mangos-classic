@@ -2,7 +2,12 @@ param(
     [switch]$SkipRustBuild,
     [switch]$SkipInstaller,
     [string]$ExtractorSourcePath,
-    [string]$InnoSetupUrl = "https://jrsoftware.org/download.php/is.exe"
+    [string]$InnoSetupUrl = "https://jrsoftware.org/download.php/is.exe",
+    [string]$SignToolPath,
+    [string]$SignCertSha1 = $env:RUSTY_MANGOS_SIGN_CERT_SHA1,
+    [string]$SignPfxPath = $env:RUSTY_MANGOS_SIGN_PFX,
+    [string]$SignPfxPassword = $env:RUSTY_MANGOS_SIGN_PFX_PASSWORD,
+    [string]$TimestampUrl = "http://timestamp.digicert.com"
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +21,85 @@ function Invoke-Checked {
     & $Command @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "$Command $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Get-SignTool {
+    if (-not [string]::IsNullOrWhiteSpace($SignToolPath)) {
+        $resolved = Resolve-Path -LiteralPath $SignToolPath -ErrorAction SilentlyContinue
+        if (-not $resolved) {
+            throw "SignToolPath does not exist: $SignToolPath"
+        }
+        return $resolved.ProviderPath
+    }
+
+    $pathTool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($pathTool) {
+        return $pathTool.Source
+    }
+
+    $kitsRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+    if (Test-Path -LiteralPath $kitsRoot -PathType Container) {
+        $tool = Get-ChildItem -LiteralPath $kitsRoot -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($tool) {
+            return $tool.FullName
+        }
+    }
+
+    throw "signtool.exe was not found. Install the Windows SDK or pass -SignToolPath."
+}
+
+function Invoke-AuthenticodeSign {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($SignCertSha1) -and [string]::IsNullOrWhiteSpace($SignPfxPath)) {
+        return
+    }
+
+    $resolved = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
+    if (-not $resolved) {
+        throw "Cannot sign missing file: $Path"
+    }
+
+    $signtool = Get-SignTool
+    $arguments = @("sign", "/fd", "SHA256", "/tr", $TimestampUrl, "/td", "SHA256")
+    if (-not [string]::IsNullOrWhiteSpace($SignPfxPath)) {
+        $pfx = Resolve-Path -LiteralPath $SignPfxPath -ErrorAction SilentlyContinue
+        if (-not $pfx) {
+            throw "PFX signing certificate does not exist: $SignPfxPath"
+        }
+        $arguments += @("/f", $pfx.ProviderPath)
+        if (-not [string]::IsNullOrWhiteSpace($SignPfxPassword)) {
+            $arguments += @("/p", $SignPfxPassword)
+        }
+    }
+    else {
+        $arguments += @("/sha1", $SignCertSha1)
+    }
+    $arguments += $resolved.ProviderPath
+
+    Invoke-Checked $signtool $arguments
+}
+
+function Write-Sha256Manifest {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Paths,
+        [Parameter(Mandatory = $true)][string]$OutputPath
+    )
+
+    $lines = foreach ($path in $Paths) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $hash = Get-FileHash -LiteralPath $path -Algorithm SHA256
+            $name = Split-Path -Leaf $path
+            "{0}  {1}" -f $hash.Hash.ToLowerInvariant(), $name
+        }
+    }
+
+    if ($lines) {
+        Set-Content -LiteralPath $OutputPath -Value $lines -Encoding ASCII
     }
 }
 
@@ -158,6 +242,10 @@ New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "server") | Out-Nu
 Copy-Item -LiteralPath "target\release\authserver.exe" -Destination (Join-Path $appRoot "server\authserver.exe") -Force
 Copy-Item -LiteralPath "target\release\worldserver.exe" -Destination (Join-Path $appRoot "server\worldserver.exe") -Force
 
+Invoke-AuthenticodeSign (Join-Path $appRoot "RustyMangosLauncher.exe")
+Invoke-AuthenticodeSign (Join-Path $appRoot "server\authserver.exe")
+Invoke-AuthenticodeSign (Join-Path $appRoot "server\worldserver.exe")
+
 $commit = (& git rev-parse HEAD).Trim()
 $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
 $remote = ((& git config --get remote.origin.url 2>$null) -join "").Trim()
@@ -225,10 +313,23 @@ New-Item -ItemType Directory -Force -Path (Join-Path $appRoot "sql\updates\mango
 Copy-Item -Path "sql\updates\mangos\*.sql" -Destination (Join-Path $appRoot "sql\updates\mangos") -Force
 
 if ($SkipInstaller) {
+    Write-Sha256Manifest @(
+        (Join-Path $appRoot "RustyMangosLauncher.exe"),
+        (Join-Path $appRoot "server\authserver.exe"),
+        (Join-Path $appRoot "server\worldserver.exe")
+    ) (Join-Path $packageRoot "SHA256SUMS.txt")
     Write-Host "Packaged app folder: $appRoot"
     exit 0
 }
 
 $iscc = Get-InnoCompiler $repoRoot
 Invoke-Checked $iscc @("installer\RustyMangos.iss")
-Write-Host "Installer output: $(Join-Path $packageRoot 'installer\RustyMangosSetup.exe')"
+$installerPath = Join-Path $packageRoot "installer\RustyMangosSetup.exe"
+Invoke-AuthenticodeSign $installerPath
+Write-Sha256Manifest @(
+    $installerPath,
+    (Join-Path $appRoot "RustyMangosLauncher.exe"),
+    (Join-Path $appRoot "server\authserver.exe"),
+    (Join-Path $appRoot "server\worldserver.exe")
+) (Join-Path $packageRoot "installer\SHA256SUMS.txt")
+Write-Host "Installer output: $installerPath"

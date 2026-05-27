@@ -41,6 +41,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install Boost
+        shell: pwsh
+        run: choco install boost-msvc-14.3 -y --no-progress
+
       - name: Build launcher installer
         shell: pwsh
         run: .\scripts\package-rusty-mangos-launcher.ps1
@@ -59,6 +63,13 @@ jobs:
           path: target\launcher-package\app
           if-no-files-found: error
 
+      - name: Upload checksums
+        uses: actions/upload-artifact@v6
+        with:
+          name: RustyMangosChecksums
+          path: target\launcher-package\installer\SHA256SUMS.txt
+          if-no-files-found: error
+
       - name: Zip packaged app for release
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         shell: pwsh
@@ -67,6 +78,10 @@ jobs:
             -Path target\launcher-package\app\* `
             -DestinationPath target\launcher-package\installer\RustyMangosApp.zip `
             -Force
+          $hash = Get-FileHash -LiteralPath target\launcher-package\installer\RustyMangosApp.zip -Algorithm SHA256
+          Add-Content `
+            -LiteralPath target\launcher-package\installer\SHA256SUMS.txt `
+            -Value ("{0}  {1}" -f $hash.Hash.ToLowerInvariant(), "RustyMangosApp.zip")
 
       - name: Publish rolling launcher release
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -94,6 +109,7 @@ jobs:
           gh release create $tag `
             "target\launcher-package\installer\RustyMangosSetup.exe#RustyMangosSetup.exe" `
             "target\launcher-package\installer\RustyMangosApp.zip#RustyMangosApp.zip" `
+            "target\launcher-package\installer\SHA256SUMS.txt#SHA256SUMS.txt" `
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
             --title $title `

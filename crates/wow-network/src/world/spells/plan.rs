@@ -39,6 +39,8 @@ impl<'a> SpellInfo<'a> {
             SpellCastKind::AuraApplication
         } else if self.has_effect(SpellEffectDispatch::Teleport) {
             SpellCastKind::Teleport
+        } else if self.has_direct_heal_effect() {
+            SpellCastKind::DirectHeal
         } else if self.has_item_direct_effect() {
             SpellCastKind::InstantDamage
         } else {
@@ -196,7 +198,13 @@ impl<'a> SpellInfo<'a> {
             Some(SpellCastKind::Teleport)
         } else if self.has_direct_heal_effect() {
             Some(SpellCastKind::DirectHeal)
-        } else if self.has_effect(SpellEffectDispatch::Dispel) {
+        } else if self.has_effect(SpellEffectDispatch::Dispel)
+            || self.has_effect(SpellEffectDispatch::Threat)
+            || self.has_effect(SpellEffectDispatch::Distract)
+            || self.has_effect(SpellEffectDispatch::PickPocket)
+            || self.has_effect(SpellEffectDispatch::SummonPet)
+            || self.has_effect(SpellEffectDispatch::SummonPossessed)
+        {
             Some(SpellCastKind::AuraApplication)
         } else if self.has_effect(SpellEffectDispatch::CreateItem) {
             Some(SpellCastKind::CreateItem)
@@ -206,11 +214,11 @@ impl<'a> SpellInfo<'a> {
             Some(SpellCastKind::Interrupt)
         } else if self.has_effect(SpellEffectDispatch::ApplyAura) {
             Some(SpellCastKind::AuraApplication)
-        } else if self.has_power_burn_effect() {
+        } else if self.has_power_burn_effect() || self.has_direct_damage_effect() {
             Some(SpellCastKind::InstantDamage)
-        } else if self.has_direct_damage_effect() {
-            Some(SpellCastKind::InstantDamage)
-        } else if self.has_effect(SpellEffectDispatch::PersistentAreaAura) {
+        } else if self.has_effect(SpellEffectDispatch::PersistentAreaAura)
+            || self.has_effect(SpellEffectDispatch::SpellScript)
+        {
             Some(SpellCastKind::AuraApplication)
         } else {
             None
@@ -235,6 +243,20 @@ impl<'a> SpellInfo<'a> {
             return Some(SpellPlanChannel::UnitPeriodicTrigger {
                 trigger_spell: effect.trigger_spell,
                 tick_millis: effect.amplitude,
+                duration_index: self.template.duration_index,
+                interrupt_flags: self.template.channel_interrupt_flags,
+            });
+        }
+        if self.effects.iter().any(|effect| {
+            effect.dispatch == SpellEffectDispatch::ApplyAura
+                && matches!(
+                    plan_effect_target(*effect),
+                    SpellPlanEffectTarget::Unit
+                        | SpellPlanEffectTarget::HostileUnit
+                        | SpellPlanEffectTarget::FriendlyUnit
+                )
+        }) {
+            return Some(SpellPlanChannel::UnitAura {
                 duration_index: self.template.duration_index,
                 interrupt_flags: self.template.channel_interrupt_flags,
             });
@@ -285,7 +307,13 @@ impl<'a> SpellInfo<'a> {
                     SpellAuraTarget::DestinationAreaEnemy => SpellPlanTarget::DestinationAreaEnemy,
                     SpellAuraTarget::UnitTarget => {
                         if self.effects.iter().any(|effect| {
-                            effect_targets_direct_hostile_unit(*effect)
+                            effect.dispatch == SpellEffectDispatch::ApplyAura
+                                && effect_targets_caster_centered_friendly_area(*effect)
+                        }) {
+                            SpellPlanTarget::FriendlyUnit
+                        } else if self.effects.iter().any(|effect| {
+                            effect.dispatch == SpellEffectDispatch::PickPocket
+                                || effect_targets_direct_hostile_unit(*effect)
                                 || effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE
                                 || effect.aura_name == SPELL_AURA_PERIODIC_TRIGGER_SPELL
                         }) {
@@ -341,6 +369,12 @@ impl<'a> SpellInfo<'a> {
 }
 
 pub(in crate::world) fn plan_effect_target(effect: SpellInfoEffect) -> SpellPlanEffectTarget {
+    if effect_targets_target_party_friendly_area(effect) {
+        return SpellPlanEffectTarget::TargetPartyFriendly;
+    }
+    if effect_targets_caster_centered_friendly_area(effect) {
+        return SpellPlanEffectTarget::CasterAreaFriendly;
+    }
     if effect_targets_caster_centered_hostile_area(effect) {
         return SpellPlanEffectTarget::CasterAreaEnemy {
             cone: effect_targets_caster_centered_hostile_cone(effect),
@@ -394,7 +428,7 @@ struct SpellPlanFlagSpec {
     support: SpellPlanFlagSupport,
 }
 
-const ATTRIBUTE_FLAG_SPECS: [SpellPlanFlagSpec; 4] = [
+const ATTRIBUTE_FLAG_SPECS: [SpellPlanFlagSpec; 6] = [
     SpellPlanFlagSpec {
         bit: SPELL_ATTR_USES_RANGED_SLOT,
         name: "SPELL_ATTR_USES_RANGED_SLOT",
@@ -417,9 +451,19 @@ const ATTRIBUTE_FLAG_SPECS: [SpellPlanFlagSpec; 4] = [
         name: "SPELL_ATTR_ON_NEXT_SWING",
         support: SpellPlanFlagSupport::ImplementedGeneric("queued next melee swing"),
     },
+    SpellPlanFlagSpec {
+        bit: SPELL_ATTR_ONLY_STEALTHED,
+        name: "SPELL_ATTR_ONLY_STEALTHED",
+        support: SpellPlanFlagSupport::ImplementedGeneric("caster stealth cast validation"),
+    },
+    SpellPlanFlagSpec {
+        bit: SPELL_ATTR_HEARTBEAT_RESIST,
+        name: "SPELL_ATTR_HEARTBEAT_RESIST",
+        support: SpellPlanFlagSupport::ImplementedGeneric("generic heartbeat early-break runtime"),
+    },
 ];
 
-const ATTRIBUTE_EX_FLAG_SPECS: [SpellPlanFlagSpec; 7] = [
+const ATTRIBUTE_EX_FLAG_SPECS: [SpellPlanFlagSpec; 8] = [
     SpellPlanFlagSpec {
         bit: SPELL_ATTR_EX_IS_CHANNELED,
         name: "SPELL_ATTR_EX_IS_CHANNELED",
@@ -436,6 +480,11 @@ const ATTRIBUTE_EX_FLAG_SPECS: [SpellPlanFlagSpec; 7] = [
         bit: SPELL_ATTR_EX_IS_SELF_CHANNELED,
         name: "SPELL_ATTR_EX_IS_SELF_CHANNELED",
         support: SpellPlanFlagSupport::ImplementedGeneric("generic self-channel lifecycle"),
+    },
+    SpellPlanFlagSpec {
+        bit: SPELL_ATTR_EX_ONLY_PEACEFUL_TARGETS,
+        name: "SPELL_ATTR_EX_ONLY_PEACEFUL_TARGETS",
+        support: SpellPlanFlagSupport::ImplementedGeneric("out-of-combat target validation"),
     },
     SpellPlanFlagSpec {
         bit: 0x0000_0200,

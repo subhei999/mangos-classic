@@ -59,6 +59,7 @@ pub(in crate::world) const EVENT_AI_SPAWNED_MAP: i32 = 1;
 pub(in crate::world) const EVENT_AI_SPAWNED_ZONE: i32 = 2;
 pub(in crate::world) const CMANGOS_CREATURE_FAMILY_FLEE_DELAY: Duration =
     Duration::from_millis(10_000);
+pub(in crate::world) const CMANGOS_UNIT_FACING_ARC_RADIANS: f32 = std::f32::consts::PI;
 pub(in crate::world) const UNIT_CONDITION_FLAG_OR: u32 = 0x1;
 pub(in crate::world) const CONDITION_LOGIC_NONE: i32 = 0;
 pub(in crate::world) const CONDITION_LOGIC_AND: i32 = 1;
@@ -2512,6 +2513,25 @@ impl MapRuntime {
         now: Instant,
         next_swing_at: Instant,
     ) -> anyhow::Result<Option<DbCreaturePlayerDamageEvent>> {
+        self.apply_db_creature_player_melee_outcome_with_triggered_aura(
+            attacker,
+            victim,
+            outcome,
+            None,
+            now,
+            next_swing_at,
+        )
+    }
+
+    pub(in crate::world) fn apply_db_creature_player_melee_outcome_with_triggered_aura(
+        &mut self,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        outcome: MeleeDamageOutcome,
+        triggered_aura: Option<TriggeredPlayerMeleeAura>,
+        now: Instant,
+        next_swing_at: Instant,
+    ) -> anyhow::Result<Option<DbCreaturePlayerDamageEvent>> {
         let (combat, due_at) = {
             let Some(combat) = self.active_creature_combats.get_mut(&attacker.raw()) else {
                 return Ok(None);
@@ -2562,9 +2582,8 @@ impl MapRuntime {
         } else {
             false
         };
-        let aura_changed = reactive_defense_triggered
-            || shield_block_consumed
-            || damage_taken_charge_consumed;
+        let mut aura_changed =
+            reactive_defense_triggered || shield_block_consumed || damage_taken_charge_consumed;
         if damage == 0 {
             let Some(victim_player) = self.players.get(&victim.counter()) else {
                 return Ok(None);
@@ -2635,24 +2654,61 @@ impl MapRuntime {
         };
         let victim_health = applied.remaining_health;
         let victim_position = applied.position;
-        let direct_packets = applied.direct_packets;
-        let aura_packet = if aura_changed || applied.aura_packet.is_some() {
-            let Some(victim_player) = self.players.get(&victim.counter()) else {
-                return Ok(None);
-            };
-            Some(OutboundWorldPacket {
-                opcode: WorldOpcode::SmsgUpdateObject as u16,
-                body: build_player_aura_update_body(
-                    victim,
-                    victim_player.class,
-                    victim_player.stand_state,
-                    victim_player.aura_state,
-                    &victim_player.active_auras,
-                )?,
-            })
+        let mut direct_packets = applied.direct_packets;
+        let mut observer_packets = applied.observer_packets;
+        let triggered_aura_applied = if victim_health > 0 {
+            if let Some(triggered) = triggered_aura {
+                let spell_go_packet = OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgSpellGo as u16,
+                    body: triggered.spell_go_body,
+                };
+                direct_packets.push(spell_go_packet.clone());
+                for player_guid in self.nearby_player_guids(
+                    victim_position,
+                    PLAYER_VISIBILITY_RADIUS_YARDS,
+                    Some(victim.counter()),
+                ) {
+                    let Some(player) = self.players.get(&player_guid) else {
+                        continue;
+                    };
+                    if let Some(packet) = player.packet_to_client(spell_go_packet.clone()) {
+                        observer_packets.push(packet);
+                    }
+                }
+                if let Some(event) = self.apply_player_aura_replacing_conflicts(
+                    victim.counter(),
+                    triggered.aura,
+                    &triggered.resolution,
+                )? {
+                    direct_packets.extend(event.direct_packets);
+                    observer_packets.extend(event.observer_packets);
+                }
+                aura_changed = true;
+                true
+            } else {
+                false
+            }
         } else {
-            None
+            false
         };
+        let aura_packet =
+            if !triggered_aura_applied && (aura_changed || applied.aura_packet.is_some()) {
+                let Some(victim_player) = self.players.get(&victim.counter()) else {
+                    return Ok(None);
+                };
+                Some(OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgUpdateObject as u16,
+                    body: build_player_aura_update_body(
+                        victim,
+                        victim_player.class,
+                        victim_player.stand_state,
+                        victim_player.aura_state,
+                        &victim_player.active_auras,
+                    )?,
+                })
+            } else {
+                None
+            };
         let health_update_body = applied.health_packet.body.clone();
         if damage > 0 && self.db_creature_melee_hit_refreshes_combat_leash(attacker, victim) {
             self.refresh_db_creature_combat_leash(attacker, now);
@@ -2680,7 +2736,6 @@ impl MapRuntime {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
             body: health_update_body.clone(),
         };
-        let mut observer_packets = applied.observer_packets;
         for player_guid in self.nearby_player_guids(
             victim_position,
             PLAYER_VISIBILITY_RADIUS_YARDS,
@@ -3136,16 +3191,16 @@ impl MapRuntime {
         } else {
             threat
         };
-        if threat < 0.0 || !threat.is_finite() {
+        if !threat.is_finite() {
             return;
         }
         let threats = self.creature_threats.entry(attacker.raw()).or_default();
         if let Some(entry) = threats.iter_mut().find(|entry| entry.victim == victim) {
-            entry.threat += threat;
+            entry.threat = (entry.threat + threat).max(0.0);
         } else {
             threats.push(CreatureThreatEntry {
                 victim,
-                threat,
+                threat: threat.max(0.0),
                 fadeout_threat_reduction: 0.0,
             });
         }
@@ -3742,6 +3797,21 @@ pub(in crate::world) fn db_creature_is_facing_targets_back(
 ) -> bool {
     !has_in_arc(target_position, caster_position, PLAYER_MELEE_ARC_RADIANS)
         && has_in_arc(caster_position, target_position, PLAYER_MELEE_ARC_RADIANS)
+}
+
+pub(in crate::world) fn db_creature_can_daze_player_from_behind(
+    caster_position: WorldPosition,
+    target_position: WorldPosition,
+) -> bool {
+    !has_in_arc(
+        target_position,
+        caster_position,
+        CMANGOS_UNIT_FACING_ARC_RADIANS,
+    ) && has_in_arc(
+        caster_position,
+        target_position,
+        CMANGOS_UNIT_FACING_ARC_RADIANS,
+    )
 }
 
 pub(in crate::world) fn db_creature_event_ai_missing_aura_condition(

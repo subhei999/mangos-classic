@@ -6,6 +6,18 @@ pub(in crate::world) struct CreateItemSpellEffect {
     pub(in crate::world) requested_count: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct ChannelDeathItemSpellEffect {
+    pub(in crate::world) item_template: u32,
+    pub(in crate::world) requested_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::world) struct PlayerInventoryItemAward {
+    pub(in crate::world) inventory: Vec<CharacterInventoryItem>,
+    pub(in crate::world) packets: Vec<OutboundWorldPacket>,
+}
+
 pub(in crate::world) fn create_item_spell_effect(
     effect: SpellInfoEffect,
     value_context: SpellEffectValueContext,
@@ -32,11 +44,165 @@ pub(in crate::world) fn create_item_spell_effects(
         .collect()
 }
 
+pub(in crate::world) fn channel_death_item_spell_effect(
+    effect: SpellInfoEffect,
+    value_context: SpellEffectValueContext,
+) -> Option<ChannelDeathItemSpellEffect> {
+    if effect.dispatch != SpellEffectDispatch::ApplyAura
+        || effect.aura_name != SPELL_AURA_CHANNEL_DEATH_ITEM
+        || effect.item_type == 0
+    {
+        return None;
+    }
+    Some(ChannelDeathItemSpellEffect {
+        item_template: effect.item_type,
+        requested_count: spell_effect_calculated_u32(effect, value_context)
+            .unwrap_or(1)
+            .max(1),
+    })
+}
+
+pub(in crate::world) fn channel_death_item_spell_effects(
+    spell_info: &SpellInfo<'_>,
+    value_context: SpellEffectValueContext,
+) -> Vec<ChannelDeathItemSpellEffect> {
+    spell_info
+        .effects
+        .into_iter()
+        .filter_map(|effect| channel_death_item_spell_effect(effect, value_context))
+        .collect()
+}
+
 pub(in crate::world) fn create_item_count_for_template(
     effect: CreateItemSpellEffect,
     template: &ItemTemplateQuery,
 ) -> u32 {
     effect.requested_count.min(template.stackable.max(1)).max(1)
+}
+
+pub(in crate::world) async fn award_player_inventory_item(
+    character_db_pool: &MySqlPool,
+    world_db_pool: &MySqlPool,
+    world_data_files: &WorldDataFiles,
+    character_guid: u32,
+    inventory: &[CharacterInventoryItem],
+    item_template_id: u32,
+    requested_count: u32,
+) -> anyhow::Result<Option<PlayerInventoryItemAward>> {
+    let Some(template) = wow_db::get_item_template_query(world_db_pool, item_template_id).await?
+    else {
+        warn!(
+            item_template = item_template_id,
+            "Skipping inventory award for missing item_template row"
+        );
+        return Ok(None);
+    };
+    let bag_model = InventoryBagModel::load_inventory(world_db_pool, inventory).await?;
+    let count = requested_count.min(template.stackable.max(1)).max(1);
+    let Some(store_plan) = bag_model.plan_store_item(
+        InventoryStorageScope::Inventory,
+        inventory,
+        &template,
+        count,
+        None,
+        None,
+    ) else {
+        return Ok(None);
+    };
+
+    let random_properties = generate_item_instance_random_properties_for_template(
+        world_db_pool,
+        world_data_files,
+        &template,
+    )
+    .await?;
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            let existing_count = inventory
+                .iter()
+                .find(|item| item.item == item_guid)
+                .map(|item| item.count)
+                .unwrap_or(0);
+            wow_db::update_character_inventory_item_count(
+                character_db_pool,
+                character_guid,
+                item_guid,
+                existing_count.saturating_add(slot.count),
+            )
+            .await?;
+        } else {
+            wow_db::add_character_inventory_item_with_random_properties(
+                character_db_pool,
+                wow_db::AddCharacterInventoryItemRequest {
+                    guid: character_guid,
+                    bag: slot.bag as u32,
+                    slot: slot.slot,
+                    item_template: template.entry,
+                    count: slot.count,
+                    durability: template.max_durability,
+                    initial_flags: item_binding_flags_on_pickup(&template),
+                    random_properties: random_properties.as_ref(),
+                },
+            )
+            .await?;
+        }
+    }
+
+    let inventory =
+        wow_db::get_character_inventory_items(character_db_pool, character_guid).await?;
+    let mut update_blocks = Vec::new();
+    let mut push_results = Vec::new();
+    for slot in &store_plan {
+        if let Some(item_guid) = slot.existing_item {
+            if let Some(item) = inventory.iter().find(|item| item.item == item_guid) {
+                update_blocks.push(build_item_stack_count_update_block(item.item, item.count)?);
+                push_results.push(build_item_push_result_body(
+                    character_guid,
+                    item,
+                    slot.count,
+                    true,
+                    true,
+                    true,
+                ));
+            }
+            continue;
+        }
+        if let Some(new_item) = inventory
+            .iter()
+            .find(|item| item.bag == slot.bag as u32 && item.slot == slot.slot)
+        {
+            update_blocks.extend(build_stored_item_create_update_blocks(
+                character_guid,
+                &inventory,
+                new_item,
+                (template.container_slots > 0).then_some(template.container_slots),
+            )?);
+            push_results.push(build_item_push_result_body(
+                character_guid,
+                new_item,
+                slot.count,
+                true,
+                true,
+                true,
+            ));
+        }
+    }
+
+    let mut packets = push_results
+        .into_iter()
+        .map(|body| OutboundWorldPacket {
+            opcode: WorldOpcode::SmsgItemPushResult as u16,
+            body,
+        })
+        .collect::<Vec<_>>();
+    if !update_blocks.is_empty() {
+        packets.push(OutboundWorldPacket {
+            opcode: WorldOpcode::SmsgUpdateObject as u16,
+            body: build_update_object_body(&update_blocks),
+        });
+    }
+
+    Ok(Some(PlayerInventoryItemAward { inventory, packets }))
 }
 
 pub(in crate::world) async fn player_create_item_cast_inventory_failure(

@@ -200,6 +200,508 @@ pub(in crate::world) async fn apply_player_taunt_effect(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_threat_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    effect: SpellInfoEffect,
+    value_context: SpellEffectValueContext,
+    targets: &SpellCastTargets,
+    target_outcome: Option<PlayerSpellTargetOutcome>,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(target) = targets.unit_target.filter(|target| target.is_creature()) else {
+        return Ok(());
+    };
+    if target_outcome
+        .filter(|outcome| outcome.target == target)
+        .is_some_and(|outcome| outcome.miss_info.is_some())
+    {
+        return Ok(());
+    }
+
+    let threat = spell_effect_calculated_i32(effect, value_context) as f32;
+    deps.shared_world
+        .maps
+        .add_db_creature_threat_with_school_mask(
+            map_id,
+            target,
+            caster,
+            threat,
+            spell_school_mask_from_school(spell_template.school),
+        )
+        .await;
+
+    let target_switch = deps
+        .shared_world
+        .maps
+        .switch_db_creature_threat_victim_if_needed(map_id, target, Some(character_guid))
+        .await?;
+    send_db_creature_threat_target_switch(
+        stream,
+        deps.shared_world,
+        session,
+        target_switch,
+        header_crypto,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_distract_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    character_guid: u32,
+    map_id: u32,
+    effect: SpellInfoEffect,
+    value_context: SpellEffectValueContext,
+    targets: &SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(destination) = targets.destination else {
+        return Ok(());
+    };
+    let Some(radius) = spell_effect_radius_yards(deps.shared_world.maps, effect) else {
+        warn!(
+            radius_index = effect.radius_index,
+            "Skipping distract effect with missing SpellRadius.dbc row"
+        );
+        return Ok(());
+    };
+    let Some(duration_secs) = spell_effect_calculated_u32(effect, value_context) else {
+        return Ok(());
+    };
+    let distract_position =
+        WorldPosition::new(map_id, destination.x, destination.y, destination.z, 0.0);
+    let distract_until = now + Duration::from_millis(u64::from(duration_secs) * 1_000);
+    let targets = deps
+        .shared_world
+        .maps
+        .nearby_attackable_db_creature_guids_for_player_spell_at_position(
+            map_id,
+            character_guid,
+            distract_position,
+            radius,
+        )
+        .await;
+
+    for target in targets {
+        let Some(update) = deps
+            .shared_world
+            .maps
+            .apply_db_creature_distract(map_id, target, distract_position, distract_until)
+            .await
+        else {
+            continue;
+        };
+
+        mirror_session_db_creature(session, target.raw(), update.creature.clone());
+
+        if let Some(stop) = update.stop {
+            let body = build_monster_move_stop_body(target, stop.position, stop.spline_id)?;
+            send_packet(
+                stream,
+                WorldOpcode::SmsgMonsterMove as u16,
+                &body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+            let packets = deps
+                .shared_world
+                .maps
+                .broadcast_nearby_player_packet(
+                    map_id,
+                    character_guid,
+                    PLAYER_VISIBILITY_RADIUS_YARDS,
+                    OutboundWorldPacket {
+                        opcode: WorldOpcode::SmsgMonsterMove as u16,
+                        body,
+                    },
+                )
+                .await;
+            deps.shared_world.sessions.dispatch(packets).await;
+        }
+
+        let body = build_monster_move_facing_spot_body(
+            target,
+            update.facing_position,
+            update.facing_position,
+            update.facing_spline_id,
+            1,
+            distract_position,
+        )?;
+        send_packet(
+            stream,
+            WorldOpcode::SmsgMonsterMove as u16,
+            &body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        let packets = deps
+            .shared_world
+            .maps
+            .broadcast_nearby_player_packet(
+                map_id,
+                character_guid,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgMonsterMove as u16,
+                    body,
+                },
+            )
+            .await;
+        deps.shared_world.sessions.dispatch(packets).await;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_pickpocket_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    targets: &SpellCastTargets,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(target) = targets.unit_target.filter(|target| target.is_creature()) else {
+        return Ok(());
+    };
+    let Some(creature) = deps
+        .shared_world
+        .maps
+        .db_creature_snapshot(map_id, target)
+        .await
+    else {
+        return Ok(());
+    };
+    let loot_entry = creature.spawn.template.pickpocket_loot_id;
+    if loot_entry == 0 {
+        return Ok(());
+    }
+    if creature.pickpocket_is_on_cooldown(now) {
+        let body = build_loot_error_response_body(target, LOOT_ERROR_ALREADY_PICKPOCKETED);
+        send_packet(
+            stream,
+            WorldOpcode::SmsgLootResponse as u16,
+            &body,
+            Some(header_crypto),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let loot_items =
+        if creature.loot_kind == DbCreatureLootKind::Pickpocket && creature.loot_items_generated {
+            Vec::new()
+        } else {
+            select_db_pickpocket_loot_item_for_character(
+                deps.shared_world.object_mgr,
+                deps.world_db_pool,
+                session,
+                loot_entry,
+            )
+            .await?
+        };
+    let loot_money =
+        if creature.loot_kind == DbCreatureLootKind::Pickpocket && creature.loot_items_generated {
+            creature.loot_money()
+        } else {
+            cmangos_pickpocket_loot_money(creature.spawn.template.min_level, character_level)
+        };
+    let Some(creature) = deps
+        .shared_world
+        .maps
+        .open_db_creature_pickpocket_loot(
+            map_id,
+            target.raw(),
+            character_guid,
+            now,
+            loot_money,
+            loot_items,
+        )
+        .await
+    else {
+        let body = build_loot_error_response_body(target, LOOT_ERROR_ALREADY_PICKPOCKETED);
+        send_packet(
+            stream,
+            WorldOpcode::SmsgLootResponse as u16,
+            &body,
+            Some(header_crypto),
+        )
+        .await?;
+        return Ok(());
+    };
+
+    send_player_looting_state_update(
+        stream,
+        deps.shared_world,
+        session,
+        true,
+        &mut *header_crypto,
+    )
+    .await?;
+    let response =
+        build_db_creature_loot_response_body_for_player(target, &creature, None, character_guid);
+    send_packet(
+        stream,
+        WorldOpcode::SmsgLootResponse as u16,
+        &response,
+        Some(header_crypto),
+    )
+    .await?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_player_owned_runtime_creature_summon_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    summon_entry: u32,
+    summon_counter: u32,
+    summon_guid: ObjectGuid,
+    set_pet_runtime_fields: bool,
+    take_client_control: bool,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    if summon_entry == 0 {
+        return Ok(());
+    }
+    let Some(active_character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    let active_position = active_character.position;
+    let active_race = active_character.race;
+    let Some(mut template) = deps
+        .shared_world
+        .object_mgr
+        .creature_template(deps.world_db_pool, summon_entry)
+        .await?
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            summon_entry, "Skipping summon effect with missing creature_template row"
+        );
+        return Ok(());
+    };
+
+    template.faction = player_faction_template(active_race, session.character.player_flags);
+    template.min_level = character_level;
+    template.max_level = character_level;
+
+    for existing_guid in deps
+        .shared_world
+        .maps
+        .db_creature_guids_for_owner(map_id, caster)
+        .await
+    {
+        let Some(event) = deps
+            .shared_world
+            .maps
+            .delete_db_creature_runtime(map_id, Some(existing_guid), None, Some(character_guid))
+            .await?
+        else {
+            continue;
+        };
+        remove_session_db_creature(session, existing_guid.raw());
+        send_packet(
+            stream,
+            WorldOpcode::SmsgDestroyObject as u16,
+            &event.direct_packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        deps.shared_world
+            .sessions
+            .dispatch(event.observer_packets)
+            .await;
+    }
+
+    let mut creature = DbCreatureRuntime::new(CreatureSpawnQuery {
+        guid: summon_counter,
+        entry: summon_entry,
+        map: map_id,
+        game_event: None,
+        guid_pool_id: None,
+        entry_pool_id: None,
+        pool_max_limit: None,
+        pool_chance: 0.0,
+        addon_emote: 0,
+        position_x: active_position.x,
+        position_y: active_position.y,
+        position_z: active_position.z,
+        orientation: active_position.orientation,
+        spawn_time_secs_min: 0,
+        spawn_time_secs_max: 0,
+        spawn_dist: 0.0,
+        movement_type: DB_MOTION_TYPE_IDLE,
+        formation_waypoint_path_id: None,
+        template,
+        waypoint_path: Vec::new(),
+    });
+    creature.guid_override = Some(summon_guid);
+    creature.owner_guid = Some(caster);
+    creature.charmer_guid = take_client_control.then_some(caster);
+    creature.created_by_spell = Some(spell_template.id);
+    if set_pet_runtime_fields {
+        creature.pet_name_timestamp =
+            Some(current_unix_time_secs().min(u64::from(u32::MAX)) as u32);
+        creature.pet_number = Some(summon_counter);
+    }
+    creature.player_controlled = true;
+
+    mirror_session_db_creature(session, summon_guid.raw(), creature.clone());
+
+    let create_body =
+        build_update_object_body(&[build_db_creature_runtime_create_block(&creature)?]);
+    send_packet(
+        stream,
+        WorldOpcode::SmsgUpdateObject as u16,
+        &create_body,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+    let observer_packets = deps
+        .shared_world
+        .maps
+        .spawn_db_creature_runtime(creature, Some(character_guid))
+        .await?;
+    deps.shared_world.sessions.dispatch(observer_packets).await;
+
+    if take_client_control {
+        session.movement.controlled_unit = Some(summon_guid);
+        session.movement.active_mover = Some(summon_guid);
+
+        let charm_body = build_player_charm_update_body(character_guid, Some(summon_guid))?;
+        send_packet(
+            stream,
+            WorldOpcode::SmsgUpdateObject as u16,
+            &charm_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        let observer_packets = deps
+            .shared_world
+            .maps
+            .broadcast_nearby_player_packet(
+                map_id,
+                character_guid,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgUpdateObject as u16,
+                    body: charm_body,
+                },
+            )
+            .await;
+        deps.shared_world.sessions.dispatch(observer_packets).await;
+
+        let mut client_control_body = Vec::new();
+        PackedGuid::write(&mut client_control_body, summon_guid)?;
+        client_control_body.push(1);
+        send_packet(
+            stream,
+            0x0159,
+            &client_control_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_summon_pet_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    effect: SpellInfoEffect,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Ok(pet_entry) = u32::try_from(effect.misc_value) else {
+        return Ok(());
+    };
+    let summon_counter = deps.shared_world.maps.allocate_gm_creature_guid();
+    let pet_guid = ObjectGuid::new(HighGuid::Pet, pet_entry, summon_counter);
+    apply_player_owned_runtime_creature_summon_effect(
+        stream,
+        deps,
+        session,
+        caster,
+        character_guid,
+        character_level,
+        map_id,
+        spell_template,
+        pet_entry,
+        summon_counter,
+        pet_guid,
+        true,
+        false,
+        header_crypto,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::world) async fn apply_player_summon_possessed_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    effect: SpellInfoEffect,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Ok(creature_entry) = u32::try_from(effect.misc_value) else {
+        return Ok(());
+    };
+    let summon_counter = deps.shared_world.maps.allocate_gm_creature_guid();
+    let creature_guid = ObjectGuid::new(HighGuid::Unit, creature_entry, summon_counter);
+    apply_player_owned_runtime_creature_summon_effect(
+        stream,
+        deps,
+        session,
+        caster,
+        character_guid,
+        character_level,
+        map_id,
+        spell_template,
+        creature_entry,
+        summon_counter,
+        creature_guid,
+        false,
+        true,
+        header_crypto,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn apply_player_dispel_effect(
     stream: &mut WorldPacketSink,
 
@@ -700,6 +1202,7 @@ pub(in crate::world) async fn apply_player_trigger_spell_by_id(
                 &triggered_template,
                 &triggered_profile,
                 targets,
+                None,
                 triggered_value_context,
                 now,
                 header_crypto,

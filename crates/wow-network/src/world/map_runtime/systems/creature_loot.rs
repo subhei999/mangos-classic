@@ -36,12 +36,53 @@ impl MapRuntime {
             creature.loot_current_looter_pass_slots.clear();
             creature.loot_items_generated = true;
         }
+        creature.loot_kind = DbCreatureLootKind::Corpse;
+        creature.pickpocket_restock_at = None;
         creature.extend_corpse_decay_while_looting(Instant::now());
         creature.looting = true;
         self.creature_looting_by_character
             .insert(character_guid, creature_guid);
         let creature = creature.clone();
         self.sync_db_creature_lifecycle_tracking(creature_guid);
+        self.refresh_grid_state(grid_coord_for_position(creature.current_position));
+        Some(creature)
+    }
+
+    pub(in crate::world) fn open_db_creature_pickpocket_loot(
+        &mut self,
+        creature_guid: u64,
+        character_guid: u32,
+        now: Instant,
+        loot_money: u32,
+        loot_items: Vec<DbCreatureLootRuntime>,
+    ) -> Option<DbCreatureRuntime> {
+        let creature = self.creatures.get_mut(&creature_guid)?;
+        if creature.life_state != DbCreatureLifeState::Alive
+            || creature.pickpocket_is_on_cooldown(now)
+        {
+            return None;
+        }
+        let generate_loot =
+            creature.loot_kind != DbCreatureLootKind::Pickpocket || !creature.loot_items_generated;
+        if generate_loot {
+            creature.loot_items = loot_items_with_stable_slots(loot_items);
+            creature.loot_money = loot_money;
+            creature.loot_money_available = loot_money > 0;
+            creature.loot_items_generated = true;
+            creature.loot_roll_released_slots.clear();
+            creature.loot_current_looter_pass_slots.clear();
+        }
+        creature.loot_kind = DbCreatureLootKind::Pickpocket;
+        creature.pickpocket_restock_at = None;
+        creature.lootable = true;
+        creature.looting = true;
+        creature.loot_owner = Some(CreatureLootOwner::Player(character_guid));
+        creature.loot_current_looter = Some(character_guid);
+        creature.loot_allowed_players.clear();
+        creature.loot_method = None;
+        self.creature_looting_by_character
+            .insert(character_guid, creature_guid);
+        let creature = creature.clone();
         self.refresh_grid_state(grid_coord_for_position(creature.current_position));
         Some(creature)
     }
@@ -202,7 +243,17 @@ impl MapRuntime {
         creature.looting = false;
         self.creature_looting_by_character
             .retain(|_, looting_guid| *looting_guid != creature_guid);
-        creature.reduce_corpse_decay_after_loot(now);
+        if creature.loot_kind == DbCreatureLootKind::Pickpocket {
+            creature.loot_current_looter = None;
+            if !creature.loot_money_available && creature.loot_items.is_empty() {
+                creature.lootable = false;
+                creature.loot_items_generated = false;
+                creature.pickpocket_restock_at =
+                    Some(now + CMANGOS_CREATURE_PICKPOCKET_RESTOCK_DELAY);
+            }
+        } else {
+            creature.reduce_corpse_decay_after_loot(now);
+        }
         let creature = creature.clone();
         self.sync_db_creature_lifecycle_tracking(creature_guid);
         self.refresh_grid_state(grid_coord_for_position(creature.current_position));

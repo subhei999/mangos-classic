@@ -4,6 +4,34 @@ use wow_proto::world::WorldOpcode;
 // Shared DB-creature snapshot and lazy grid visibility helpers.
 
 impl MapRuntime {
+    pub(in crate::world) fn update_controlled_db_creature_position(
+        &mut self,
+        creature_guid: ObjectGuid,
+        opcode: u16,
+        movement: &MovementInfo,
+        server_time: u32,
+        exclude_character_guid: Option<u32>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(mut creature) = self.db_creature_snapshot(creature_guid) else {
+            return Ok(Vec::new());
+        };
+        if !creature.player_controlled {
+            return Ok(Vec::new());
+        }
+        creature.current_position = movement.position;
+        let packet = OutboundWorldPacket {
+            opcode,
+            body: build_unit_movement_broadcast_body(creature_guid, movement, server_time)?,
+        };
+        Ok(
+            self.update_db_creature_snapshot_and_broadcast(
+                creature,
+                exclude_character_guid,
+                packet,
+            ),
+        )
+    }
+
     #[allow(dead_code)]
     pub(in crate::world) fn share_db_creature_snapshots(
         &mut self,
@@ -138,6 +166,16 @@ impl MapRuntime {
                     .and_then(|player| player.packet_to_client(packet.clone()))
             })
             .collect();
+        let farsight_clear_players = self
+            .players
+            .iter()
+            .filter_map(|(character_guid, player)| {
+                (player.farsight_target == Some(guid)).then_some(*character_guid)
+            })
+            .collect::<Vec<_>>();
+        for character_guid in farsight_clear_players {
+            observer_packets.extend(self.clear_player_farsight_if_target(character_guid, guid)?);
+        }
         observer_packets.extend(self.interrupt_player_spell_work_targeting_unit(guid)?);
         Ok(Some(DbCreatureDeleteEvent {
             creature,

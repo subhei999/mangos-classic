@@ -298,7 +298,8 @@ pub(in crate::world) async fn stream_newly_visible_db_gameobjects(
         return Ok(());
     };
     let character_guid = character.guid;
-    let position = character.position;
+    let position =
+        player_visibility_stream_position(maps, character_guid, character.position).await;
     if !maps
         .should_rescan_player_gameobject_visibility(position.map_id, character_guid, position)
         .await

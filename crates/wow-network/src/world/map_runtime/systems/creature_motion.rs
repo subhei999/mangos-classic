@@ -39,6 +39,14 @@ pub(in crate::world) struct ReadyDbCreatureIdleMotionAdvancements {
     pub(in crate::world) validation_time: Duration,
 }
 
+#[derive(Debug, Clone)]
+pub(in crate::world) struct DbCreatureDistractUpdate {
+    pub(in crate::world) creature: DbCreatureRuntime,
+    pub(in crate::world) stop: Option<StoppedCreatureMotion>,
+    pub(in crate::world) facing_position: WorldPosition,
+    pub(in crate::world) facing_spline_id: u32,
+}
+
 impl MapRuntime {
     pub(in crate::world) fn advance_active_db_creature_idle_motions(
         &mut self,
@@ -820,6 +828,13 @@ impl MapRuntime {
             target,
             target_position,
         );
+        let target_movement_flags = if target.is_player() {
+            self.players
+                .get(&target.counter())
+                .map_or(0, |player| player.movement_flags)
+        } else {
+            0
+        };
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
         if !creature.is_alive() {
             return None;
@@ -828,8 +843,11 @@ impl MapRuntime {
             navigation,
             Some(&geometry),
             creature,
-            target,
-            target_position,
+            DbCreatureChaseTarget {
+                guid: target,
+                position: target_position,
+                movement_flags: target_movement_flags,
+            },
             chase_destination,
             now,
         )?;
@@ -927,6 +945,47 @@ impl MapRuntime {
         Some((creature.clone(), creature.current_position, spline_id))
     }
 
+    pub(in crate::world) fn apply_db_creature_distract(
+        &mut self,
+        creature_guid: ObjectGuid,
+        target_position: WorldPosition,
+        distract_until: Instant,
+    ) -> Option<DbCreatureDistractUpdate> {
+        if self
+            .active_creature_combats
+            .contains_key(&creature_guid.raw())
+        {
+            return None;
+        }
+        let stop = self
+            .stop_db_creature_motion(creature_guid)
+            .map(|(_, stop)| stop);
+        {
+            let creature = self.creatures.get_mut(&creature_guid.raw())?;
+            if creature.has_waypoint_movement() {
+                creature.next_waypoint_move_at = Some(
+                    creature
+                        .next_waypoint_move_at
+                        .map_or(distract_until, |at| at.max(distract_until)),
+                );
+            } else if creature.random_wander_radius() > 0.0 {
+                creature.next_random_move_at = Some(
+                    creature
+                        .next_random_move_at
+                        .map_or(distract_until, |at| at.max(distract_until)),
+                );
+            }
+        }
+        let (creature, facing_position, facing_spline_id) =
+            self.face_db_creature_toward_position(creature_guid, target_position)?;
+        Some(DbCreatureDistractUpdate {
+            creature,
+            stop,
+            facing_position,
+            facing_spline_id,
+        })
+    }
+
     pub(in crate::world) fn prepare_db_creature_evade(
         &mut self,
         creature_guid: ObjectGuid,
@@ -947,6 +1006,9 @@ impl MapRuntime {
             creature.loot_money = 0;
             creature.loot_money_available = false;
             creature.loot_items.clear();
+            creature.loot_items_generated = false;
+            creature.loot_kind = DbCreatureLootKind::Corpse;
+            creature.pickpocket_restock_at = None;
             creature.loot_roll_released_slots.clear();
             creature.loot_current_looter_pass_slots.clear();
             creature.loot_owner = None;

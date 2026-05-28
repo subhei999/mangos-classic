@@ -110,8 +110,10 @@ fn test_spell_effect_value_context(
 
 const TEST_SPELL_ATTR_EX3_ALWAYS_HIT: u32 = 0x0004_0000;
 const TEST_SPELL_ATTR_EX2_CANT_CRIT: u32 = 0x2000_0000;
-const CMANGOS_SPELL_FIXES_SQL: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sql/base/dbc/cmangos_fixes/Spell.sql"));
+const CMANGOS_SPELL_FIXES_SQL: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../sql/base/dbc/cmangos_fixes/Spell.sql"
+));
 
 fn heroic_strike_spell_template() -> wow_db::SpellTemplateQuery {
     let mut template = test_spell_template(WARRIOR_HEROIC_STRIKE_RANK_1);
@@ -365,6 +367,40 @@ fn immolate_spell_template() -> wow_db::SpellTemplateQuery {
     template
 }
 
+fn summon_imp_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(688);
+    template.spell_name = "Summon Imp".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.power_type = POWER_TYPE_MANA;
+    template.mana_cost = 65;
+    template.effect1 = SPELL_EFFECT_SUMMON_PET;
+    template.effect_misc_value1 = 416;
+    template.effect_implicit_target_a1 = TARGET_UNIT_CASTER;
+    template
+}
+
+fn eye_of_kilrogg_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(126);
+    template.spell_name = "Eye of Kilrogg".to_string();
+    template.rank = Some("Summon".to_string());
+    template.power_type = POWER_TYPE_MANA;
+    template.mana_cost = 100;
+    template.effect1 = SPELL_EFFECT_SUMMON_POSSESSED;
+    template.effect_misc_value1 = 4277;
+    template.effect_implicit_target_a1 = TARGET_UNIT_CASTER;
+    template
+}
+
+fn eye_of_kilrogg_passive_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(2585);
+    template.spell_name = "Eye of Kilrogg Passive (DND)".to_string();
+    template.duration_index = 21;
+    template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_apply_aura_name1 = SPELL_AURA_BIND_SIGHT;
+    template.effect_implicit_target_a1 = TARGET_UNIT_CASTER;
+    template
+}
+
 fn two_school_damage_effects_spell_template() -> wow_db::SpellTemplateQuery {
     let mut template = test_spell_template(999_011);
     template.spell_name = "Two Bolts".to_string();
@@ -482,6 +518,28 @@ fn rend_spell_template() -> wow_db::SpellTemplateQuery {
     template.effect_amplitude1 = 3_000;
     template.effect_implicit_target_a1 = TARGET_UNIT_ENEMY;
     template.dmg_class = 2;
+    template
+}
+
+fn slice_and_dice_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(5171);
+    template.spell_name = "Slice and Dice".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.attributes = 262160;
+    template.attributes_ex = SPELL_ATTR_EX_FINISHING_MOVE_DURATION;
+    template.power_type = POWER_TYPE_ENERGY;
+    template.mana_cost = 25;
+    template.duration_index = 3;
+    template.start_recovery_category = 133;
+    template.start_recovery_time = 1_000;
+    template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_apply_aura_name1 = SPELL_AURA_MOD_MELEE_HASTE;
+    template.effect_base_points1 = 29;
+    template.effect_die_sides1 = 1;
+    template.effect_implicit_target_a1 = TARGET_UNIT_CASTER;
+    template.spell_family_name = 8;
+    template.spell_family_flags = 262144;
+    template.dmg_class = SPELL_DAMAGE_CLASS_NONE;
     template
 }
 
@@ -1118,6 +1176,7 @@ fn periodic_damage_tick_uses_aura_amount_without_armor_reduction() {
             intellect: 0,
             resistances: [0; MAX_SPELL_SCHOOL],
         },
+        profile: PeriodicDamageProfile::Flat,
         amount: 5,
         tick_millis: 3_000,
         next_tick_at: Instant::now(),
@@ -1153,6 +1212,7 @@ fn periodic_damage_tick_uses_shared_spell_outcome_for_partial_resist() {
             intellect: 100,
             resistances: [0; MAX_SPELL_SCHOOL],
         },
+        profile: PeriodicDamageProfile::Flat,
         amount: 100,
         tick_millis: 3_000,
         next_tick_at: Instant::now(),
@@ -1198,6 +1258,7 @@ fn spell_damage_taken_aura_adjusts_periodic_magic_damage_generically() {
             intellect: 100,
             resistances: [0; MAX_SPELL_SCHOOL],
         },
+        profile: PeriodicDamageProfile::Flat,
         amount: 12,
         tick_millis: 3_000,
         next_tick_at: Instant::now(),
@@ -1258,6 +1319,7 @@ fn spell_damage_taken_aura_increases_periodic_magic_damage_generically() {
             intellect: 100,
             resistances: [0; MAX_SPELL_SCHOOL],
         },
+        profile: PeriodicDamageProfile::Flat,
         amount: 12,
         tick_millis: 3_000,
         next_tick_at: Instant::now(),
@@ -1491,10 +1553,16 @@ fn sunder_armor_stacks_refreshes_and_sets_visible_applications() {
     }
 
     assert_eq!(active_auras.len(), 3);
-    assert!(active_auras.iter().all(|aura| aura.duration_millis == Some(60_000)));
-    assert!(active_auras
-        .iter()
-        .all(|aura| aura.expires_at == Some(now + Duration::from_secs(60))));
+    assert!(
+        active_auras
+            .iter()
+            .all(|aura| aura.duration_millis == Some(60_000))
+    );
+    assert!(
+        active_auras
+            .iter()
+            .all(|aura| aura.expires_at == Some(now + Duration::from_secs(60)))
+    );
 
     let visible = visible_aura_slots(&active_auras);
     assert_eq!(visible.len(), 1);
@@ -1625,12 +1693,16 @@ async fn consumable_regen_item_use_does_not_install_duration_cooldown() {
         .player_runtime_snapshot(map_id, character_guid)
         .await
         .unwrap();
-    assert!(!snapshot
-        .spell_cooldowns_until
-        .contains_key(&item_spell.spell_id));
-    assert!(snapshot
-        .spell_global_cooldowns_until
-        .contains_key(&item_spell.global_cooldown_category));
+    assert!(
+        !snapshot
+            .spell_cooldowns_until
+            .contains_key(&item_spell.spell_id)
+    );
+    assert!(
+        snapshot
+            .spell_global_cooldowns_until
+            .contains_key(&item_spell.global_cooldown_category)
+    );
     assert_eq!(
         item_use_spell_failure(
             &maps,
@@ -1677,8 +1749,7 @@ fn item_use_cooldown_keeps_spell_and_item_category_recovery_separate() {
         cooldown_millis: 10_000,
     };
 
-    let (profile, cooldown) =
-        item_spell_cast_profile_with_cooldown(profile, item_spell, &template);
+    let (profile, cooldown) = item_spell_cast_profile_with_cooldown(profile, item_spell, &template);
 
     assert_eq!(profile.cooldown_millis, 10_000);
     assert_eq!(profile.cooldown_category, 4);
@@ -1724,8 +1795,18 @@ async fn item_use_cooldown_records_item_id_and_item_category_in_map_state() {
         cooldown_millis: 10_000,
     };
 
-    apply_item_use_spell_cooldowns(&maps, map_id, character_guid, 929, &item_spell, now, false, 4, 120_000)
-        .await;
+    apply_item_use_spell_cooldowns(
+        &maps,
+        map_id,
+        character_guid,
+        929,
+        &item_spell,
+        now,
+        false,
+        4,
+        120_000,
+    )
+    .await;
 
     let snapshot = maps
         .player_runtime_snapshot(map_id, character_guid)
@@ -2211,11 +2292,9 @@ async fn conjure_water_live_rank_one_cast_creates_expected_item_and_push_packet(
         let plan = spell_info
             .player_spell_plan()
             .expect("Conjure Water rank 1 should build a generic player spell plan");
-        let expected_count = create_item_spell_effects(
-            &spell_info,
-            test_spell_effect_value_context(&template),
-        )[0]
-        .requested_count;
+        let expected_count =
+            create_item_spell_effects(&spell_info, test_spell_effect_value_context(&template))[0]
+                .requested_count;
 
         let mut active_spells = HashSet::new();
         active_spells.insert(spell_id);
@@ -2364,15 +2443,16 @@ async fn conjure_water_cast_fails_with_inventory_full_without_creating_item() {
     let test_result: anyhow::Result<_> = async {
         let spell_id = 5504u32;
         let created_item_template = 5350u32;
-        let mut occupied_slots = wow_db::get_character_inventory_items(&character_db_pool, created.guid)
-            .await?
-            .into_iter()
-            .filter(|item| {
-                item.bag == INVENTORY_SLOT_BAG_0 as u32
-                    && (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END).contains(&item.slot)
-            })
-            .map(|item| item.slot)
-            .collect::<HashSet<_>>();
+        let mut occupied_slots =
+            wow_db::get_character_inventory_items(&character_db_pool, created.guid)
+                .await?
+                .into_iter()
+                .filter(|item| {
+                    item.bag == INVENTORY_SLOT_BAG_0 as u32
+                        && (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END).contains(&item.slot)
+                })
+                .map(|item| item.slot)
+                .collect::<HashSet<_>>();
         for slot in INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END {
             if occupied_slots.insert(slot) {
                 wow_db::add_character_inventory_item(
@@ -2456,7 +2536,12 @@ async fn conjure_water_cast_fails_with_inventory_full_without_creating_item() {
             wow_db::get_character_inventory_items(&character_db_pool, created.guid).await?;
         let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
 
-        Ok((created_item_template, inventory_before, inventory_after, packets))
+        Ok((
+            created_item_template,
+            inventory_before,
+            inventory_after,
+            packets,
+        ))
     }
     .await;
 
@@ -2547,10 +2632,11 @@ async fn conjure_food_live_rank_one_cast_creates_expected_item_and_push_packet()
         let plan = spell_info
             .player_spell_plan()
             .expect("Conjure Food rank 1 should build a generic player spell plan");
-        let effect = create_item_spell_effects(&spell_info, test_spell_effect_value_context(&template))
-            .into_iter()
-            .next()
-            .expect("Conjure Food rank 1 should expose a create-item effect");
+        let effect =
+            create_item_spell_effects(&spell_info, test_spell_effect_value_context(&template))
+                .into_iter()
+                .next()
+                .expect("Conjure Food rank 1 should expose a create-item effect");
         let created_item_template = effect.item_template;
         let item_template = wow_db::get_item_template_query(&world_db_pool, created_item_template)
             .await?
@@ -2870,8 +2956,7 @@ async fn fire_blast_live_rank_one_row_uses_generic_instant_hostile_damage_path()
 }
 
 #[tokio::test]
-async fn arcane_explosion_live_rank_one_row_uses_generic_caster_centered_hostile_aoe_damage_path()
-{
+async fn arcane_explosion_live_rank_one_row_uses_generic_caster_centered_hostile_aoe_damage_path() {
     let world_db_pool =
         MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
 
@@ -3026,7 +3111,10 @@ async fn frost_nova_live_rank_one_row_uses_generic_caster_centered_hostile_root_
     let plan = spell_info
         .player_spell_plan()
         .expect("Frost Nova rank 1 should build a generic player spell plan");
-    assert_eq!(plan.target, SpellPlanTarget::CasterAreaEnemy { cone: false });
+    assert_eq!(
+        plan.target,
+        SpellPlanTarget::CasterAreaEnemy { cone: false }
+    );
     assert_eq!(plan.channel, None);
     assert!(
         plan.effects.iter().any(|effect| {
@@ -3172,8 +3260,13 @@ async fn polymorph_live_rank_one_rows_use_generic_hostile_confuse_transform_and_
         Instant::now(),
         None,
     );
-    assert!(!polymorph_aura.positive, "Polymorph must remain a hostile debuff");
-    assert!(active_aura_has_confuse(std::slice::from_ref(&polymorph_aura)));
+    assert!(
+        !polymorph_aura.positive,
+        "Polymorph must remain a hostile debuff"
+    );
+    assert!(active_aura_has_confuse(std::slice::from_ref(
+        &polymorph_aura
+    )));
     assert!(
         polymorph_aura
             .stat_modifiers
@@ -3208,7 +3301,10 @@ async fn polymorph_live_rank_one_rows_use_generic_hostile_confuse_transform_and_
         .expect("Polymorph helper row should build a periodic regen payload");
     assert!(helper_regen.health_amount > 0);
     assert_eq!(helper_regen.mana_amount, 0);
-    assert_eq!(helper_regen.tick_millis, helper.effect_amplitude1.max(2_000));
+    assert_eq!(
+        helper_regen.tick_millis,
+        helper.effect_amplitude1.max(2_000)
+    );
 }
 
 #[tokio::test]
@@ -3312,10 +3408,7 @@ fn cone_of_cold_uses_caster_cone_targeting_not_caster_self_aura() {
         .spell_cones
         .insert(120, SpellConeEntry { angle_degrees: 90 });
     let maps = MapRuntimeManager::with_world_data_files(&world_data);
-    assert_eq!(
-        maps.spell_cone_radians(120),
-        std::f32::consts::FRAC_PI_2
-    );
+    assert_eq!(maps.spell_cone_radians(120), std::f32::consts::FRAC_PI_2);
 }
 
 #[tokio::test]
@@ -3431,8 +3524,7 @@ async fn evocation_live_rank_one_row_uses_generic_self_channel_regen_auras() {
     assert_eq!(evocation.effect2, SPELL_EFFECT_APPLY_AURA);
     assert_eq!(evocation.effect3, 0);
     assert_eq!(
-        evocation.attributes_ex,
-        SPELL_ATTR_EX_IS_SELF_CHANNELED,
+        evocation.attributes_ex, SPELL_ATTR_EX_IS_SELF_CHANNELED,
         "Evocation should stay on the DBC self-channeled lane"
     );
     assert_eq!(evocation.duration_index, 31);
@@ -3513,9 +3605,11 @@ fn spell_plan_classifies_core_mage_channel_and_cone_shapes() {
         .expect("cone of cold plan");
     assert_eq!(cone.target, SpellPlanTarget::CasterAreaEnemy { cone: true });
     assert_eq!(cone.channel, None);
-    assert!(cone.effects.iter().all(|effect| {
-        effect.target == SpellPlanEffectTarget::CasterAreaEnemy { cone: true }
-    }));
+    assert!(
+        cone.effects.iter().all(|effect| {
+            effect.target == SpellPlanEffectTarget::CasterAreaEnemy { cone: true }
+        })
+    );
 
     let missiles = SpellInfo::from_template(&arcane_missiles_spell_template())
         .player_spell_plan()
@@ -3570,7 +3664,10 @@ fn spell_plan_classifies_core_mage_channel_and_cone_shapes() {
         .player_spell_plan()
         .expect("blink plan");
     assert_eq!(blink.target, SpellPlanTarget::Caster);
-    assert_eq!(blink.effects[0].target, SpellPlanEffectTarget::CasterFrontLeap);
+    assert_eq!(
+        blink.effects[0].target,
+        SpellPlanEffectTarget::CasterFrontLeap
+    );
 }
 
 #[tokio::test]
@@ -3602,10 +3699,7 @@ async fn blizzard_live_rank_one_row_uses_generic_destination_persistent_area_cha
     assert_eq!(blizzard.effect1, SPELL_EFFECT_PERSISTENT_AREA_AURA);
     assert_eq!(blizzard.effect2, 0);
     assert_eq!(blizzard.effect3, 0);
-    assert_eq!(
-        blizzard.effect_apply_aura_name1,
-        SPELL_AURA_PERIODIC_DAMAGE
-    );
+    assert_eq!(blizzard.effect_apply_aura_name1, SPELL_AURA_PERIODIC_DAMAGE);
     assert_eq!(
         blizzard.effect_implicit_target_a1,
         TARGET_ENUM_UNITS_ENEMY_AOE_AT_DYNOBJ_LOC
@@ -3749,12 +3843,7 @@ async fn teleport_family_live_rows_use_generic_database_target_positions() {
     let world_db_pool =
         MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
 
-    for (
-        spell_id,
-        spell_name,
-        spell_level,
-        target_map,
-    ) in [
+    for (spell_id, spell_name, spell_level, target_map) in [
         (3561, "Teleport: Stormwind", 20, 0),
         (3562, "Teleport: Ironforge", 20, 0),
         (3563, "Teleport: Undercity", 20, 0),
@@ -3779,9 +3868,12 @@ async fn teleport_family_live_rows_use_generic_database_target_positions() {
         assert_eq!(teleport.spell_level, spell_level);
         assert_eq!(teleport.effect1, SPELL_EFFECT_TELEPORT_UNITS);
         assert!(
-            [teleport.effect_implicit_target_a1, teleport.effect_implicit_target_b1]
-                .into_iter()
-                .any(|target| target == TARGET_LOCATION_DATABASE),
+            [
+                teleport.effect_implicit_target_a1,
+                teleport.effect_implicit_target_b1
+            ]
+            .into_iter()
+            .any(|target| target == TARGET_LOCATION_DATABASE),
             "{spell_name} should keep TARGET_LOCATION_DATABASE on its teleport effect"
         );
 
@@ -3911,7 +4003,12 @@ async fn teleport_stormwind_live_row_same_map_uses_generic_database_target_posit
     assert_eq!(snapshot.movement_flags, 0);
     assert_eq!(snapshot.fall_time, 0);
     assert_eq!(
-        session.character.active_character.as_ref().unwrap().position,
+        session
+            .character
+            .active_character
+            .as_ref()
+            .unwrap()
+            .position,
         snapshot.position
     );
     assert_eq!(session.character.player_mana, 500 - teleport.mana_cost);
@@ -3977,7 +4074,10 @@ async fn teleport_darnassus_live_row_cross_map_uses_generic_worldport_flow() {
     let mut active_spells = HashSet::new();
     active_spells.insert(3565);
     let mut session = WorldSessionState {
-        account: AccountSessionState { account_id: 1, ..AccountSessionState::default() },
+        account: AccountSessionState {
+            account_id: 1,
+            ..AccountSessionState::default()
+        },
         character: CharacterSessionState {
             active_character: Some(ActiveCharacter {
                 guid: 7,
@@ -4035,7 +4135,12 @@ async fn teleport_darnassus_live_row_cross_map_uses_generic_worldport_flow() {
     assert_eq!(snapshot.movement_flags, 0);
     assert_eq!(snapshot.fall_time, 0);
     assert_eq!(
-        session.character.active_character.as_ref().unwrap().position,
+        session
+            .character
+            .active_character
+            .as_ref()
+            .unwrap()
+            .position,
         snapshot.position
     );
     assert_eq!(session.character.player_mana, 800 - teleport.mana_cost);
@@ -4261,10 +4366,13 @@ async fn portal_stormwind_live_row_spawns_temporary_spellcaster_and_uses_linked_
     .unwrap();
 
     let mut cast_packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(cast_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16));
-    let completion_at = if let Some(due_at) = maps.next_pending_player_spell_cast_due_at(0, 7).await {
+    assert!(
+        cast_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16)
+    );
+    let completion_at = if let Some(due_at) = maps.next_pending_player_spell_cast_due_at(0, 7).await
+    {
         assert!(
             !cast_packets
                 .iter()
@@ -4313,7 +4421,10 @@ async fn portal_stormwind_live_row_spawns_temporary_spellcaster_and_uses_linked_
         .db_gameobject_snapshot(0, expected_portal_guid)
         .await
         .expect("Portal: Stormwind should spawn a temporary spellcaster gameobject");
-    assert_eq!(portal_runtime.spawn.template.object_type, GO_TYPE_SPELLCASTER);
+    assert_eq!(
+        portal_runtime.spawn.template.object_type,
+        GO_TYPE_SPELLCASTER
+    );
     assert_eq!(portal_runtime.spawn.template.raw_data[0], 17334);
     assert_eq!(
         portal_runtime.created_by,
@@ -4324,12 +4435,16 @@ async fn portal_stormwind_live_row_spawns_temporary_spellcaster_and_uses_linked_
             .expires_at
             .is_some_and(|expires_at| expires_at > completion_at)
     );
-    assert!(cast_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
-    assert!(cast_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16));
+    assert!(
+        cast_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        cast_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
     assert_eq!(session.character.player_mana, 900 - portal.mana_cost);
 
     handle_gameobject_use(
@@ -4366,12 +4481,16 @@ async fn portal_stormwind_live_row_spawns_temporary_spellcaster_and_uses_linked_
     );
 
     let use_packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(use_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
-    assert!(use_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::MsgMoveTeleportAck as u16));
+    assert!(
+        use_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        use_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::MsgMoveTeleportAck as u16)
+    );
 }
 
 #[tokio::test]
@@ -4400,7 +4519,10 @@ async fn mana_shield_live_rank_one_row_uses_generic_self_absorb_path() {
     assert_eq!(mana_shield.effect3, 0);
     assert_eq!(mana_shield.effect_apply_aura_name1, SPELL_AURA_MANA_SHIELD);
     assert_eq!(mana_shield.effect_implicit_target_a1, TARGET_UNIT_CASTER);
-    assert_eq!(mana_shield.effect_misc_value1, SPELL_SCHOOL_MASK_NORMAL as i32);
+    assert_eq!(
+        mana_shield.effect_misc_value1,
+        SPELL_SCHOOL_MASK_NORMAL as i32
+    );
     assert_eq!(
         spell_aura_support(SPELL_AURA_MANA_SHIELD),
         SpellMechanicSupport::Implemented
@@ -4451,7 +4573,8 @@ async fn mana_shield_live_rank_one_row_uses_generic_self_absorb_path() {
         Instant::now(),
         None,
     );
-    let mut player = test_player_runtime(7, SessionId(7), WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
+    let mut player =
+        test_player_runtime(7, SessionId(7), WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
     player.max_power1 = 200;
     player.power1 = 200;
     player.active_auras.push(aura);
@@ -4471,16 +4594,21 @@ async fn mana_shield_live_rank_one_row_uses_generic_self_absorb_path() {
     assert_eq!(applied.applied_damage, 0);
     assert_eq!(player.health, 20);
     assert_eq!(player.power1, 100);
-    assert!(player.active_auras[0].stat_modifiers.iter().any(|modifier| {
-        matches!(
-            modifier,
-            AuraStatModifier::ManaShield {
-                school_mask: SPELL_SCHOOL_MASK_NORMAL,
-                amount: 70,
-                mana_multiplier_millis: 2000,
-            }
-        )
-    }));
+    assert!(
+        player.active_auras[0]
+            .stat_modifiers
+            .iter()
+            .any(|modifier| {
+                matches!(
+                    modifier,
+                    AuraStatModifier::ManaShield {
+                        school_mask: SPELL_SCHOOL_MASK_NORMAL,
+                        amount: 70,
+                        mana_multiplier_millis: 2000,
+                    }
+                )
+            })
+    );
     assert!(spell_template_coverage_issues(&mana_shield).is_empty());
 }
 
@@ -4592,10 +4720,8 @@ async fn fire_ward_live_rank_one_row_uses_generic_self_school_absorb_path() {
             _ => None,
         })
         .expect("Fire Ward should expose a school absorb modifier");
-    let bonus_modifiers = spell_aura_stat_modifiers(
-        &info,
-        base_context.with_spell_healing_bonus_done(130),
-    );
+    let bonus_modifiers =
+        spell_aura_stat_modifiers(&info, base_context.with_spell_healing_bonus_done(130));
     let bonus_absorb = bonus_modifiers
         .iter()
         .find_map(|modifier| match modifier {
@@ -4785,10 +4911,8 @@ async fn frost_ward_live_rank_one_row_uses_generic_self_school_absorb_path() {
             _ => None,
         })
         .expect("Frost Ward should expose a school absorb modifier");
-    let bonus_modifiers = spell_aura_stat_modifiers(
-        &info,
-        base_context.with_spell_healing_bonus_done(130),
-    );
+    let bonus_modifiers =
+        spell_aura_stat_modifiers(&info, base_context.with_spell_healing_bonus_done(130));
     let bonus_absorb = bonus_modifiers
         .iter()
         .find_map(|modifier| match modifier {
@@ -5069,7 +5193,10 @@ async fn ice_armor_live_rank_chain_uses_generic_resistance_and_chilled_proc_aura
         assert_eq!(template.effect2, SPELL_EFFECT_APPLY_AURA);
         assert_eq!(template.effect3, SPELL_EFFECT_APPLY_AURA);
         assert_eq!(template.effect_apply_aura_name1, SPELL_AURA_MOD_RESISTANCE);
-        assert_eq!(template.effect_apply_aura_name2, SPELL_AURA_PROC_TRIGGER_SPELL);
+        assert_eq!(
+            template.effect_apply_aura_name2,
+            SPELL_AURA_PROC_TRIGGER_SPELL
+        );
         assert_eq!(template.effect_apply_aura_name3, SPELL_AURA_MOD_RESISTANCE);
         assert_eq!(template.effect_implicit_target_a1, TARGET_UNIT_CASTER);
         assert_eq!(template.effect_implicit_target_a2, TARGET_UNIT_CASTER);
@@ -5160,7 +5287,10 @@ async fn ice_armor_live_rank_chain_uses_generic_resistance_and_chilled_proc_aura
     );
     assert_eq!(aura.proc_triggers[0].proc_chance, 100);
     assert_eq!(aura.proc_triggers[0].remaining_charges, None);
-    assert_ne!(aura.proc_triggers[0].proc_flags & PROC_FLAG_TAKE_MELEE_SWING, 0);
+    assert_ne!(
+        aura.proc_triggers[0].proc_flags & PROC_FLAG_TAKE_MELEE_SWING,
+        0
+    );
 
     let chilled_aura = build_active_aura(
         &chilled,
@@ -5206,7 +5336,7 @@ fn active_auras_sum_school_specific_healing_done_bonus() {
 
     assert_eq!(
         active_aura_spell_healing_done_bonus(
-            &[aura.clone()],
+            std::slice::from_ref(&aura),
             spell_school_mask_from_school(template.school),
         ),
         50
@@ -5286,8 +5416,8 @@ async fn scorch_live_rank_one_row_uses_generic_hostile_cast_time_damage_path() {
 }
 
 #[tokio::test]
-async fn arcane_missiles_live_rank_one_rows_use_generic_periodic_trigger_channel_and_hostile_missile(
-) {
+async fn arcane_missiles_live_rank_one_rows_use_generic_periodic_trigger_channel_and_hostile_missile()
+ {
     let world_db_pool =
         MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
 
@@ -5322,7 +5452,10 @@ async fn arcane_missiles_live_rank_one_rows_use_generic_periodic_trigger_channel
         SPELL_AURA_PERIODIC_TRIGGER_SPELL
     );
     assert_eq!(arcane_missiles.effect_trigger_spell1, 7268);
-    assert_eq!(arcane_missiles.effect_implicit_target_a1, TARGET_UNIT_CASTER);
+    assert_eq!(
+        arcane_missiles.effect_implicit_target_a1,
+        TARGET_UNIT_CASTER
+    );
     assert_eq!(arcane_missiles.effect_amplitude1, 1_000);
     assert_ne!(arcane_missiles.range_index, 0);
     assert_ne!(arcane_missiles.duration_index, 0);
@@ -5382,7 +5515,10 @@ async fn counterspell_live_rank_one_row_uses_generic_hostile_interrupt_path() {
         .unwrap();
 
     assert_eq!(counterspell.spell_name, "Counterspell");
-    assert!(matches!(counterspell.rank.as_deref(), Some("") | Some("Rank 1")));
+    assert!(matches!(
+        counterspell.rank.as_deref(),
+        Some("") | Some("Rank 1")
+    ));
     assert_eq!(counterspell.spell_level, 24);
     assert_eq!(counterspell.school, 6);
     assert_eq!(counterspell.range_index, 4);
@@ -5447,7 +5583,10 @@ async fn dampen_magic_live_rank_one_row_uses_generic_friendly_damage_and_healing
     assert_eq!(dampen_magic.effect1, SPELL_EFFECT_APPLY_AURA);
     assert_eq!(dampen_magic.effect2, SPELL_EFFECT_APPLY_AURA);
     assert_eq!(dampen_magic.effect3, 0);
-    assert_eq!(dampen_magic.effect_apply_aura_name1, SPELL_AURA_MOD_DAMAGE_TAKEN);
+    assert_eq!(
+        dampen_magic.effect_apply_aura_name1,
+        SPELL_AURA_MOD_DAMAGE_TAKEN
+    );
     assert_eq!(dampen_magic.effect_apply_aura_name2, SPELL_AURA_MOD_HEALING);
     assert_eq!(dampen_magic.effect_implicit_target_a1, TARGET_UNIT_RAID);
     assert_eq!(dampen_magic.effect_implicit_target_a2, TARGET_UNIT_RAID);
@@ -5487,7 +5626,8 @@ async fn dampen_magic_live_rank_one_row_uses_generic_friendly_damage_and_healing
         ]
     );
 
-    let modifiers = spell_aura_stat_modifiers(&info, test_spell_effect_value_context(&dampen_magic));
+    let modifiers =
+        spell_aura_stat_modifiers(&info, test_spell_effect_value_context(&dampen_magic));
     assert!(modifiers.iter().any(|modifier| {
         matches!(
             modifier,
@@ -5530,7 +5670,10 @@ async fn amplify_magic_live_rank_one_row_uses_generic_friendly_damage_and_healin
         amplify_magic.effect_apply_aura_name1,
         SPELL_AURA_MOD_DAMAGE_TAKEN
     );
-    assert_eq!(amplify_magic.effect_apply_aura_name2, SPELL_AURA_MOD_HEALING);
+    assert_eq!(
+        amplify_magic.effect_apply_aura_name2,
+        SPELL_AURA_MOD_HEALING
+    );
     assert_eq!(amplify_magic.effect_implicit_target_a1, TARGET_UNIT_RAID);
     assert_eq!(amplify_magic.effect_implicit_target_a2, TARGET_UNIT_RAID);
     assert_eq!(amplify_magic.effect_misc_value1, 126);
@@ -5960,9 +6103,9 @@ fn spell_go_hit_and_miss_targets_from_body(
     cursor += 1;
     let mut hits = Vec::with_capacity(hit_count);
     for _ in 0..hit_count {
-        hits.push(ObjectGuid::from_raw(
-            u64::from_le_bytes(body[cursor..cursor + 8].try_into().unwrap()),
-        ));
+        hits.push(ObjectGuid::from_raw(u64::from_le_bytes(
+            body[cursor..cursor + 8].try_into().unwrap(),
+        )));
         cursor += 8;
     }
     let miss_count = body[cursor] as usize;
@@ -6521,6 +6664,7 @@ async fn mixed_damage_aura_spell_does_not_precast_bounce_on_stronger_debuff() {
                 intellect: 20,
                 resistances: [0; MAX_SPELL_SCHOOL],
             },
+            profile: PeriodicDamageProfile::Flat,
             amount: 4,
             tick_millis: 3_000,
             next_tick_at: Instant::now() + Duration::from_secs(3),
@@ -6826,9 +6970,11 @@ async fn resisted_hostile_aura_spell_sends_miss_without_applying_aura_and_pulls_
     assert_eq!(combats.len(), 1);
     assert_eq!(combats[0].attacker, target);
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
+    );
     assert!(
         !packets
             .iter()
@@ -6955,12 +7101,16 @@ async fn resisted_hostile_direct_damage_spell_sends_go_miss_without_damage_or_mi
     assert_eq!(combats.len(), 1);
     assert_eq!(combats[0].attacker, target);
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellLogMiss as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellLogMiss as u16)
+    );
     let spell_go = packets
         .iter()
         .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
@@ -7061,9 +7211,11 @@ async fn resisted_damage_plus_aura_spell_skips_damage_and_aura_from_same_target_
         "a resisted damage+slow spell must not apply the follow-up aura"
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
     let spell_go = packets
         .iter()
         .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
@@ -7238,12 +7390,16 @@ async fn resisted_item_hostile_damage_spell_sends_go_miss_without_damage_or_miss
     assert_eq!(combats.len(), 1);
     assert_eq!(combats[0].attacker, target);
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellLogMiss as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellLogMiss as u16)
+    );
     let spell_go = packets
         .iter()
         .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
@@ -7363,9 +7519,11 @@ async fn successful_item_hostile_damage_spell_damages_db_creature() {
         "a hit hostile item spell should apply its DB-creature damage"
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
     let spell_go = packets
         .iter()
         .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
@@ -7375,6 +7533,260 @@ async fn successful_item_hostile_damage_spell_damages_db_creature() {
     assert_eq!(cast_flags & CAST_FLAG_ITEM_CASTER, CAST_FLAG_ITEM_CASTER);
     cursor += 2;
     assert_eq!(spell_go.body[cursor], 1, "target should be listed as a hit");
+}
+
+#[tokio::test]
+async fn minor_healthstone_live_item_use_heals_self_and_consumes_item() {
+    let _guard = conjure_item_db_test_lock().lock().await;
+    let character_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/characters").unwrap();
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let account_id = 905_509u32;
+    let created = wow_db::create_character(
+        &character_db_pool,
+        &world_db_pool,
+        wow_db::NewCharacter {
+            account_id,
+            name: "Hs6201Use".to_string(),
+            race: 1,
+            class: 9,
+            gender: 0,
+            skin: 0,
+            face: 0,
+            hair_style: 0,
+            hair_color: 0,
+            facial_hair: 0,
+        },
+    )
+    .await
+    .unwrap();
+
+    let test_result: anyhow::Result<_> = async {
+        let create_spell_id = 6201u32;
+        let created_item_template = 5512u32;
+        let create_template = wow_db::get_spell_template_query(&world_db_pool, create_spell_id)
+            .await?
+            .expect("Create Healthstone rank 1 should exist in local spell_template");
+        let create_chain = wow_db::get_spell_chain_query(&world_db_pool, create_spell_id)
+            .await?
+            .expect("Create Healthstone rank 1 should exist in spell_chain");
+        let item_template = wow_db::get_item_template_query(&world_db_pool, created_item_template)
+            .await?
+            .expect("Minor Healthstone should exist in the local item_template table");
+        let item_spell = item_use_spell(&item_template, 0)
+            .expect("Minor Healthstone should expose an on-use item spell");
+        let use_spell_template =
+            wow_db::get_spell_template_query(&world_db_pool, item_spell.spell_id)
+                .await?
+                .expect("Minor Healthstone on-use spell should exist in local spell_template");
+        let use_spell_info = SpellInfo::from_template(&use_spell_template);
+        let use_profile = use_spell_info
+            .prepare_item_cast(ObjectGuid::new(HighGuid::Item, 0, 99_001))
+            .expect("Minor Healthstone on-use spell should prepare generically")
+            .profile;
+        let occupied_slots =
+            wow_db::get_character_inventory_items(&character_db_pool, created.guid)
+                .await?
+                .into_iter()
+                .filter(|item| {
+                    item.bag == INVENTORY_SLOT_BAG_0 as u32
+                        && (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END).contains(&item.slot)
+                })
+                .map(|item| item.slot)
+                .collect::<HashSet<_>>();
+        let healthstone_slot = (INVENTORY_SLOT_ITEM_START..INVENTORY_SLOT_ITEM_END)
+            .find(|slot| !occupied_slots.contains(slot))
+            .expect("test character should have one free backpack slot for Minor Healthstone");
+
+        wow_db::add_character_inventory_item(
+            &character_db_pool,
+            created.guid,
+            INVENTORY_SLOT_BAG_0 as u32,
+            healthstone_slot,
+            created_item_template,
+            1,
+            0,
+        )
+        .await?;
+        let inventory_before =
+            wow_db::get_character_inventory_items(&character_db_pool, created.guid).await?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut stream = WorldPacketSink::new(tx);
+        let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+        let maps = Arc::new(MapRuntimeManager::default());
+        let sessions = Arc::new(SessionRegistry::default());
+        let object_mgr = ObjectMgr::default();
+        let shared_world = SharedWorldDeps {
+            object_mgr: &object_mgr,
+            maps: &maps,
+            sessions: &sessions,
+        };
+        let mut player = test_player_runtime(created.guid, SessionId::next(), created.position);
+        player.class = 9;
+        player.level = 10;
+        player.health = 20;
+        player.max_health = 100;
+        player.power1 = 100;
+        player.max_power1 = 100;
+        maps.add_player(player).await.unwrap();
+
+        let mut session = WorldSessionState {
+            character: CharacterSessionState {
+                active_character: Some(ActiveCharacter {
+                    guid: created.guid,
+                    name: created.name.clone(),
+                    race: created.race,
+                    class: created.class,
+                    level: 10,
+                    xp: 0,
+                    position: created.position,
+                    movement_flags: 0,
+                    client_time: 0,
+                    fall_time: 0,
+                    jump: JumpInfo::default(),
+                }),
+                player_health: 20,
+                player_mana: 100,
+                ..CharacterSessionState::default()
+            },
+            ..WorldSessionState::default()
+        };
+        session.inventory.items = inventory_before.clone();
+
+        handle_use_item(
+            &mut stream,
+            SpellCastDeps {
+                character_db_pool: &character_db_pool,
+                world_db_pool: &world_db_pool,
+                account_id,
+                shared_world,
+                parties: &PartyManager::default(),
+            },
+            wow_proto::UseItemRequest {
+                bag: INVENTORY_SLOT_BAG_0,
+                slot: healthstone_slot,
+                spell_index: 0,
+                targets: SpellCastTargets::empty(),
+            },
+            &mut session,
+            &mut header_crypto,
+        )
+        .await?;
+
+        let inventory_after =
+            wow_db::get_character_inventory_items(&character_db_pool, created.guid).await?;
+        let snapshot = maps
+            .player_runtime_snapshot(created.position.map_id, created.guid)
+            .await
+            .expect("player runtime snapshot should remain present after using Healthstone");
+        let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+
+        Ok((
+            create_chain,
+            create_template.effect1,
+            use_spell_template.spell_name.clone(),
+            use_spell_template.effect1,
+            use_spell_template.effect2,
+            use_spell_template.effect3,
+            use_spell_info.effects,
+            created_item_template,
+            item_spell,
+            use_spell_template.id,
+            use_profile,
+            inventory_before,
+            inventory_after,
+            snapshot.health,
+            packets,
+        ))
+    }
+    .await;
+
+    let _ = wow_db::delete_character(&character_db_pool, account_id, created.guid).await;
+
+    let (
+        create_chain,
+        create_effect1,
+        use_spell_name,
+        use_effect1,
+        use_effect2,
+        use_effect3,
+        use_effects,
+        created_item_template,
+        item_spell,
+        use_spell_id,
+        use_profile,
+        inventory_before,
+        inventory_after,
+        health_after,
+        packets,
+    ) = test_result.unwrap();
+
+    assert_eq!(create_chain.first_spell, 6201);
+    assert_eq!(create_chain.prev_spell, 0);
+    assert_eq!(create_chain.rank, 1);
+    assert_eq!(create_effect1, SPELL_EFFECT_SCRIPT_EFFECT);
+    assert_eq!(created_item_template, 5512);
+    assert_eq!(item_spell.spell_trigger, ITEM_SPELLTRIGGER_ON_USE);
+    assert!(item_spell.spell_charges < 0);
+    assert_eq!(
+        use_profile.kind,
+        SpellCastKind::DirectHeal,
+        "Minor Healthstone should use a generic direct-heal item spell; spell_id={} spell_name={} effects={:?} effect1={} effect2={} effect3={}",
+        use_spell_id,
+        use_spell_name,
+        use_effects,
+        use_effect1,
+        use_effect2,
+        use_effect3,
+    );
+    assert!(
+        inventory_before
+            .iter()
+            .any(|item| item.item_template == created_item_template && item.count == 1),
+        "test character should start with one Minor Healthstone in inventory"
+    );
+    assert!(
+        inventory_after
+            .iter()
+            .all(|item| item.item_template != created_item_template),
+        "using Minor Healthstone should consume the conjured item; before={:?} after={:?}",
+        inventory_before,
+        inventory_after,
+    );
+    assert!(
+        health_after > 20,
+        "using Minor Healthstone should restore player health"
+    );
+
+    let opcodes = packets
+        .iter()
+        .map(|packet| packet.opcode)
+        .collect::<Vec<_>>();
+    assert!(opcodes.contains(&(WorldOpcode::SmsgCastResult as u16)));
+    assert!(opcodes.contains(&(WorldOpcode::SmsgSpellGo as u16)));
+    assert!(opcodes.contains(&(WorldOpcode::SmsgSpellHealLog as u16)));
+    assert!(!opcodes.contains(&(WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)));
+
+    let heal_log = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgSpellHealLog as u16)
+        .expect("Minor Healthstone use should emit the generic item-heal log");
+    let mut cursor = 0;
+    assert_eq!(
+        read_packed_guid(&heal_log.body, &mut cursor).unwrap(),
+        ObjectGuid::new(HighGuid::Player, 0, created.guid)
+    );
+    assert_eq!(
+        read_packed_guid(&heal_log.body, &mut cursor).unwrap(),
+        ObjectGuid::new(HighGuid::Player, 0, created.guid)
+    );
+    assert_eq!(read_u32(&heal_log.body, &mut cursor).unwrap(), use_spell_id);
+    assert!(
+        read_u32(&heal_log.body, &mut cursor).unwrap() > 0,
+        "Minor Healthstone should heal for a positive amount"
+    );
 }
 
 #[tokio::test]
@@ -8184,9 +8596,293 @@ async fn backstab_cast_requires_caster_behind_target_from_spell_metadata() {
         packet.opcode == WorldOpcode::SmsgCastResult as u16
             && packet.body[5] == SPELL_FAILED_NOT_BEHIND
     }));
-    assert!(!packets
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16)
+    );
+}
+
+#[tokio::test]
+async fn backstab_live_rank_one_uses_generic_dagger_and_behind_profile() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let backstab = wow_db::get_spell_template_query(&spell_db_pool, 53)
+        .await
+        .unwrap()
+        .expect("Backstab rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 53)
+        .await
+        .unwrap();
+    let backstab_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template \
+         WHERE Id IN (53, 2589, 2590, 2591, 8721, 11279, 11280, 11281) \
+         ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+    let starter_spell_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_spell WHERE class = ? AND Spell = ?",
+    )
+    .bind(4u8)
+    .bind(53u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let starter_action_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_action WHERE class = ? AND action = ?",
+    )
+    .bind(4u8)
+    .bind(53u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+
+    assert!(
+        chain.is_none(),
+        "this local dump does not expose a spell_chain row for Backstab rank 1"
+    );
+    assert_eq!(
+        backstab_ranks
+            .iter()
+            .map(|(id, spell_level, base_level, rank)| (
+                *id,
+                *spell_level,
+                *base_level,
+                rank.clone()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (53, 4, 4, Some("Rank 1".to_string())),
+            (2589, 12, 12, Some("Rank 2".to_string())),
+            (2590, 20, 20, Some("Rank 3".to_string())),
+            (2591, 28, 28, Some("Rank 4".to_string())),
+            (8721, 36, 36, Some("Rank 5".to_string())),
+            (11279, 44, 44, Some("Rank 6".to_string())),
+            (11280, 52, 52, Some("Rank 7".to_string())),
+            (11281, 60, 60, Some("Rank 8".to_string())),
+        ]
+    );
+    assert_eq!(starter_spell_count, 0);
+    assert_eq!(starter_action_count, 0);
+
+    assert_eq!(backstab.spell_name, "Backstab");
+    assert_eq!(backstab.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(backstab.spell_level, 4);
+    assert_eq!(backstab.base_level, 4);
+    assert_ne!(
+        backstab.attributes_serverside & SPELL_ATTR_SS_FACING_BACK,
+        0
+    );
+    assert_eq!(backstab.equipped_item_class, ITEM_CLASS_WEAPON as i32);
+    assert_eq!(backstab.equipped_item_subclass_mask, 1 << 15);
+    assert_eq!(backstab.effect1, SPELL_EFFECT_NORMALIZED_WEAPON_DMG);
+    assert_eq!(backstab.effect2, SPELL_EFFECT_WEAPON_PERCENT_DAMAGE);
+    assert_eq!(backstab.effect3, SPELL_EFFECT_ADD_COMBO_POINTS);
+    assert_eq!(backstab.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert_eq!(backstab.effect_implicit_target_a2, TARGET_UNIT_ENEMY);
+    assert_eq!(backstab.effect_implicit_target_a3, TARGET_UNIT_ENEMY);
+
+    let profile = player_spell_cast_profile(&backstab).expect("backstab profile");
+    assert_eq!(profile.kind, SpellCastKind::InstantDamage);
+    assert_eq!(profile.power, SpellPowerCost::Energy { cost: 60 });
+    assert_eq!(profile.bonus_damage, 15);
+    assert_eq!(profile.weapon_damage_percent, 150);
+    assert!(profile.requires_melee);
+    assert!(profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&backstab)
+        .player_spell_plan()
+        .expect("Backstab rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                SpellEffectDispatch::WeaponDamage,
+                0,
+                SpellPlanEffectTarget::HostileUnit,
+            ),
+            (
+                SpellEffectDispatch::WeaponPercentDamage,
+                0,
+                SpellPlanEffectTarget::HostileUnit,
+            ),
+            (
+                SpellEffectDispatch::AddComboPoints,
+                0,
+                SpellPlanEffectTarget::HostileUnit,
+            ),
+        ]
+    );
+    assert!(spell_template_coverage_issues(&backstab).is_empty());
+
+    let mut dagger = test_item_template(2092, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    dagger.subclass = 15;
+    let dagger = equipped_template(EQUIPMENT_SLOT_MAINHAND, dagger);
+    assert_eq!(
+        spell_equipped_item_cast_failure_with_equipped_templates(&backstab, &[]),
+        Some(SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND)
+    );
+    assert_eq!(
+        spell_equipped_item_cast_failure_with_equipped_templates(&backstab, &[dagger]),
+        None
+    );
+}
+
+#[tokio::test]
+async fn backstab_live_rank_one_from_behind_spends_energy_and_adds_combo_point() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let backstab = wow_db::get_spell_template_query(&spell_db_pool, 53)
+        .await
+        .unwrap()
+        .expect("Backstab rank 1 should exist in the local spell_template");
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(53, Some(backstab.clone()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 46;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.orientation = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+    let mut body = Vec::new();
+    body.extend_from_slice(&53u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(53);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 4,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            character_skills: vec![test_skill(SKILL_DAGGERS, 1, 500)],
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.inventory.items = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: EQUIPMENT_SLOT_MAINHAND,
+        item: 91_001,
+        item_template: 2092,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 18,
+    }];
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, 40);
+    assert_eq!(snapshot.combo_target, Some(target));
+    assert_eq!(snapshot.combo_points, 1);
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert!(
+        creature.health < 200,
+        "Backstab should land damage from behind"
+    );
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let spell_damage = packets
         .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16));
+        .find(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+        .expect("Backstab should emit a yellow spell-damage log");
+    let mut cursor = 0;
+    assert_eq!(
+        read_packed_guid(&spell_damage.body, &mut cursor).unwrap(),
+        target
+    );
+    assert_eq!(
+        read_packed_guid(&spell_damage.body, &mut cursor).unwrap(),
+        ObjectGuid::new(HighGuid::Player, 0, 7)
+    );
+    assert_eq!(read_u32(&spell_damage.body, &mut cursor).unwrap(), 53);
+    assert!(
+        read_u32(&spell_damage.body, &mut cursor).unwrap() > 0,
+        "Backstab damage log should carry the landed damage"
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16)
+    );
 }
 
 #[tokio::test]
@@ -8381,12 +9077,5309 @@ async fn eviscerate_uses_combo_points_for_damage_and_clears_them_on_hit() {
         "Eviscerate rank 1 should roll 1..5 plus 5 per combo point"
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+}
+
+#[test]
+fn finishing_move_duration_auras_scale_to_combo_points() {
+    let now = Instant::now();
+    let template = slice_and_dice_spell_template();
+    let duration = SpellDurationEntry {
+        duration_millis: 9_000,
+        duration_per_level_millis: 0,
+        max_duration_millis: 21_000,
+    };
+
+    let one_combo = build_active_aura(
+        &template,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        10,
+        SpellEffectValueContext::unranked(&template, 1),
+        now,
+        Some(duration),
+    );
+    let three_combo = build_active_aura(
+        &template,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        10,
+        SpellEffectValueContext::unranked(&template, 3),
+        now,
+        Some(duration),
+    );
+    let five_combo = build_active_aura(
+        &template,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        10,
+        SpellEffectValueContext::unranked(&template, 5),
+        now,
+        Some(duration),
+    );
+
+    assert_eq!(one_combo.duration_millis, Some(11_400));
+    assert_eq!(three_combo.duration_millis, Some(16_200));
+    assert_eq!(five_combo.duration_millis, Some(21_000));
+}
+
+#[tokio::test]
+async fn slice_and_dice_uses_combo_points_for_duration_and_clears_them_on_cast() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let character_db_pool = spell_db_pool.clone();
+    let world_db_pool = spell_db_pool.clone();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let slice_and_dice = slice_and_dice_spell_template();
+    object_mgr
+        .prime_spell_template_for_test(5171, Some(slice_and_dice.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 46;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+    maps.add_player_combo_points(0, 7, target, 3).await.unwrap();
+    let mut body = Vec::new();
+    body.extend_from_slice(&5171u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(5171);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 10,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, 75);
+    assert_eq!(snapshot.combo_target, None);
+    assert_eq!(snapshot.combo_points, 0);
+    let aura = snapshot
+        .active_auras
         .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
-    assert!(packets
+        .find(|aura| aura.spell_id == 5171)
+        .expect("Slice and Dice should apply a self aura");
+    assert!(aura.stat_modifiers.iter().any(|modifier| matches!(
+        modifier,
+        AuraStatModifier::MeleeAttackTimePercent { percent } if *percent > 0
+    )));
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    assert!(!packets.iter().any(|packet| {
+        packet.opcode == WorldOpcode::SmsgCastResult as u16
+            && packet.body.len() > 5
+            && packet.body[5] == SPELL_FAILED_NO_COMBO_POINTS
+    }));
+}
+
+#[tokio::test]
+async fn stealth_live_rank_one_uses_generic_visibility_aura_path() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let stealth = wow_db::get_spell_template_query(&spell_db_pool, 1784)
+        .await
+        .unwrap()
+        .expect("Stealth rank 1 should exist in the local spell_template");
+    let stealth_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template WHERE Id IN (1784, 1785, 1786, 1787) ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+    let starter_spell_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_spell WHERE class = ? AND Spell = ?",
+    )
+    .bind(4u8)
+    .bind(1784u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let starter_action_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_action WHERE class = ? AND action = ?",
+    )
+    .bind(4u8)
+    .bind(1784u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        stealth_ranks
+            .iter()
+            .map(|(id, spell_level, base_level, rank)| (
+                *id,
+                *spell_level,
+                *base_level,
+                rank.clone()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (1784, 1, 1, Some("Rank 1".to_string())),
+            (1785, 20, 20, Some("Rank 2".to_string())),
+            (1786, 40, 40, Some("Rank 3".to_string())),
+            (1787, 60, 60, Some("Rank 4".to_string())),
+        ]
+    );
+    assert_eq!(starter_spell_count, 0);
+    assert_eq!(starter_action_count, 0);
+
+    assert_eq!(stealth.spell_name, "Stealth");
+    assert_eq!(stealth.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(stealth.spell_level, 1);
+    assert_eq!(stealth.base_level, 1);
+    assert!([stealth.effect1, stealth.effect2, stealth.effect3].contains(&SPELL_EFFECT_APPLY_AURA));
+    assert!(
+        [
+            stealth.effect_apply_aura_name1,
+            stealth.effect_apply_aura_name2,
+            stealth.effect_apply_aura_name3,
+        ]
+        .contains(&SPELL_AURA_MOD_STEALTH)
+    );
+    assert_eq!(stealth.effect_implicit_target_a1, TARGET_UNIT_CASTER);
+    assert!(matches!(
+        spell_aura_support(SPELL_AURA_MOD_STEALTH),
+        SpellMechanicSupport::Implemented
+    ));
+
+    let profile = player_spell_cast_profile(&stealth).expect("stealth profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost }
+            | SpellPowerCost::Energy { cost }
+            | SpellPowerCost::Rage { cost }
+            if cost == 0
+    ));
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&stealth)
+        .player_spell_plan()
+        .expect("Stealth rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::Caster);
+    assert!(
+        plan.effects.iter().any(|effect| {
+            effect.dispatch == SpellEffectDispatch::ApplyAura
+                && effect.aura_name == SPELL_AURA_MOD_STEALTH
+                && effect.target == SpellPlanEffectTarget::Caster
+        }),
+        "live Stealth row should still include a self-targeted generic stealth aura"
+    );
+    assert!(spell_template_coverage_issues(&stealth).is_empty());
+
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(1784, Some(stealth.clone()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&1784u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(1784);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert!(snapshot.active_auras.iter().any(|aura| {
+        aura.spell_id == 1784
+            && aura
+                .stat_modifiers
+                .iter()
+                .any(|modifier| matches!(modifier, AuraStatModifier::Stealth { kind: 0, .. }))
+    }));
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+}
+
+#[tokio::test]
+async fn slice_and_dice_live_cast_rows_are_script_wrappers_around_hidden_auras() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let slice_and_dice = wow_db::get_spell_template_query(&spell_db_pool, 5171)
+        .await
+        .unwrap()
+        .expect("Slice and Dice rank 1 should exist in the local spell_template");
+    let hidden_aura = wow_db::get_spell_template_query(&spell_db_pool, 6434)
+        .await
+        .unwrap()
+        .expect("Slice and Dice hidden aura row should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 5171)
+        .await
+        .unwrap();
+    let slice_and_dice_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template \
+         WHERE Id IN (5171, 6774) \
+         ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+    let trainer_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer WHERE spell = ?")
+            .bind(5171u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+    let trainer_template_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer_template WHERE spell = ?")
+            .bind(5171u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let slice_duration = *load_spell_durations(&dbc_dir.join("SpellDuration.dbc"))
+        .get(&slice_and_dice.duration_index)
+        .expect("Slice and Dice duration index should resolve through SpellDuration.dbc");
+
+    assert!(
+        chain.is_none(),
+        "this local dump does not expose a spell_chain row for Slice and Dice rank 1"
+    );
+    assert_eq!(
+        slice_and_dice_ranks,
+        vec![
+            (5171, 10, 10, Some("Rank 1".to_string())),
+            (6774, 42, 42, Some("Rank 2".to_string())),
+        ]
+    );
+    assert_eq!(trainer_count, 0);
+    assert_eq!(trainer_template_count, 0);
+    assert_eq!(slice_and_dice.spell_name, "Slice and Dice");
+    assert_eq!(slice_and_dice.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(slice_and_dice.spell_level, 10);
+    assert_eq!(slice_and_dice.base_level, 10);
+    assert_eq!(
+        slice_and_dice.attributes_ex & SPELL_ATTR_EX_FINISHING_MOVE_DURATION,
+        SPELL_ATTR_EX_FINISHING_MOVE_DURATION
+    );
+    assert!(matches!(
+        spell_effect_support(slice_and_dice.effect1),
+        SpellMechanicSupport::Pending("dummy/script effect")
+    ));
+    assert_eq!(hidden_aura.spell_name, "Slice and Dice");
+    assert_eq!(hidden_aura.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(hidden_aura.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(
+        hidden_aura.effect_apply_aura_name1,
+        SPELL_AURA_MOD_MELEE_HASTE
+    );
+    assert_eq!(hidden_aura.effect_implicit_target_a1, TARGET_UNIT_CASTER);
+    assert_eq!(
+        spell_effect_support(hidden_aura.effect1),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_MOD_MELEE_HASTE),
+        SpellMechanicSupport::Implemented
+    );
+    assert!(slice_duration.max_duration_millis > slice_duration.duration_millis);
+
+    let profile =
+        player_spell_cast_profile(&hidden_aura).expect("slice and dice hidden aura profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(profile.power, SpellPowerCost::Energy { cost: 0 });
+    assert!(!profile.needs_combo_points);
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+
+    let plan = SpellInfo::from_template(&hidden_aura)
+        .player_spell_plan()
+        .expect("Slice and Dice hidden aura row should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::Caster);
+    assert_eq!(plan.channel, None);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![(
+            SpellEffectDispatch::ApplyAura,
+            SPELL_AURA_MOD_MELEE_HASTE,
+            SpellPlanEffectTarget::Caster,
+        )]
+    );
+
+    let aura = build_active_aura(
+        &hidden_aura,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        10,
+        SpellEffectValueContext::unranked(&hidden_aura, 5),
+        Instant::now(),
+        Some(slice_duration),
+    );
+    assert!(aura.positive);
+    assert_eq!(
+        aura.duration_millis,
+        Some(slice_duration.max_duration_millis as u32)
+    );
+    assert!(aura.stat_modifiers.iter().any(|modifier| matches!(
+        modifier,
+        AuraStatModifier::MeleeAttackTimePercent { percent } if *percent > 0
+    )));
+    assert!(spell_template_coverage_issues(&hidden_aura).is_empty());
+}
+
+#[tokio::test]
+async fn pick_pocket_live_rank_one_uses_generic_hostile_pickpocket_plan() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let pick_pocket = wow_db::get_spell_template_query(&spell_db_pool, 921)
+        .await
+        .unwrap()
+        .expect("Pick Pocket rank 1 should exist in the local spell_template");
+
+    assert_eq!(pick_pocket.spell_name, "Pick Pocket");
+    assert!(matches!(
+        pick_pocket.rank.as_deref(),
+        Some("") | Some("Rank 1")
+    ));
+    assert_eq!(pick_pocket.spell_level, 4);
+    assert_eq!(pick_pocket.base_level, 4);
+    assert_eq!(pick_pocket.effect1, SPELL_EFFECT_PICKPOCKET);
+    assert_eq!(pick_pocket.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+
+    let profile = player_spell_cast_profile(&pick_pocket).expect("pick pocket profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&pick_pocket)
+        .player_spell_plan()
+        .expect("Pick Pocket rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.target))
+            .collect::<Vec<_>>(),
+        vec![(
+            SpellEffectDispatch::PickPocket,
+            SpellPlanEffectTarget::HostileUnit,
+        )]
+    );
+    assert!(spell_template_coverage_issues(&pick_pocket).is_empty());
+}
+
+#[tokio::test]
+async fn pick_pocket_live_rank_one_opens_pickpocket_loot_response() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let pick_pocket = wow_db::get_spell_template_query(&spell_db_pool, 921)
+        .await
+        .unwrap()
+        .expect("Pick Pocket rank 1 should exist in the local spell_template");
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_ranges.insert(
+        pick_pocket.range_index,
+        SpellRangeEntry {
+            min_range: 0.0,
+            max_range: 5.0,
+            flags: SPELL_RANGE_FLAG_MELEE,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(921, Some(pick_pocket.clone()))
+        .await;
+    object_mgr
+        .prime_pickpocket_loot_template_for_test(
+            77,
+            vec![CreatureLootQuery {
+                item: 117,
+                group_id: 0,
+                min_count: 1,
+                max_count: 1,
+                display_id: 641,
+                chance_or_quest_chance: 100.0,
+            }],
+        )
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let parties = PartyManager::default();
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.template.npc_flags = 0;
+    kobold.template.pickpocket_loot_id = 77;
+    kobold.guid = 46;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+    let mut body = Vec::new();
+    body.extend_from_slice(&921u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(921);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 10,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    let creature_snapshot = maps.db_creature_snapshot(0, target).await;
+    assert!(
+        creature_snapshot.is_some(),
+        "Pick Pocket target creature should exist in map snapshots"
+    );
+    assert!(maps.spell_range(pick_pocket.range_index).is_some());
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &parties,
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    if let Some(due_at) = maps.next_pending_player_spell_cast_due_at(0, 7).await {
+        let wait = due_at.saturating_duration_since(Instant::now());
+        if !wait.is_zero() {
+            tokio::time::sleep(wait + Duration::from_millis(50)).await;
+        }
+        complete_pending_player_spell_cast(
+            &mut stream,
+            SpellCastDeps {
+                character_db_pool: &spell_db_pool,
+                world_db_pool: &spell_db_pool,
+                shared_world,
+                parties: &parties,
+                account_id: 7,
+            },
+            &mut session,
+            &mut header_crypto,
+        )
+        .await
+        .unwrap();
+    }
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let response = packets
         .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16));
+        .find(|packet| packet.opcode == WorldOpcode::SmsgLootResponse as u16)
+        .unwrap_or_else(|| {
+            panic!("Pick Pocket should open a loot response; packets: {packets:#?}")
+        });
+    assert_eq!(response.body[8], CLIENT_LOOT_PICKPOCKETING);
+    assert_eq!(
+        maps.db_creature_loot_guid_for_character(0, 7).await,
+        Some(target.raw())
+    );
+}
+
+#[tokio::test]
+async fn pick_pocket_live_rank_one_fails_on_creature_without_pockets() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let pick_pocket = wow_db::get_spell_template_query(&spell_db_pool, 921)
+        .await
+        .unwrap()
+        .expect("Pick Pocket rank 1 should exist in the local spell_template");
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_ranges.insert(
+        pick_pocket.range_index,
+        SpellRangeEntry {
+            min_range: 0.0,
+            max_range: 5.0,
+            flags: SPELL_RANGE_FLAG_MELEE,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(921, Some(pick_pocket.clone()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.template.npc_flags = 0;
+    kobold.guid = 46;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&921u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(921);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 10,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let failure = std::iter::from_fn(|| rx.try_recv().ok())
+        .find(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
+        .expect("Pick Pocket without a pickpocket loot id should fail");
+    assert_eq!(failure.body[5], SPELL_FAILED_TARGET_NO_POCKETS);
+}
+
+#[tokio::test]
+async fn pick_pocket_release_then_recast_reports_already_pickpocketed() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let pick_pocket = wow_db::get_spell_template_query(&spell_db_pool, 921)
+        .await
+        .unwrap()
+        .expect("Pick Pocket rank 1 should exist in the local spell_template");
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_ranges.insert(
+        pick_pocket.range_index,
+        SpellRangeEntry {
+            min_range: 0.0,
+            max_range: 5.0,
+            flags: SPELL_RANGE_FLAG_MELEE,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(921, Some(pick_pocket.clone()))
+        .await;
+    object_mgr
+        .prime_pickpocket_loot_template_for_test(88, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let parties = PartyManager::default();
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.template.npc_flags = 0;
+    kobold.template.pickpocket_loot_id = 88;
+    kobold.template.min_level = 1;
+    kobold.template.max_level = 1;
+    kobold.guid = 46;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.level = 1;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&921u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(921);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 1,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &parties,
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    if let Some(due_at) = maps.next_pending_player_spell_cast_due_at(0, 7).await {
+        let wait = due_at.saturating_duration_since(Instant::now());
+        if !wait.is_zero() {
+            tokio::time::sleep(wait + Duration::from_millis(50)).await;
+        }
+        complete_pending_player_spell_cast(
+            &mut stream,
+            SpellCastDeps {
+                character_db_pool: &spell_db_pool,
+                world_db_pool: &spell_db_pool,
+                shared_world,
+                parties: &parties,
+                account_id: 7,
+            },
+            &mut session,
+            &mut header_crypto,
+        )
+        .await
+        .unwrap();
+    }
+
+    handle_loot_release(
+        &mut stream,
+        shared_world,
+        wow_proto::LootReleaseRequest {
+            raw_guid: target.raw(),
+        },
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &parties,
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    if let Some(due_at) = maps.next_pending_player_spell_cast_due_at(0, 7).await {
+        let wait = due_at.saturating_duration_since(Instant::now());
+        if !wait.is_zero() {
+            tokio::time::sleep(wait + Duration::from_millis(50)).await;
+        }
+        complete_pending_player_spell_cast(
+            &mut stream,
+            SpellCastDeps {
+                character_db_pool: &spell_db_pool,
+                world_db_pool: &spell_db_pool,
+                shared_world,
+                parties: &parties,
+                account_id: 7,
+            },
+            &mut session,
+            &mut header_crypto,
+        )
+        .await
+        .unwrap();
+    }
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets.iter().any(|packet| {
+            packet.opcode == WorldOpcode::SmsgLootResponse as u16
+                && packet.body.len() > 9
+                && packet.body[9] == LOOT_ERROR_ALREADY_PICKPOCKETED
+        }),
+        "expected already-pickpocketed loot error; packets: {packets:#?}"
+    );
+}
+
+#[tokio::test]
+async fn gouge_live_rank_one_uses_generic_hostile_combo_control_profile() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let gouge = wow_db::get_spell_template_query(&spell_db_pool, 1776)
+        .await
+        .unwrap()
+        .expect("Gouge rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 1776)
+        .await
+        .unwrap();
+    let max_rank = wow_db::get_spell_chain_query(&spell_db_pool, 11286)
+        .await
+        .unwrap();
+    let gouge_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template \
+         WHERE Id IN (1776, 1777, 8629, 11285, 11286) \
+         ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+
+    assert!(
+        chain.is_none(),
+        "this local dump does not expose a spell_chain row for Gouge rank 1"
+    );
+    assert!(
+        max_rank.is_none(),
+        "this local dump does not expose spell_chain rows for higher Gouge ranks either"
+    );
+    assert_eq!(
+        gouge_ranks
+            .iter()
+            .map(|(id, spell_level, base_level, rank)| (
+                *id,
+                *spell_level,
+                *base_level,
+                rank.clone()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (1776, 6, 6, Some("Rank 1".to_string())),
+            (1777, 18, 18, Some("Rank 2".to_string())),
+            (8629, 32, 32, Some("Rank 3".to_string())),
+            (11285, 46, 46, Some("Rank 4".to_string())),
+            (11286, 60, 60, Some("Rank 5".to_string())),
+        ]
+    );
+
+    assert_eq!(gouge.spell_name, "Gouge");
+    assert_eq!(gouge.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(gouge.spell_level, 6);
+    assert_eq!(gouge.base_level, 6);
+    assert_eq!(gouge.equipped_item_class, ITEM_CLASS_WEAPON as i32);
+    assert_ne!(gouge.equipped_item_subclass_mask, 0);
+    assert_eq!(gouge.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert!(
+        [gouge.effect1, gouge.effect2, gouge.effect3].contains(&SPELL_EFFECT_APPLY_AURA),
+        "live Gouge row should still carry a control aura effect"
+    );
+    assert!(
+        [gouge.effect1, gouge.effect2, gouge.effect3].contains(&SPELL_EFFECT_ADD_COMBO_POINTS),
+        "live Gouge row should still award a combo point on landed damage"
+    );
+    assert!(
+        [
+            gouge.effect_apply_aura_name1,
+            gouge.effect_apply_aura_name2,
+            gouge.effect_apply_aura_name3,
+        ]
+        .into_iter()
+        .any(|aura| matches!(aura, SPELL_AURA_MOD_CONFUSE | SPELL_AURA_MOD_STUN)),
+        "live Gouge row should still use a generic hard-control aura"
+    );
+
+    let profile = player_spell_cast_profile(&gouge).expect("gouge profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Gouge should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(energy_cost > 0);
+    assert!(profile.damage > 0);
+    assert!(profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&gouge)
+        .player_spell_plan()
+        .expect("Gouge rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(plan.has_hostile_direct_effect());
+    assert!(plan.has_hostile_unit_damage());
+    assert!(plan.uses_db_creature_unit_target_outcome());
+    assert!(
+        plan.effects.iter().any(|effect| {
+            matches!(
+                effect.dispatch,
+                SpellEffectDispatch::SchoolDamage
+                    | SpellEffectDispatch::WeaponDamage
+                    | SpellEffectDispatch::WeaponPercentDamage
+            ) && effect.target == SpellPlanEffectTarget::HostileUnit
+        }),
+        "live Gouge row should still include a generic hostile direct-damage effect"
+    );
+    assert!(
+        plan.effects.iter().any(|effect| {
+            effect.dispatch == SpellEffectDispatch::ApplyAura
+                && matches!(
+                    effect.aura_name,
+                    SPELL_AURA_MOD_CONFUSE | SPELL_AURA_MOD_STUN
+                )
+                && effect.target == SpellPlanEffectTarget::HostileUnit
+        }),
+        "live Gouge row should still include a generic hostile control aura rider"
+    );
+    assert!(
+        plan.effects.iter().any(|effect| {
+            effect.dispatch == SpellEffectDispatch::AddComboPoints
+                && effect.target == SpellPlanEffectTarget::HostileUnit
+        }),
+        "live Gouge row should still award combo points through the generic hostile lane"
+    );
+    assert!(spell_template_coverage_issues(&gouge).is_empty());
+
+    let mut dagger = test_item_template(2092, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    dagger.subclass = 15;
+    let dagger = equipped_template(EQUIPMENT_SLOT_MAINHAND, dagger);
+    assert_eq!(
+        spell_equipped_item_cast_failure_with_equipped_templates(&gouge, &[]),
+        Some(SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND)
+    );
+    assert_eq!(
+        spell_equipped_item_cast_failure_with_equipped_templates(&gouge, &[dagger]),
+        None
+    );
+}
+
+#[tokio::test]
+async fn gouge_live_rank_one_spends_energy_adds_combo_point_and_applies_control() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let gouge = wow_db::get_spell_template_query(&spell_db_pool, 1776)
+        .await
+        .unwrap()
+        .expect("Gouge rank 1 should exist in the local spell_template");
+    let profile = player_spell_cast_profile(&gouge).expect("gouge profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Gouge should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_ranges.insert(
+        gouge.range_index,
+        SpellRangeEntry {
+            min_range: 0.0,
+            max_range: 5.0,
+            flags: SPELL_RANGE_FLAG_MELEE,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(1776, Some(gouge.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 46;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+    assert!(maps.spell_range(gouge.range_index).is_some());
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.level = 6;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&1776u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(1776);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 6,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            character_skills: vec![test_skill(SKILL_DAGGERS, 1, 500)],
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.inventory.items = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: EQUIPMENT_SLOT_MAINHAND,
+        item: 91_002,
+        item_template: 2092,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 18,
+    }];
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(
+        snapshot.power4,
+        POWER_ENERGY_DEFAULT - energy_cost,
+        "unexpected packets: {:#?}",
+        std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>()
+    );
+    assert_eq!(snapshot.combo_target, Some(target));
+    assert_eq!(snapshot.combo_points, 1);
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert!(creature.health < 200, "Gouge should land direct damage");
+    assert!(
+        active_aura_has_confuse(&creature.active_auras)
+            || active_aura_has_stun(&creature.active_auras),
+        "Gouge should apply a generic hard-control aura"
+    );
+    let gouge_aura = creature
+        .active_auras
+        .iter()
+        .find(|aura| aura.spell_id == 1776)
+        .expect("Gouge should leave an active aura on the target");
+    assert_ne!(gouge_aura.interrupt_flags & AURA_INTERRUPT_FLAG_DAMAGE, 0);
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets.iter().any(|packet| {
+            packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16
+                || packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16
+        }),
+        "Gouge should emit a landed damage packet; packets={packets:?}"
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+}
+
+#[tokio::test]
+async fn kick_live_rank_one_uses_generic_melee_interrupt_profile() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let kick = wow_db::get_spell_template_query(&spell_db_pool, 1766)
+        .await
+        .unwrap()
+        .expect("Kick rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 1766)
+        .await
+        .unwrap();
+    let kick_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template WHERE Id IN (1766, 1767, 1768, 1769) ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+
+    assert!(
+        chain.is_none(),
+        "this local dump does not expose a spell_chain row for Kick"
+    );
+    assert_eq!(
+        kick_ranks
+            .iter()
+            .map(|(id, spell_level, base_level, rank)| (
+                *id,
+                *spell_level,
+                *base_level,
+                rank.clone()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (1766, 12, 12, Some("Rank 1".to_string())),
+            (1767, 26, 26, Some("Rank 2".to_string())),
+            (1768, 42, 42, Some("Rank 3".to_string())),
+            (1769, 58, 58, Some("Rank 4".to_string())),
+        ]
+    );
+
+    assert_eq!(kick.spell_name, "Kick");
+    assert_eq!(kick.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(kick.spell_level, 12);
+    assert_eq!(kick.base_level, 12);
+    assert_eq!(kick.range_index, 2);
+    assert_eq!(kick.duration_index, 28);
+    assert_eq!(kick.effect1, SPELL_EFFECT_SCHOOL_DAMAGE);
+    assert_eq!(kick.effect2, SPELL_EFFECT_INTERRUPT_CAST);
+    assert_eq!(kick.effect3, 0);
+    assert_eq!(kick.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert_eq!(kick.effect_implicit_target_a2, TARGET_UNIT_ENEMY);
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_INTERRUPT_CAST),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&kick).expect("kick profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!("Kick should use rogue energy cost, got {:?}", profile.power);
+    };
+    assert_eq!(profile.kind, SpellCastKind::Interrupt);
+    assert_eq!(energy_cost, kick.mana_cost);
+    assert!(energy_cost > 0);
+    assert!(profile.damage > 0);
+    assert!(profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&kick)
+        .player_spell_plan()
+        .expect("Kick rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert_eq!(plan.profile.kind, SpellCastKind::Interrupt);
+    assert!(plan.has_hostile_direct_effect());
+    assert!(plan.has_hostile_unit_damage());
+    assert!(plan.has_hostile_unit_interrupt());
+    assert!(plan.uses_db_creature_unit_target_outcome());
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.target))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                SpellEffectDispatch::SchoolDamage,
+                SpellPlanEffectTarget::HostileUnit,
+            ),
+            (
+                SpellEffectDispatch::InterruptCast,
+                SpellPlanEffectTarget::HostileUnit,
+            ),
+        ]
+    );
+    assert!(spell_template_coverage_issues(&kick).is_empty());
+}
+
+#[tokio::test]
+async fn kick_live_rank_one_fails_out_of_melee_range_before_interrupt_impact() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let kick = wow_db::get_spell_template_query(&spell_db_pool, 1766)
+        .await
+        .unwrap()
+        .expect("Kick rank 1 should exist in the local spell_template");
+    let profile = player_spell_cast_profile(&kick).expect("kick profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!("Kick should use rogue energy cost, got {:?}", profile.power);
+    };
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(1766, Some(kick.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let kick_range = maps
+        .spell_range(kick.range_index)
+        .expect("Kick range index should resolve from SpellRange.dbc");
+    assert_eq!(kick_range.min_range, 0.0);
+    assert_eq!(kick_range.max_range, 5.0);
+    assert_eq!(kick_range.flags, SPELL_RANGE_FLAG_MELEE);
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.level = 12;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+
+    let mut hostile = test_creature_spawn(6);
+    hostile.guid = 63;
+    hostile.position_x = 8.0;
+    hostile.position_y = 0.0;
+    hostile.position_z = 0.0;
+    hostile.template.faction = 17;
+    hostile.template.min_level = 20;
+    hostile.template.max_level = 20;
+    let hostile_target = creature_spawn_guid(&hostile);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(hostile)])
+        .await;
+
+    let now = Instant::now();
+    maps.start_db_creature_spell_cast(
+        0,
+        ActiveDbCreatureSpellCast {
+            caster: hostile_target,
+            target: ObjectGuid::new(HighGuid::Player, 0, 7),
+            spell_id: 133,
+            reflectable: true,
+            school_mask: spell_school_mask_from_school(4),
+            mechanic: 0,
+            requires_behind: false,
+            effect: ActiveDbCreatureSpellEffect::Damage {
+                amount: 20,
+                school: 4,
+                dmg_class: SPELL_DAMAGE_CLASS_MAGIC,
+                attributes_ex2: 0,
+                attributes_ex3: TEST_SPELL_ATTR_EX3_ALWAYS_HIT,
+            },
+            aura: None,
+            range: Some(SpellRangeEntry {
+                min_range: 0.0,
+                max_range: 30.0,
+                flags: 0,
+            }),
+            mana_cost: 0,
+            cast_time_millis: 3_000,
+            due_at: now + Duration::from_secs(3),
+        },
+    )
+    .await
+    .unwrap()
+    .expect("creature cast should start");
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&1766u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, hostile_target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(1766);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 12,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(session.character.player_energy, POWER_ENERGY_DEFAULT);
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, POWER_ENERGY_DEFAULT);
+    assert!(
+        maps.active_db_creature_spell_cast_due_at(0, hostile_target)
+            .await
+            .is_some(),
+        "an out-of-range Kick should not interrupt the target cast"
+    );
+    assert_eq!(energy_cost, kick.mana_cost);
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let failure = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
+        .expect(
+            "Kick should fail immediately when the hostile creature target is out of melee range",
+        );
+    assert_eq!(failure.body[5], SPELL_FAILED_OUT_OF_RANGE);
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16),
+        "an out-of-range Kick cast should not emit SMSG_SPELL_GO"
+    );
+}
+
+#[tokio::test]
+async fn sap_live_rank_one_uses_generic_stealth_peaceful_knockout_profile() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let sap = wow_db::get_spell_template_query(&spell_db_pool, 6770)
+        .await
+        .unwrap()
+        .expect("Sap rank 1 should exist in the local spell_template");
+    let sap_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template WHERE Id IN (6770, 2070, 11297) ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        sap_ranks
+            .iter()
+            .map(|(id, spell_level, base_level, rank)| (
+                *id,
+                *spell_level,
+                *base_level,
+                rank.clone()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (6770, 10, 10, Some("Rank 1".to_string())),
+            (2070, 28, 28, Some("Rank 2".to_string())),
+            (11297, 48, 48, Some("Rank 3".to_string())),
+        ]
+    );
+
+    assert_eq!(sap.spell_name, "Sap");
+    assert_eq!(sap.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(sap.spell_level, 10);
+    assert_eq!(sap.base_level, 10);
+    assert_eq!(
+        sap.attributes & SPELL_ATTR_ONLY_STEALTHED,
+        SPELL_ATTR_ONLY_STEALTHED
+    );
+    assert_eq!(
+        sap.attributes & SPELL_ATTR_HEARTBEAT_RESIST,
+        SPELL_ATTR_HEARTBEAT_RESIST
+    );
+    assert_eq!(
+        sap.attributes_ex & SPELL_ATTR_EX_ONLY_PEACEFUL_TARGETS,
+        SPELL_ATTR_EX_ONLY_PEACEFUL_TARGETS
+    );
+    assert_eq!(sap.target_creature_type, 64);
+    assert_eq!(sap.mechanic, MECHANIC_KNOCKOUT);
+    assert_eq!(sap.equipped_item_class, ITEM_CLASS_WEAPON as i32);
+    assert_ne!(sap.equipped_item_subclass_mask, 0);
+    assert_eq!(sap.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert!(
+        [sap.effect1, sap.effect2, sap.effect3].contains(&SPELL_EFFECT_APPLY_AURA),
+        "live Sap row should still carry a generic hostile aura effect"
+    );
+    assert!(
+        [
+            sap.effect_apply_aura_name1,
+            sap.effect_apply_aura_name2,
+            sap.effect_apply_aura_name3,
+        ]
+        .contains(&SPELL_AURA_MOD_STUN),
+        "live Sap row should still use a generic stun aura"
+    );
+    assert_ne!(sap.aura_interrupt_flags & AURA_INTERRUPT_FLAG_DAMAGE, 0);
+
+    let profile = player_spell_cast_profile(&sap).expect("sap profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!("Sap should use rogue energy cost, got {:?}", profile.power);
+    };
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(energy_cost > 0);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&sap)
+        .player_spell_plan()
+        .expect("Sap rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(
+        plan.effects.iter().any(|effect| {
+            effect.dispatch == SpellEffectDispatch::ApplyAura
+                && effect.aura_name == SPELL_AURA_MOD_STUN
+                && effect.target == SpellPlanEffectTarget::HostileUnit
+        }),
+        "live Sap row should still include a generic hostile stun aura"
+    );
+    assert!(plan.flags.iter().any(|flag| {
+        flag.field == SpellPlanFlagField::Attributes
+            && flag.name == Some("SPELL_ATTR_ONLY_STEALTHED")
+            && matches!(
+                flag.support,
+                SpellPlanFlagSupport::ImplementedGeneric("caster stealth cast validation")
+            )
+    }));
+    assert!(plan.flags.iter().any(|flag| {
+        flag.field == SpellPlanFlagField::Attributes
+            && flag.name == Some("SPELL_ATTR_HEARTBEAT_RESIST")
+            && matches!(
+                flag.support,
+                SpellPlanFlagSupport::ImplementedGeneric("generic heartbeat early-break runtime")
+            )
+    }));
+    assert!(plan.flags.iter().any(|flag| {
+        flag.field == SpellPlanFlagField::AttributesEx
+            && flag.name == Some("SPELL_ATTR_EX_ONLY_PEACEFUL_TARGETS")
+            && matches!(
+                flag.support,
+                SpellPlanFlagSupport::ImplementedGeneric("out-of-combat target validation")
+            )
+    }));
+    assert!(spell_template_coverage_issues(&sap).is_empty());
+}
+
+#[tokio::test]
+async fn sap_live_rank_one_requires_stealth_and_peaceful_target_before_knockout() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let sap = wow_db::get_spell_template_query(&spell_db_pool, 6770)
+        .await
+        .unwrap()
+        .expect("Sap rank 1 should exist in the local spell_template");
+    let stealth = wow_db::get_spell_template_query(&spell_db_pool, 1784)
+        .await
+        .unwrap()
+        .expect("Stealth rank 1 should exist in the local spell_template");
+    let profile = player_spell_cast_profile(&sap).expect("sap profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!("Sap should use rogue energy cost, got {:?}", profile.power);
+    };
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(6770, Some(sap.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 47;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), player_position);
+    caster.class = 4;
+    caster.level = 10;
+    caster.power4 = POWER_ENERGY_DEFAULT;
+    caster.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(caster).await.unwrap();
+    maps.add_player(test_player_runtime(
+        8,
+        SessionId::next(),
+        WorldPosition::new(0, 8.0, 0.0, 0.0, 0.0),
+    ))
+    .await
+    .unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+
+    let targets = SpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_UNIT,
+        unit_target: Some(target),
+        gameobject_target: None,
+        source_location: None,
+        destination: None,
+    };
+    let mut active_spells = HashSet::new();
+    active_spells.insert(6770);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 10,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            character_skills: vec![test_skill(SKILL_DAGGERS, 1, 500)],
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.inventory.items = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: EQUIPMENT_SLOT_MAINHAND,
+        item: 91_003,
+        item_template: 2092,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 18,
+    }];
+
+    assert_eq!(
+        spell_cast_failure(
+            shared_world,
+            &spell_db_pool,
+            &mut session,
+            &sap,
+            &profile,
+            &targets,
+            Instant::now()
+        )
+        .await
+        .unwrap(),
+        Some(SPELL_FAILED_ONLY_STEALTHED)
+    );
+
+    let stealth_aura = build_active_aura(
+        &stealth,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        test_spell_effect_value_context(&stealth),
+        Instant::now(),
+        None,
+    );
+    session.auras.active_auras = vec![stealth_aura.clone()];
+    let map = maps.get_or_create_map(0, 0).await;
+    map.lock()
+        .await
+        .apply_player_aura(7, stealth_aura)
+        .unwrap()
+        .expect("stealth aura should apply to the map-owned player");
+
+    maps.begin_db_creature_combat(
+        0,
+        target,
+        ObjectGuid::new(HighGuid::Player, 0, 8),
+        Instant::now(),
+    )
+    .await
+    .expect("target should enter combat with another player");
+    assert!(maps.db_creature_in_combat(0, target).await);
+
+    assert_eq!(
+        spell_cast_failure(
+            shared_world,
+            &spell_db_pool,
+            &mut session,
+            &sap,
+            &profile,
+            &targets,
+            Instant::now()
+        )
+        .await
+        .unwrap(),
+        Some(SPELL_FAILED_TARGET_AFFECTING_COMBAT)
+    );
+
+    maps.clear_db_creature_combat(0, target).await;
+    assert!(!maps.db_creature_in_combat(0, target).await);
+    let target_outcome = player_db_creature_spell_target_outcome(
+        shared_world,
+        &spell_db_pool,
+        &session,
+        7,
+        0,
+        &sap,
+        &profile,
+        &targets,
+    )
+    .await
+    .unwrap()
+    .expect("Sap should build a hostile creature target outcome");
+    assert!(
+        target_outcome
+            .heartbeat_resist_chance_basis_points
+            .is_some_and(|chance| chance > 0),
+        "Sap heartbeat-resist chance should be computed from the live target outcome: {:?}",
+        target_outcome.heartbeat_resist_chance_basis_points
+    );
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&6770u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, POWER_ENERGY_DEFAULT - energy_cost);
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert!(active_aura_has_stun(&creature.active_auras));
+    let sap_aura = creature
+        .active_auras
+        .iter()
+        .find(|aura| aura.spell_id == 6770)
+        .expect("Sap should leave an active aura on the target");
+    assert_ne!(sap_aura.interrupt_flags & AURA_INTERRUPT_FLAG_DAMAGE, 0);
+    let aura_duration_millis = sap_aura
+        .duration_millis
+        .expect("Sap should apply a finite knockout duration");
+    let caster_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let tracker_key = (target.raw(), caster_guid.raw(), 6770);
+    {
+        let map = maps.get_or_create_map(0, 0).await;
+        let map = map.lock().await;
+        let heartbeat = map
+            .heartbeat_resist_auras
+            .get(&tracker_key)
+            .copied()
+            .expect("Sap should seed heartbeat-resist runtime metadata");
+        assert!(heartbeat.chance_basis_points > 0);
+        assert_eq!(
+            heartbeat.interval_millis,
+            (aura_duration_millis / 2).max(1_000)
+        );
+    }
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+
+    let heartbeat_tick_at = Instant::now() + Duration::from_millis(1_200);
+    {
+        let map = maps.get_or_create_map(0, 0).await;
+        let mut map = map.lock().await;
+        let heartbeat = map
+            .heartbeat_resist_auras
+            .get_mut(&tracker_key)
+            .expect("Sap heartbeat tracker should still be present before the forced tick");
+        heartbeat.chance_basis_points = 10_000;
+        heartbeat.interval_millis = 1_000;
+        heartbeat.next_check_at = heartbeat_tick_at - Duration::from_millis(200);
+    }
+    maps.advance_all_db_creature_auras(heartbeat_tick_at, 1_200)
+        .await
+        .unwrap();
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert!(
+        creature
+            .active_auras
+            .iter()
+            .all(|aura| aura.spell_id != 6770),
+        "heartbeat-resist early break should remove Sap from the target"
+    );
+    let map = maps.get_or_create_map(0, 0).await;
+    assert!(
+        !map.lock()
+            .await
+            .heartbeat_resist_auras
+            .contains_key(&tracker_key),
+        "heartbeat-resist tracker should be cleaned up when Sap falls off"
+    );
+}
+
+#[tokio::test]
+async fn sprint_live_ranks_use_generic_self_speed_aura_path() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let sprint = wow_db::get_spell_template_query(&spell_db_pool, 2983)
+        .await
+        .unwrap()
+        .expect("Sprint rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 2983)
+        .await
+        .unwrap();
+    let max_rank = wow_db::get_spell_chain_query(&spell_db_pool, 11305)
+        .await
+        .unwrap();
+    let sprint_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template \
+         WHERE Id IN (2983, 8696, 11305) \
+         ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let sprint_duration = *load_spell_durations(&dbc_dir.join("SpellDuration.dbc"))
+        .get(&sprint.duration_index)
+        .expect("Sprint duration index should resolve through SpellDuration.dbc");
+
+    assert!(
+        chain.is_none(),
+        "this local dump does not expose a spell_chain row for Sprint rank 1"
+    );
+    assert!(
+        max_rank.is_none(),
+        "this local dump does not expose spell_chain rows for higher Sprint ranks either"
+    );
+    assert_eq!(
+        sprint_ranks,
+        vec![
+            (2983, 10, 10, Some("Rank 1".to_string())),
+            (8696, 34, 34, Some("Rank 2".to_string())),
+            (11305, 58, 58, Some("Rank 3".to_string())),
+        ]
+    );
+    assert_eq!(sprint.spell_name, "Sprint");
+    assert_eq!(sprint.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(sprint.spell_level, 10);
+    assert_eq!(sprint.base_level, 10);
+    assert_eq!(sprint.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(
+        sprint.effect_apply_aura_name1,
+        SPELL_AURA_MOD_INCREASE_SPEED
+    );
+    assert_eq!(sprint.effect_implicit_target_a1, TARGET_UNIT_CASTER);
+    assert_eq!(
+        sprint_duration,
+        SpellDurationEntry {
+            duration_millis: 15_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 15_000,
+        }
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_MOD_INCREASE_SPEED),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&sprint).expect("sprint profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+
+    let spell_info = SpellInfo::from_template(&sprint);
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Sprint rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::Caster);
+    assert_eq!(plan.channel, None);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![(
+            SpellEffectDispatch::ApplyAura,
+            SPELL_AURA_MOD_INCREASE_SPEED,
+            SpellPlanEffectTarget::Caster,
+        )]
+    );
+
+    let aura = build_active_aura(
+        &sprint,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        10,
+        test_spell_effect_value_context(&sprint),
+        Instant::now(),
+        Some(sprint_duration),
+    );
+    assert!(aura.positive);
+    assert_eq!(aura.duration_millis, Some(15_000));
+    assert!(
+        aura.stat_modifiers.iter().any(|modifier| matches!(
+            modifier,
+            AuraStatModifier::MoveSpeedPercent { percent } if *percent > 0
+        )),
+        "Sprint rank 1 should build a positive movement-speed aura from the live spell row"
+    );
+    assert!(
+        active_aura_speed_percent_multiplier(std::slice::from_ref(&aura)) > 1.0,
+        "Sprint rank 1 should increase run speed through the generic aura multiplier"
+    );
+    assert!(
+        player_run_speed_from_auras(std::slice::from_ref(&aura))
+            > PLAYER_AURA_BASE_RUN_SPEED_YARDS_PER_SEC,
+        "Sprint rank 1 should push the player above the base 7 yd/s run speed"
+    );
+    assert!(spell_template_coverage_issues(&sprint).is_empty());
+}
+
+#[tokio::test]
+async fn evasion_live_rank_one_uses_generic_self_dodge_aura_path() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let evasion = wow_db::get_spell_template_query(&spell_db_pool, 5277)
+        .await
+        .unwrap()
+        .expect("Evasion rank 1 should exist in the local spell_template");
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let evasion_duration = *load_spell_durations(&dbc_dir.join("SpellDuration.dbc"))
+        .get(&evasion.duration_index)
+        .expect("Evasion duration index should resolve through SpellDuration.dbc");
+
+    assert_eq!(evasion.spell_name, "Evasion");
+    assert!(matches!(evasion.rank.as_deref(), Some("") | Some("Rank 1")));
+    assert_eq!(evasion.spell_level, 8);
+    assert_eq!(evasion.base_level, 8);
+    assert_eq!(evasion.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(
+        evasion.effect_apply_aura_name1,
+        SPELL_AURA_MOD_DODGE_PERCENT
+    );
+    assert_eq!(evasion.effect_implicit_target_a1, TARGET_UNIT_CASTER);
+    assert_eq!(
+        evasion_duration,
+        SpellDurationEntry {
+            duration_millis: 15_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 15_000,
+        }
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_MOD_DODGE_PERCENT),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&evasion).expect("evasion profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+
+    let spell_info = SpellInfo::from_template(&evasion);
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Evasion rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::Caster);
+    assert_eq!(plan.channel, None);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![(
+            SpellEffectDispatch::ApplyAura,
+            SPELL_AURA_MOD_DODGE_PERCENT,
+            SpellPlanEffectTarget::Caster,
+        )]
+    );
+
+    let aura = build_active_aura(
+        &evasion,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        8,
+        test_spell_effect_value_context(&evasion),
+        Instant::now(),
+        Some(evasion_duration),
+    );
+    assert!(aura.positive);
+    assert_eq!(aura.duration_millis, Some(15_000));
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![AuraStatModifier::DodgePercent { percent: 50 }]
+    );
+
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [20, 20, 20, 20, 20],
+        next_level_xp: 400,
+    };
+    let base_stats = player_combat_stats_for_values(4, 8, &world_stats, &[]);
+    let effective = combat_stats_with_active_auras(base_stats, std::slice::from_ref(&aura));
+    assert!((effective.dodge_percent - (base_stats.dodge_percent + 50.0)).abs() < 0.001);
+    assert!(spell_template_coverage_issues(&evasion).is_empty());
+}
+
+#[tokio::test]
+async fn expose_armor_live_rank_one_uses_generic_hostile_finisher_aura_path() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let expose_armor = wow_db::get_spell_template_query(&spell_db_pool, 8647)
+        .await
+        .unwrap()
+        .expect("Expose Armor rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 8647)
+        .await
+        .unwrap();
+    let expose_armor_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template WHERE Id IN (8647, 8649, 8650, 11197, 11198) ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let expose_armor_duration = *load_spell_durations(&dbc_dir.join("SpellDuration.dbc"))
+        .get(&expose_armor.duration_index)
+        .expect("Expose Armor duration index should resolve through SpellDuration.dbc");
+
+    assert!(
+        chain.is_none(),
+        "this local dump does not expose a spell_chain row for Expose Armor"
+    );
+    assert_eq!(
+        expose_armor_ranks
+            .iter()
+            .map(|(id, spell_level, base_level, rank)| (
+                *id,
+                *spell_level,
+                *base_level,
+                rank.clone()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (8647, 14, 14, Some("Rank 1".to_string())),
+            (8649, 26, 26, Some("Rank 2".to_string())),
+            (8650, 36, 36, Some("Rank 3".to_string())),
+            (11197, 46, 46, Some("Rank 4".to_string())),
+            (11198, 56, 56, Some("Rank 5".to_string())),
+        ]
+    );
+    assert_eq!(expose_armor.spell_name, "Expose Armor");
+    assert_eq!(expose_armor.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(expose_armor.spell_level, 14);
+    assert_eq!(expose_armor.base_level, 14);
+    assert_eq!(
+        expose_armor.attributes_ex & SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE,
+        SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE
+    );
+    assert_eq!(
+        expose_armor.attributes_ex3 & SPELL_ATTR_EX3_REQUIRES_MAIN_HAND_WEAPON,
+        SPELL_ATTR_EX3_REQUIRES_MAIN_HAND_WEAPON
+    );
+    assert_eq!(expose_armor.range_index, 2);
+    assert_eq!(expose_armor.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(expose_armor.effect2, 3);
+    assert_eq!(
+        expose_armor.effect_apply_aura_name1,
+        SPELL_AURA_MOD_RESISTANCE
+    );
+    assert_eq!(
+        expose_armor.effect_misc_value1,
+        SPELL_SCHOOL_MASK_NORMAL as i32
+    );
+    assert_eq!(expose_armor.effect_points_per_combo_point1, -80.0);
+    assert_eq!(expose_armor.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert_eq!(
+        expose_armor_duration,
+        SpellDurationEntry {
+            duration_millis: 30_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 30_000,
+        }
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_MOD_RESISTANCE),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&expose_armor).expect("Expose Armor profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Expose Armor should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(energy_cost, expose_armor.mana_cost);
+    assert!(profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&expose_armor)
+        .player_spell_plan()
+        .expect("Expose Armor rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert_eq!(plan.channel, None);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                SpellEffectDispatch::ApplyAura,
+                SPELL_AURA_MOD_RESISTANCE,
+                SpellPlanEffectTarget::HostileUnit,
+            ),
+            (
+                SpellEffectDispatch::Unsupported(3),
+                0,
+                SpellPlanEffectTarget::Caster,
+            ),
+        ]
+    );
+
+    let coverage = spell_template_coverage_issues(&expose_armor);
+    assert_eq!(coverage.len(), 1);
+    assert_eq!(coverage[0].effect_index, 1);
+    assert_eq!(coverage[0].mechanic_id, 3);
+    assert_eq!(
+        coverage[0].support,
+        SpellMechanicSupport::Pending("dummy/script effect")
+    );
+
+    let aura = build_active_aura(
+        &expose_armor,
+        ObjectGuid::new(HighGuid::Unit, 0, 63),
+        expose_armor.spell_level.try_into().unwrap(),
+        SpellEffectValueContext::unranked(&expose_armor, 3),
+        Instant::now(),
+        Some(expose_armor_duration),
+    );
+    assert!(!aura.positive);
+    assert_eq!(aura.duration_millis, Some(30_000));
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![AuraStatModifier::Resistance {
+            school_mask: SPELL_SCHOOL_MASK_NORMAL,
+            amount: -240,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn expose_armor_live_rank_one_uses_combo_points_for_generic_armor_debuff_and_clears_them() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let expose_armor = wow_db::get_spell_template_query(&spell_db_pool, 8647)
+        .await
+        .unwrap()
+        .expect("Expose Armor rank 1 should exist in the local spell_template");
+    let profile = player_spell_cast_profile(&expose_armor).expect("Expose Armor profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Expose Armor should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(8647, Some(expose_armor.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 64;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.level = 14;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+    maps.add_player_combo_points(0, 7, target, 3).await.unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&8647u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(8647);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 14,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            character_skills: vec![test_skill(SKILL_DAGGERS, 1, 500)],
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.inventory.items = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: EQUIPMENT_SLOT_MAINHAND,
+        item: 91_004,
+        item_template: 2092,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 18,
+    }];
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, POWER_ENERGY_DEFAULT - energy_cost);
+    assert_eq!(snapshot.combo_target, None);
+    assert_eq!(snapshot.combo_points, 0);
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(
+        creature.health, 200,
+        "Expose Armor should not deal direct damage"
+    );
+    assert_eq!(creature.active_auras.len(), 1);
+    let aura = &creature.active_auras[0];
+    assert_eq!(aura.spell_id, 8647);
+    assert!(!aura.positive);
+    assert_eq!(aura.duration_millis, Some(30_000));
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![AuraStatModifier::Resistance {
+            school_mask: SPELL_SCHOOL_MASK_NORMAL,
+            amount: -240,
+        }]
+    );
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    assert!(!packets.iter().any(|packet| {
+        packet.opcode == WorldOpcode::SmsgCastResult as u16
+            && packet.body.len() > 5
+            && packet.body[5] == SPELL_FAILED_NO_COMBO_POINTS
+    }));
+}
+
+#[tokio::test]
+async fn rupture_live_rank_one_uses_generic_hostile_finisher_bleed_path() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let rupture = wow_db::get_spell_template_query(&spell_db_pool, 1943)
+        .await
+        .unwrap()
+        .expect("Rupture rank 1 should exist in the local spell_template");
+    let rupture_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template \
+         WHERE Id IN (1943, 8639, 8640, 11273, 11274, 11275) \
+         ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let rupture_duration = *load_spell_durations(&dbc_dir.join("SpellDuration.dbc"))
+        .get(&rupture.duration_index)
+        .expect("Rupture duration index should resolve through SpellDuration.dbc");
+
+    assert_eq!(
+        rupture_ranks,
+        vec![
+            (1943, 20, 20, Some("Rank 1".to_string())),
+            (8639, 28, 28, Some("Rank 2".to_string())),
+            (8640, 36, 36, Some("Rank 3".to_string())),
+            (11273, 44, 44, Some("Rank 4".to_string())),
+            (11274, 52, 52, Some("Rank 5".to_string())),
+            (11275, 60, 60, Some("Rank 6".to_string())),
+        ]
+    );
+    assert_eq!(rupture.spell_name, "Rupture");
+    assert_eq!(rupture.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(rupture.spell_level, 20);
+    assert_eq!(rupture.base_level, 20);
+    assert_eq!(rupture.spell_family_name, SPELL_FAMILY_ROGUE);
+    assert_ne!(rupture.spell_family_flags & 0x0000_0000_0010_0000, 0);
+    assert_eq!(
+        rupture.attributes_ex & SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE,
+        SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE
+    );
+    assert_eq!(rupture.range_index, 2);
+    assert_eq!(rupture.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(rupture.effect_apply_aura_name1, SPELL_AURA_PERIODIC_DAMAGE);
+    assert_eq!(rupture.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert_eq!(rupture.effect_amplitude1, 2_000);
+    assert!(rupture.effect_points_per_combo_point1 > 0.0);
+    assert!(rupture_duration.duration_millis > 0);
+    assert!(rupture_duration.max_duration_millis >= rupture_duration.duration_millis);
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_PERIODIC_DAMAGE),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&rupture).expect("Rupture profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Rupture should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(energy_cost, rupture.mana_cost);
+    assert_eq!(profile.damage, 0);
+    assert!(profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&rupture)
+        .player_spell_plan()
+        .expect("Rupture rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(plan.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::ApplyAura
+            && effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE
+            && effect.target == SpellPlanEffectTarget::HostileUnit
+    }));
+    let coverage = spell_template_coverage_issues(&rupture);
+    assert!(
+        coverage.is_empty()
+            || coverage
+                .iter()
+                .all(|issue| issue.support == SpellMechanicSupport::Pending("dummy/script effect")),
+        "unexpected Rupture coverage issues: {coverage:?}"
+    );
+
+    let one_combo = build_active_aura(
+        &rupture,
+        ObjectGuid::new(HighGuid::Unit, 0, 63),
+        rupture.spell_level.try_into().unwrap(),
+        SpellEffectValueContext::unranked(&rupture, 1),
+        Instant::now(),
+        Some(rupture_duration),
+    );
+    let three_combo = build_active_aura(
+        &rupture,
+        ObjectGuid::new(HighGuid::Unit, 0, 63),
+        rupture.spell_level.try_into().unwrap(),
+        SpellEffectValueContext::unranked(&rupture, 3),
+        Instant::now(),
+        Some(rupture_duration),
+    );
+    let five_combo = build_active_aura(
+        &rupture,
+        ObjectGuid::new(HighGuid::Unit, 0, 63),
+        rupture.spell_level.try_into().unwrap(),
+        SpellEffectValueContext::unranked(&rupture, 5),
+        Instant::now(),
+        Some(rupture_duration),
+    );
+    let five_combo_with_ap = build_active_aura(
+        &rupture,
+        ObjectGuid::new(HighGuid::Unit, 0, 63),
+        rupture.spell_level.try_into().unwrap(),
+        SpellEffectValueContext::unranked(&rupture, 5).with_melee_attack_power(250),
+        Instant::now(),
+        Some(rupture_duration),
+    );
+
+    assert!(one_combo.duration_millis < five_combo.duration_millis);
+    assert_eq!(
+        five_combo_with_ap
+            .periodic_damage
+            .as_ref()
+            .expect("Rupture should build a periodic damage aura")
+            .amount,
+        five_combo
+            .periodic_damage
+            .as_ref()
+            .expect("Rupture should build a periodic damage aura")
+            .amount
+            + 7
+    );
+    assert_eq!(
+        build_active_aura(
+            &rupture,
+            ObjectGuid::new(HighGuid::Unit, 0, 63),
+            rupture.spell_level.try_into().unwrap(),
+            SpellEffectValueContext::unranked(&rupture, 3).with_melee_attack_power(250),
+            Instant::now(),
+            Some(rupture_duration),
+        )
+        .periodic_damage
+        .as_ref()
+        .expect("Rupture should build a periodic damage aura")
+        .amount,
+        three_combo
+            .periodic_damage
+            .as_ref()
+            .expect("Rupture should build a periodic damage aura")
+            .amount
+            + 7
+    );
+}
+
+#[tokio::test]
+async fn rupture_live_rank_one_uses_combo_points_for_bleed_damage_capped_attack_power_bonus_and_clears_them()
+ {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let rupture = wow_db::get_spell_template_query(&spell_db_pool, 1943)
+        .await
+        .unwrap()
+        .expect("Rupture rank 1 should exist in the local spell_template");
+    let profile = player_spell_cast_profile(&rupture).expect("Rupture profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Rupture should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let rupture_duration = *load_spell_durations(&dbc_dir.join("SpellDuration.dbc"))
+        .get(&rupture.duration_index)
+        .expect("Rupture duration index should resolve through SpellDuration.dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(1943, Some(rupture.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 67;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.level = 20;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    player.base_combat_stats.melee_attack_power = 250;
+    player.combat_stats.melee_attack_power = 250;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+    maps.add_player_combo_points(0, 7, target, 5).await.unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&1943u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(1943);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 20,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            character_skills: vec![test_skill(SKILL_DAGGERS, 1, 500)],
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.inventory.items = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: EQUIPMENT_SLOT_MAINHAND,
+        item: 91_007,
+        item_template: 2092,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 18,
+    }];
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let expected_aura = build_active_aura(
+        &rupture,
+        target,
+        rupture.spell_level.try_into().unwrap(),
+        SpellEffectValueContext::unranked(&rupture, 5).with_melee_attack_power(250),
+        Instant::now(),
+        Some(rupture_duration),
+    );
+    let expected_periodic = expected_aura
+        .periodic_damage
+        .as_ref()
+        .expect("Rupture should build a periodic damage aura");
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, POWER_ENERGY_DEFAULT - energy_cost);
+    assert_eq!(snapshot.combo_target, None);
+    assert_eq!(snapshot.combo_points, 0);
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(
+        creature.health, 200,
+        "Rupture should not deal direct damage"
+    );
+    assert_eq!(creature.active_auras.len(), 1);
+    let aura = &creature.active_auras[0];
+    let periodic = aura
+        .periodic_damage
+        .as_ref()
+        .expect("Rupture should apply a periodic damage aura");
+    assert_eq!(aura.spell_id, 1943);
+    assert!(!aura.positive);
+    assert_eq!(aura.duration_millis, expected_aura.duration_millis);
+    assert_eq!(periodic.aura_name, SPELL_AURA_PERIODIC_DAMAGE);
+    assert_eq!(periodic.amount, expected_periodic.amount);
+    assert_eq!(periodic.tick_millis, expected_periodic.tick_millis);
+    assert_eq!(periodic.school, expected_periodic.school);
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    assert!(!packets.iter().any(|packet| {
+        packet.opcode == WorldOpcode::SmsgCastResult as u16
+            && packet.body.len() > 5
+            && packet.body[5] == SPELL_FAILED_NO_COMBO_POINTS
+    }));
+}
+
+#[tokio::test]
+async fn garrote_live_rank_one_uses_generic_stealthed_bleed_profile() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let garrote = wow_db::get_spell_template_query(&spell_db_pool, 703)
+        .await
+        .unwrap()
+        .expect("Garrote rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 703)
+        .await
+        .unwrap();
+    let facing = wow_db::get_spell_facing_flag_query(&spell_db_pool, 703)
+        .await
+        .unwrap();
+    let garrote_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template \
+         WHERE Id IN (703, 8631, 8632, 8633, 11289, 11290) \
+         ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let garrote_duration = *load_spell_durations(&dbc_dir.join("SpellDuration.dbc"))
+        .get(&garrote.duration_index)
+        .expect("Garrote duration index should resolve through SpellDuration.dbc");
+    let garrote_effects = [
+        (
+            garrote.effect1,
+            garrote.effect_apply_aura_name1,
+            garrote.effect_implicit_target_a1,
+            garrote.effect_amplitude1,
+            garrote.effect_bonus_coefficient1,
+        ),
+        (
+            garrote.effect2,
+            garrote.effect_apply_aura_name2,
+            garrote.effect_implicit_target_a2,
+            garrote.effect_amplitude2,
+            garrote.effect_bonus_coefficient2,
+        ),
+        (
+            garrote.effect3,
+            garrote.effect_apply_aura_name3,
+            garrote.effect_implicit_target_a3,
+            garrote.effect_amplitude3,
+            garrote.effect_bonus_coefficient3,
+        ),
+    ];
+    let periodic = garrote_effects
+        .iter()
+        .copied()
+        .find(|(effect, aura, target, _, _)| {
+            *effect == SPELL_EFFECT_APPLY_AURA
+                && *aura == SPELL_AURA_PERIODIC_DAMAGE
+                && *target == TARGET_UNIT_ENEMY
+        })
+        .expect("Garrote should keep a hostile periodic damage aura in its live row");
+    assert!(
+        chain.is_none(),
+        "this local dump does not expose a spell_chain row for Garrote rank 1"
+    );
+    assert_eq!(facing, Some(1));
+    assert_eq!(
+        garrote_ranks,
+        vec![
+            (703, 14, 14, Some("Rank 1".to_string())),
+            (8631, 22, 22, Some("Rank 2".to_string())),
+            (8632, 30, 30, Some("Rank 3".to_string())),
+            (8633, 38, 38, Some("Rank 4".to_string())),
+            (11289, 46, 46, Some("Rank 5".to_string())),
+            (11290, 54, 54, Some("Rank 6".to_string())),
+        ]
+    );
+    assert_eq!(garrote.spell_name, "Garrote");
+    assert_eq!(garrote.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(garrote.spell_level, 14);
+    assert_eq!(garrote.base_level, 14);
+    assert_eq!(
+        garrote.attributes & SPELL_ATTR_ONLY_STEALTHED,
+        SPELL_ATTR_ONLY_STEALTHED
+    );
+    assert_eq!(
+        garrote.attributes_ex & SPELL_ATTR_EX_INITIATES_COMBAT_ENABLES_AUTO_ATTACK,
+        SPELL_ATTR_EX_INITIATES_COMBAT_ENABLES_AUTO_ATTACK
+    );
+    assert_eq!(
+        garrote.attributes_ex2 & SPELL_ATTR_EX2_INITIATE_COMBAT_POST_CAST,
+        SPELL_ATTR_EX2_INITIATE_COMBAT_POST_CAST
+    );
+    assert_eq!(garrote.range_index, 2);
+    assert_eq!(periodic.3, 3_000);
+    assert_eq!(
+        spell_aura_support(periodic.1),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_ADD_COMBO_POINTS),
+        SpellMechanicSupport::Implemented
+    );
+    assert!(garrote_duration.duration_millis > periodic.3 as i32);
+    assert_eq!(
+        garrote_duration.duration_millis,
+        garrote_duration.max_duration_millis
+    );
+    assert_eq!(garrote_duration.duration_millis / periodic.3 as i32, 6);
+
+    let profile = player_spell_cast_profile(&garrote).expect("Garrote profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Garrote should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(energy_cost, garrote.mana_cost);
+    assert_eq!(profile.damage, 0);
+    assert!(profile.requires_melee);
+    assert!(profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&garrote)
+        .player_spell_plan()
+        .expect("Garrote rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(plan.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::ApplyAura
+            && effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE
+            && effect.target == SpellPlanEffectTarget::HostileUnit
+    }));
+    assert!(plan.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::AddComboPoints
+            && effect.target == SpellPlanEffectTarget::HostileUnit
+    }));
+    assert!(spell_template_coverage_issues(&garrote).is_empty());
+}
+
+#[tokio::test]
+async fn garrote_live_rank_one_requires_caster_behind_target() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let garrote = wow_db::get_spell_template_query(&spell_db_pool, 703)
+        .await
+        .unwrap()
+        .expect("Garrote rank 1 should exist in the local spell_template");
+    let stealth = wow_db::get_spell_template_query(&spell_db_pool, 1784)
+        .await
+        .unwrap()
+        .expect("Stealth rank 1 should exist in the local spell_template");
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(703, Some(garrote.clone()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 65;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.orientation = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 2.0, 0.0, 0.0, std::f32::consts::PI);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.level = 14;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&703u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(703);
+    let stealth_aura = build_active_aura(
+        &stealth,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        test_spell_effect_value_context(&stealth),
+        Instant::now(),
+        None,
+    );
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 14,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            character_skills: vec![test_skill(SKILL_DAGGERS, 1, 500)],
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.inventory.items = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: EQUIPMENT_SLOT_MAINHAND,
+        item: 91_005,
+        item_template: 2092,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 18,
+    }];
+    session.auras.active_auras = vec![stealth_aura.clone()];
+    let map = maps.get_or_create_map(0, 0).await;
+    map.lock()
+        .await
+        .apply_player_aura(7, stealth_aura)
+        .unwrap()
+        .expect("stealth aura should apply to the map-owned player");
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, POWER_ENERGY_DEFAULT);
+    assert_eq!(snapshot.combo_target, None);
+    assert_eq!(snapshot.combo_points, 0);
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(creature.health, 200);
+    assert!(creature.active_auras.is_empty());
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(packets.iter().any(|packet| {
+        packet.opcode == WorldOpcode::SmsgCastResult as u16
+            && packet.body[5] == SPELL_FAILED_NOT_BEHIND
+    }));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+}
+
+#[tokio::test]
+async fn garrote_live_rank_one_from_stealth_applies_bleed_and_combo_point() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let garrote = wow_db::get_spell_template_query(&spell_db_pool, 703)
+        .await
+        .unwrap()
+        .expect("Garrote rank 1 should exist in the local spell_template");
+    let stealth = wow_db::get_spell_template_query(&spell_db_pool, 1784)
+        .await
+        .unwrap()
+        .expect("Stealth rank 1 should exist in the local spell_template");
+    let profile = player_spell_cast_profile(&garrote).expect("Garrote profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Garrote should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let garrote_duration = *load_spell_durations(&dbc_dir.join("SpellDuration.dbc"))
+        .get(&garrote.duration_index)
+        .expect("Garrote duration index should resolve through SpellDuration.dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(703, Some(garrote.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 66;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.orientation = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.level = 14;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&703u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(703);
+    let stealth_aura = build_active_aura(
+        &stealth,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        test_spell_effect_value_context(&stealth),
+        Instant::now(),
+        None,
+    );
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 14,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            character_skills: vec![test_skill(SKILL_DAGGERS, 1, 500)],
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.inventory.items = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: EQUIPMENT_SLOT_MAINHAND,
+        item: 91_006,
+        item_template: 2092,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 18,
+    }];
+    session.auras.active_auras = vec![stealth_aura.clone()];
+    let map = maps.get_or_create_map(0, 0).await;
+    map.lock()
+        .await
+        .apply_player_aura(7, stealth_aura)
+        .unwrap()
+        .expect("stealth aura should apply to the map-owned player");
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let expected_aura = build_active_aura(
+        &garrote,
+        target,
+        garrote.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&garrote),
+        Instant::now(),
+        Some(garrote_duration),
+    );
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, POWER_ENERGY_DEFAULT - energy_cost);
+    assert_eq!(snapshot.combo_target, Some(target));
+    assert_eq!(snapshot.combo_points, 1);
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(
+        creature.health, 200,
+        "Garrote should not deal direct damage"
+    );
+    assert_eq!(creature.active_auras.len(), 1);
+    let aura = &creature.active_auras[0];
+    let periodic = aura
+        .periodic_damage
+        .as_ref()
+        .expect("Garrote should apply a periodic damage aura");
+    let expected_periodic = expected_aura
+        .periodic_damage
+        .as_ref()
+        .expect("Garrote live row should build a periodic damage aura");
+    assert_eq!(aura.spell_id, 703);
+    assert!(!aura.positive);
+    assert_eq!(aura.duration_millis, expected_aura.duration_millis);
+    assert_eq!(aura.stat_modifiers, expected_aura.stat_modifiers);
+    assert_eq!(periodic.aura_name, SPELL_AURA_PERIODIC_DAMAGE);
+    assert_eq!(periodic.amount, expected_periodic.amount);
+    assert_eq!(periodic.tick_millis, expected_periodic.tick_millis);
+    assert_eq!(periodic.school, expected_periodic.school);
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
+}
+
+#[tokio::test]
+async fn feint_live_rank_one_uses_generic_hostile_threat_path() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let feint = wow_db::get_spell_template_query(&spell_db_pool, 1966)
+        .await
+        .unwrap()
+        .expect("Feint rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 1966)
+        .await
+        .unwrap();
+    let feint_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template \
+         WHERE Id IN (1966, 6768, 8637, 11303, 25302) \
+         ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+
+    assert!(
+        chain.is_none(),
+        "this local dump does not expose a spell_chain row for Feint rank 1"
+    );
+    assert_eq!(
+        feint_ranks,
+        vec![
+            (1966, 16, 16, Some("Rank 1".to_string())),
+            (6768, 28, 28, Some("Rank 2".to_string())),
+            (8637, 40, 40, Some("Rank 3".to_string())),
+            (11303, 52, 52, Some("Rank 4".to_string())),
+            (25302, 60, 60, Some("Rank 5".to_string())),
+        ]
+    );
+    assert_eq!(feint.spell_name, "Feint");
+    assert_eq!(feint.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(feint.spell_level, 16);
+    assert_eq!(feint.base_level, 16);
+    assert_eq!(feint.range_index, 2);
+    assert_eq!(feint.effect1, SPELL_EFFECT_THREAT);
+    assert_eq!(feint.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert_eq!(feint.mana_cost, 20);
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_THREAT),
+        SpellMechanicSupport::Implemented
+    );
+
+    let info = SpellInfo::from_template(&feint);
+    let effect = info.effects[0];
+    assert_eq!(
+        spell_effect_calculated_i32(effect, test_spell_effect_value_context(&feint)),
+        -150
+    );
+
+    let profile = player_spell_cast_profile(&feint).expect("Feint profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Feint should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(energy_cost, feint.mana_cost);
+    assert_eq!(profile.damage, 0);
+    assert!(profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = info
+        .player_spell_plan()
+        .expect("Feint rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(plan.uses_db_creature_unit_target_outcome());
+    assert!(plan.should_retaliate_on_failed_hostile_cast());
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![(
+            SpellEffectDispatch::Threat,
+            0,
+            SpellPlanEffectTarget::HostileUnit,
+        )]
+    );
+    assert!(spell_template_coverage_issues(&feint).is_empty());
+}
+
+#[tokio::test]
+async fn feint_live_rank_one_reduces_caster_threat_on_target_creature() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let feint = wow_db::get_spell_template_query(&spell_db_pool, 1966)
+        .await
+        .unwrap()
+        .expect("Feint rank 1 should exist in the local spell_template");
+    let profile = player_spell_cast_profile(&feint).expect("Feint profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Feint should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    let expected_threat_delta = spell_effect_calculated_i32(
+        SpellInfo::from_template(&feint).effects[0],
+        test_spell_effect_value_context(&feint),
+    );
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(1966, Some(feint.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 67;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), player_position);
+    caster.class = 4;
+    caster.level = 16;
+    caster.power4 = POWER_ENERGY_DEFAULT;
+    caster.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(caster).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+
+    let rival_position = WorldPosition::new(0, 0.5, 0.0, 0.0, 0.0);
+    let mut rival = test_player_runtime(8, SessionId::next(), rival_position);
+    rival.class = 1;
+    rival.level = 16;
+    maps.add_player(rival).await.unwrap();
+
+    let now = Instant::now();
+    maps.begin_db_creature_combat(0, target, ObjectGuid::new(HighGuid::Player, 0, 7), now)
+        .await
+        .expect("creature combat should start");
+    {
+        let map = maps.get_or_create_map(0, 0).await;
+        let mut map = map.lock().await;
+        map.add_db_creature_threat(target, ObjectGuid::new(HighGuid::Player, 0, 7), 200.0);
+        map.add_db_creature_threat(target, ObjectGuid::new(HighGuid::Player, 0, 8), 180.0);
+    }
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&1966u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(1966);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 16,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, POWER_ENERGY_DEFAULT - energy_cost);
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(creature.health, 200, "Feint should not deal direct damage");
+    assert!(creature.active_auras.is_empty());
+
+    let map = maps.get_or_create_map(0, 0).await;
+    let map = map.lock().await;
+    let threats = map.db_creature_threat_entries(target);
+    assert_eq!(
+        threats
+            .iter()
+            .find(|entry| entry.victim == ObjectGuid::new(HighGuid::Player, 0, 7))
+            .map(|entry| entry.threat),
+        Some((200 + expected_threat_delta).max(0) as f32)
+    );
+    assert_eq!(
+        threats
+            .iter()
+            .find(|entry| entry.victim == ObjectGuid::new(HighGuid::Player, 0, 8))
+            .map(|entry| entry.threat),
+        Some(180.0)
+    );
+    assert_eq!(
+        map.active_creature_combats
+            .get(&target.raw())
+            .map(|combat| combat.victim),
+        Some(ObjectGuid::new(HighGuid::Player, 0, 8)),
+        "Feint should let a higher-threat rival overtake the caster"
+    );
+    drop(map);
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgAttackStop as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgAttackStart as u16)
+    );
+    assert!(!packets.iter().any(|packet| {
+        packet.opcode == WorldOpcode::SmsgCastResult as u16 && packet.body.len() > 5
+    }));
+}
+
+#[tokio::test]
+async fn kidney_shot_live_rank_one_uses_generic_hostile_finisher_stun_profile_and_kidney_dr_group()
+{
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let kidney_shot = wow_db::get_spell_template_query(&spell_db_pool, 408)
+        .await
+        .unwrap()
+        .expect("Kidney Shot rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 408)
+        .await
+        .unwrap();
+    let kidney_shot_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template \
+         WHERE SpellName = 'Kidney Shot' \
+         ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+    let trainer_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer WHERE spell = ?")
+            .bind(408u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+    let trainer_template_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer_template WHERE spell = ?")
+            .bind(408u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let kidney_duration = *load_spell_durations(&dbc_dir.join("SpellDuration.dbc"))
+        .get(&kidney_shot.duration_index)
+        .expect("Kidney Shot duration index should resolve through SpellDuration.dbc");
+
+    assert!(
+        chain.is_none(),
+        "this local dump does not expose a spell_chain row for Kidney Shot"
+    );
+    assert_eq!(trainer_count, 0);
+    assert_eq!(trainer_template_count, 0);
+    let live_rank_rows = kidney_shot_ranks
+        .iter()
+        .filter(|(_, spell_level, base_level, rank)| {
+            *spell_level > 0 && *base_level > 0 && rank.is_some()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        kidney_shot_ranks.contains(&(408, 30, 30, Some("Rank 1".to_string()))),
+        "local Kidney Shot rank 1 row should keep the live level 30 entry"
+    );
+    assert!(
+        live_rank_rows
+            .iter()
+            .any(|(_, spell_level, base_level, rank)| {
+                *spell_level == 50 && *base_level == 50 && rank.as_deref() == Some("Rank 2")
+            }),
+        "local Kidney Shot rows should keep at least one live level 50 Rank 2 finisher entry"
+    );
+    assert_eq!(kidney_shot.spell_name, "Kidney Shot");
+    assert_eq!(kidney_shot.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(kidney_shot.spell_level, 30);
+    assert_eq!(kidney_shot.base_level, 30);
+    assert_eq!(kidney_shot.spell_family_name, SPELL_FAMILY_ROGUE);
+    assert_ne!(kidney_shot.spell_family_flags & 0x0020_0000, 0);
+    assert_eq!(kidney_shot.equipped_item_class, ITEM_CLASS_WEAPON as i32);
+    assert_ne!(kidney_shot.equipped_item_subclass_mask, 0);
+    assert!(spell_template_requires_main_hand_weapon_or_weapon_class(
+        &kidney_shot
+    ));
+    assert_eq!(kidney_shot.range_index, 2);
+    assert_eq!(kidney_shot.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(kidney_shot.effect_apply_aura_name1, SPELL_AURA_MOD_STUN);
+    assert_eq!(kidney_shot.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert!(kidney_duration.max_duration_millis > 0);
+    assert!(kidney_duration.max_duration_millis >= kidney_duration.duration_millis);
+    assert_eq!(
+        spell_diminishing_group(&kidney_shot),
+        Some(DiminishingGroupRuntime::KidneyShot)
+    );
+    assert_eq!(
+        db_creature_spell_diminishing_group(&kidney_shot),
+        Some(DiminishingGroupRuntime::KidneyShot)
+    );
+
+    let profile = player_spell_cast_profile(&kidney_shot).expect("Kidney Shot profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Kidney Shot should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(energy_cost, kidney_shot.mana_cost);
+    assert_eq!(profile.damage, 0);
+    assert!(profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&kidney_shot)
+        .player_spell_plan()
+        .expect("Kidney Shot rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(plan.should_retaliate_on_failed_hostile_cast());
+    assert!(plan.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::ApplyAura
+            && effect.aura_name == SPELL_AURA_MOD_STUN
+            && effect.target == SpellPlanEffectTarget::HostileUnit
+    }));
+    let coverage = spell_template_coverage_issues(&kidney_shot);
+    assert_eq!(coverage.len(), 1);
+    assert!(matches!(
+        coverage[0],
+        SpellCoverageIssue {
+            spell_id: 408,
+            effect_index: 1,
+            mechanic: SpellCoverageMechanic::Effect,
+            mechanic_id: 3,
+            support: SpellMechanicSupport::Pending("dummy/script effect"),
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn kidney_shot_live_rank_one_uses_combo_points_registers_kidney_dr_and_clears_them() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let kidney_shot = wow_db::get_spell_template_query(&spell_db_pool, 408)
+        .await
+        .unwrap()
+        .expect("Kidney Shot rank 1 should exist in the local spell_template");
+    let profile = player_spell_cast_profile(&kidney_shot).expect("Kidney Shot profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Kidney Shot should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let kidney_duration = maps
+        .spell_duration(kidney_shot.duration_index)
+        .expect("Kidney Shot duration index should resolve through SpellDuration.dbc");
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(408, Some(kidney_shot.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 70;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.level = 30;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+    maps.add_player_combo_points(0, 7, target, 5).await.unwrap();
+
+    let primed_at = Instant::now();
+    {
+        let map = maps.get_or_create_map(0, 0).await;
+        let mut map = map.lock().await;
+        map.diminishing_states
+            .entry(target.raw())
+            .or_default()
+            .insert(
+                DiminishingGroupRuntime::KidneyShot,
+                DiminishingStateRuntime {
+                    active_stack_count: 0,
+                    next_level: 1,
+                    last_hit_at: Some(primed_at),
+                },
+            );
+    }
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&408u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(408);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 30,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            character_skills: vec![test_skill(SKILL_DAGGERS, 1, 500)],
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.inventory.items = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: EQUIPMENT_SLOT_MAINHAND,
+        item: 91_009,
+        item_template: 2092,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 18,
+    }];
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let expected_aura = build_active_aura(
+        &kidney_shot,
+        target,
+        kidney_shot.spell_level.try_into().unwrap(),
+        SpellEffectValueContext::unranked(&kidney_shot, 5),
+        Instant::now(),
+        Some(kidney_duration),
+    );
+    let expected_duration = diminishing_duration_millis(
+        expected_aura.duration_millis,
+        DiminishingLevelRuntime::Level2,
+    );
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, POWER_ENERGY_DEFAULT - energy_cost);
+    assert_eq!(snapshot.combo_target, None);
+    assert_eq!(snapshot.combo_points, 0);
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(
+        creature.health, 200,
+        "Kidney Shot should not deal direct damage"
+    );
+    assert!(active_aura_has_stun(&creature.active_auras));
+    let kidney_aura = creature
+        .active_auras
+        .iter()
+        .find(|aura| aura.spell_id == 408)
+        .expect("Kidney Shot should leave an active stun aura on the target");
+    assert_eq!(kidney_aura.duration_millis, expected_duration);
+
+    {
+        let map = maps.get_or_create_map(0, 0).await;
+        let map = map.lock().await;
+        let groups = map
+            .diminishing_states
+            .get(&target.raw())
+            .expect("Kidney Shot should register a diminishing state for the target");
+        assert_eq!(
+            groups
+                .get(&DiminishingGroupRuntime::KidneyShot)
+                .map(|state| state.active_stack_count),
+            Some(1)
+        );
+    }
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    assert!(!packets.iter().any(|packet| {
+        packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16
+            || packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16
+    }));
+}
+
+#[tokio::test]
+async fn blind_live_rank_one_uses_generic_hostile_aura_profile_and_blind_dr_group() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let blind = wow_db::get_spell_template_query(&spell_db_pool, 2094)
+        .await
+        .unwrap()
+        .expect("Blind rank 1 should exist in the local spell_template");
+    let blind_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template WHERE Id IN (2094, 21060) ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+
+    assert_eq!(blind_ranks.len(), 2);
+    assert!(
+        blind_ranks.contains(&(2094, 34, 34, Some(String::new()))),
+        "local Blind rank 1 row should keep the live level 34 entry even when rank text is blank"
+    );
+    assert!(
+        blind_ranks.iter().any(|(id, ..)| *id == 21060),
+        "local Blind rank 2 id should still exist even though this dump leaves its metadata incomplete"
+    );
+    assert_eq!(blind.spell_name, "Blind");
+    assert_eq!(blind.spell_level, 34);
+    assert_eq!(blind.base_level, 34);
+    assert_eq!(blind.spell_family_name, SPELL_FAMILY_ROGUE);
+    assert_eq!(blind.spell_family_flags, 0x0100_0000);
+    assert_eq!(blind.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_ne!(blind.aura_interrupt_flags & AURA_INTERRUPT_FLAG_DAMAGE, 0);
+    assert_eq!(
+        spell_diminishing_group(&blind),
+        Some(DiminishingGroupRuntime::Blind)
+    );
+    assert_eq!(
+        db_creature_spell_diminishing_group(&blind),
+        Some(DiminishingGroupRuntime::Blind)
+    );
+
+    let profile = player_spell_cast_profile(&blind).expect("Blind profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Blind should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(energy_cost, blind.mana_cost);
+    assert_eq!(profile.damage, 0);
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&blind)
+        .player_spell_plan()
+        .expect("Blind rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(plan.should_retaliate_on_failed_hostile_cast());
+    assert!(plan.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::ApplyAura
+            && effect.target == SpellPlanEffectTarget::HostileUnit
+    }));
+    assert!(spell_template_coverage_issues(&blind).is_empty());
+}
+
+#[tokio::test]
+async fn cheap_shot_live_rank_one_uses_generic_stealthed_stun_opener_profile() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let cheap_shot = wow_db::get_spell_template_query(&spell_db_pool, 1833)
+        .await
+        .unwrap()
+        .expect("Cheap Shot rank 1 should exist in the local spell_template");
+    let cheap_shot_ranks = sqlx::query_as::<_, (u32, u32, u32, Option<String>)>(
+        "SELECT Id, SpellLevel, BaseLevel, Rank1 \
+         FROM spell_template \
+         WHERE Id IN (1833, 8621, 11293, 11294) \
+         ORDER BY SpellLevel, Id",
+    )
+    .fetch_all(&spell_db_pool)
+    .await
+    .unwrap();
+    let facing = wow_db::get_spell_facing_flag_query(&spell_db_pool, 1833)
+        .await
+        .unwrap();
+    let trainer_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer WHERE spell = ?")
+            .bind(1833u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+    let trainer_template_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer_template WHERE spell = ?")
+            .bind(1833u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+
+    assert_eq!(cheap_shot_ranks.len(), 4);
+    assert!(
+        cheap_shot_ranks.contains(&(1833, 26, 26, Some(String::new()))),
+        "local Cheap Shot rank 1 row should keep the live level 26 entry even when rank text is blank"
+    );
+    assert!(
+        cheap_shot_ranks.contains(&(8621, 38, 38, Some("Rank 6".to_string()))),
+        "local Cheap Shot rank 2 id should still exist even though this dump degrades the later rank metadata"
+    );
+    assert!(
+        cheap_shot_ranks.contains(&(11293, 46, 46, Some("Rank 7".to_string()))),
+        "local Cheap Shot rank 3 id should still exist even though this dump degrades the later rank metadata"
+    );
+    assert!(
+        cheap_shot_ranks.contains(&(11294, 54, 54, Some("Rank 8".to_string()))),
+        "local Cheap Shot max-rank id should still exist even though this dump degrades the later rank metadata"
+    );
+    assert_eq!(facing, Some(1));
+    assert_eq!(trainer_count, 0);
+    assert_eq!(trainer_template_count, 0);
+
+    assert_eq!(cheap_shot.spell_name, "Cheap Shot");
+    assert_eq!(cheap_shot.rank.as_deref(), Some(""));
+    assert_eq!(cheap_shot.spell_level, 26);
+    assert_eq!(cheap_shot.base_level, 26);
+    assert_eq!(
+        cheap_shot.attributes & SPELL_ATTR_ONLY_STEALTHED,
+        SPELL_ATTR_ONLY_STEALTHED
+    );
+    assert_eq!(
+        cheap_shot.attributes_ex & SPELL_ATTR_EX_INITIATES_COMBAT_ENABLES_AUTO_ATTACK,
+        SPELL_ATTR_EX_INITIATES_COMBAT_ENABLES_AUTO_ATTACK
+    );
+    assert_eq!(
+        cheap_shot.attributes_ex2 & SPELL_ATTR_EX2_INITIATE_COMBAT_POST_CAST,
+        SPELL_ATTR_EX2_INITIATE_COMBAT_POST_CAST
+    );
+    assert_eq!(cheap_shot.equipped_item_class, ITEM_CLASS_WEAPON as i32);
+    assert_ne!(cheap_shot.equipped_item_subclass_mask, 0);
+    assert_eq!(cheap_shot.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert!(
+        [cheap_shot.effect1, cheap_shot.effect2, cheap_shot.effect3]
+            .contains(&SPELL_EFFECT_APPLY_AURA),
+        "live Cheap Shot row should keep a hostile stun aura effect"
+    );
+    assert!(
+        [cheap_shot.effect1, cheap_shot.effect2, cheap_shot.effect3]
+            .contains(&SPELL_EFFECT_ADD_COMBO_POINTS),
+        "live Cheap Shot row should still award combo points"
+    );
+    assert!(
+        [
+            cheap_shot.effect_apply_aura_name1,
+            cheap_shot.effect_apply_aura_name2,
+            cheap_shot.effect_apply_aura_name3,
+        ]
+        .contains(&SPELL_AURA_MOD_STUN),
+        "live Cheap Shot row should still use a generic stun aura"
+    );
+
+    let profile = player_spell_cast_profile(&cheap_shot).expect("Cheap Shot profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Cheap Shot should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(energy_cost, cheap_shot.mana_cost);
+    assert_eq!(profile.damage, 0);
+    assert!(profile.requires_melee);
+    assert!(profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&cheap_shot)
+        .player_spell_plan()
+        .expect("Cheap Shot rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(plan.should_retaliate_on_failed_hostile_cast());
+    assert!(plan.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::ApplyAura
+            && effect.aura_name == SPELL_AURA_MOD_STUN
+            && effect.target == SpellPlanEffectTarget::HostileUnit
+    }));
+    assert!(plan.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::AddComboPoints
+            && effect.target == SpellPlanEffectTarget::HostileUnit
+    }));
+    assert!(spell_template_coverage_issues(&cheap_shot).is_empty());
+
+    let mut dagger = test_item_template(2092, ITEM_CLASS_WEAPON, 13, 2.0, 4.0, 0);
+    dagger.subclass = 15;
+    let dagger = equipped_template(EQUIPMENT_SLOT_MAINHAND, dagger);
+    assert_eq!(
+        spell_equipped_item_cast_failure_with_equipped_templates(&cheap_shot, &[]),
+        Some(SPELL_FAILED_EQUIPPED_ITEM_CLASS)
+    );
+    assert_eq!(
+        spell_equipped_item_cast_failure_with_equipped_templates(&cheap_shot, &[dagger]),
+        None
+    );
+}
+
+#[tokio::test]
+async fn cheap_shot_live_rank_one_requires_caster_behind_target() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let cheap_shot = wow_db::get_spell_template_query(&spell_db_pool, 1833)
+        .await
+        .unwrap()
+        .expect("Cheap Shot rank 1 should exist in the local spell_template");
+    let stealth = wow_db::get_spell_template_query(&spell_db_pool, 1784)
+        .await
+        .unwrap()
+        .expect("Stealth rank 1 should exist in the local spell_template");
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(1833, Some(cheap_shot.clone()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 68;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.orientation = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 2.0, 0.0, 0.0, std::f32::consts::PI);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.level = 26;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&1833u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(1833);
+    let stealth_aura = build_active_aura(
+        &stealth,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        test_spell_effect_value_context(&stealth),
+        Instant::now(),
+        None,
+    );
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 26,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            character_skills: vec![test_skill(SKILL_DAGGERS, 1, 500)],
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.inventory.items = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: EQUIPMENT_SLOT_MAINHAND,
+        item: 91_008,
+        item_template: 2092,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 18,
+    }];
+    session.auras.active_auras = vec![stealth_aura.clone()];
+    let map = maps.get_or_create_map(0, 0).await;
+    map.lock()
+        .await
+        .apply_player_aura(7, stealth_aura)
+        .unwrap()
+        .expect("stealth aura should apply to the map-owned player");
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            shared_world,
+            parties: &PartyManager::default(),
+            account_id: 7,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, POWER_ENERGY_DEFAULT);
+    assert_eq!(snapshot.combo_target, None);
+    assert_eq!(snapshot.combo_points, 0);
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(creature.health, 200);
+    assert!(creature.active_auras.is_empty());
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(packets.iter().any(|packet| {
+        packet.opcode == WorldOpcode::SmsgCastResult as u16
+            && packet.body[5] == SPELL_FAILED_NOT_BEHIND
+    }));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+}
+
+#[tokio::test]
+async fn cheap_shot_live_rank_one_from_stealth_applies_stun_and_combo_points() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let cheap_shot = wow_db::get_spell_template_query(&spell_db_pool, 1833)
+        .await
+        .unwrap()
+        .expect("Cheap Shot rank 1 should exist in the local spell_template");
+    let stealth = wow_db::get_spell_template_query(&spell_db_pool, 1784)
+        .await
+        .unwrap()
+        .expect("Stealth rank 1 should exist in the local spell_template");
+    let profile = player_spell_cast_profile(&cheap_shot).expect("Cheap Shot profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Cheap Shot should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    let combo_points_expected = SpellInfo::from_template(&cheap_shot)
+        .effects
+        .into_iter()
+        .find(|effect| effect.dispatch == SpellEffectDispatch::AddComboPoints)
+        .and_then(|effect| {
+            spell_effect_calculated_u32(effect, test_spell_effect_value_context(&cheap_shot))
+        })
+        .expect("Cheap Shot should keep a generic combo-point effect");
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let cheap_shot_duration = *load_spell_durations(&dbc_dir.join("SpellDuration.dbc"))
+        .get(&cheap_shot.duration_index)
+        .expect("Cheap Shot duration index should resolve through SpellDuration.dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(1833, Some(cheap_shot.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 69;
+    kobold.position_x = 1.0;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.orientation = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.level = 26;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+    maps.update_player_selection(0, 7, Some(target))
+        .await
+        .unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&1833u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(1833);
+    let stealth_aura = build_active_aura(
+        &stealth,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        test_spell_effect_value_context(&stealth),
+        Instant::now(),
+        None,
+    );
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 26,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            character_skills: vec![test_skill(SKILL_DAGGERS, 1, 500)],
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session.inventory.items = vec![CharacterInventoryItem {
+        bag: 0,
+        slot: EQUIPMENT_SLOT_MAINHAND,
+        item: 91_007,
+        item_template: 2092,
+        count: 1,
+        flags: 0,
+        random_property_id: 0,
+        charges: String::new(),
+        enchantments: String::new(),
+        durability: 18,
+    }];
+    session.auras.active_auras = vec![stealth_aura.clone()];
+    let map = maps.get_or_create_map(0, 0).await;
+    map.lock()
+        .await
+        .apply_player_aura(7, stealth_aura)
+        .unwrap()
+        .expect("stealth aura should apply to the map-owned player");
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 7,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, POWER_ENERGY_DEFAULT - energy_cost);
+    assert_eq!(snapshot.combo_target, Some(target));
+    assert_eq!(snapshot.combo_points, combo_points_expected as u8);
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(
+        creature.health, 200,
+        "Cheap Shot should not deal direct damage"
+    );
+    assert!(active_aura_has_stun(&creature.active_auras));
+    let cheap_shot_aura = creature
+        .active_auras
+        .iter()
+        .find(|aura| aura.spell_id == 1833)
+        .expect("Cheap Shot should leave an active stun aura on the target");
+    assert_eq!(
+        cheap_shot_aura.duration_millis,
+        Some(cheap_shot_duration.duration_millis as u32)
+    );
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    assert!(
+        !packets.iter().any(|packet| {
+            packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16
+                || packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16
+        }),
+        "Cheap Shot should not emit a direct-damage packet; packets={packets:?}"
+    );
+}
+
+#[tokio::test]
+async fn blind_live_rank_one_keeps_full_duration_when_polymorph_dr_state_exists() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let blind = wow_db::get_spell_template_query(&spell_db_pool, 2094)
+        .await
+        .unwrap()
+        .expect("Blind rank 1 should exist in the local spell_template");
+    let profile = player_spell_cast_profile(&blind).expect("Blind profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Blind should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let blind_duration = maps
+        .spell_duration(blind.duration_index)
+        .expect("Blind duration index should resolve through SpellDuration.dbc");
+    let blind_range = maps
+        .spell_range(blind.range_index)
+        .expect("Blind range index should resolve through SpellRange.dbc");
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(2094, Some(blind.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let target_distance = (blind_range.min_range + blind_range.max_range) / 2.0;
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 68;
+    kobold.position_x = target_distance;
+    kobold.position_y = 0.0;
+    kobold.position_z = 0.0;
+    kobold.template.min_level_health = 200;
+    kobold.template.max_level_health = 200;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), player_position);
+    caster.class = 4;
+    caster.level = 34;
+    caster.power4 = POWER_ENERGY_DEFAULT;
+    caster.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(caster).await.unwrap();
+
+    let primed_at = Instant::now();
+    {
+        let map = maps.get_or_create_map(0, 0).await;
+        let mut map = map.lock().await;
+        map.diminishing_states
+            .entry(target.raw())
+            .or_default()
+            .insert(
+                DiminishingGroupRuntime::Polymorph,
+                DiminishingStateRuntime {
+                    active_stack_count: 0,
+                    next_level: 1,
+                    last_hit_at: Some(primed_at),
+                },
+            );
+    }
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&2094u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(2094);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 34,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 7,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.power4, POWER_ENERGY_DEFAULT - energy_cost);
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(creature.health, 200, "Blind should not deal direct damage");
+    assert!(active_aura_has_confuse(&creature.active_auras));
+    let blind_aura = creature
+        .active_auras
+        .iter()
+        .find(|aura| aura.spell_id == 2094)
+        .expect("Blind should leave an active confuse aura on the target");
+    assert_eq!(
+        blind_aura.duration_millis,
+        Some(blind_duration.duration_millis as u32),
+        "Blind should keep its full duration instead of reusing the Polymorph DR bucket"
+    );
+    assert_ne!(blind_aura.interrupt_flags & AURA_INTERRUPT_FLAG_DAMAGE, 0);
+
+    {
+        let map = maps.get_or_create_map(0, 0).await;
+        let map = map.lock().await;
+        let groups = map
+            .diminishing_states
+            .get(&target.raw())
+            .expect("Blind should register a diminishing state for the target");
+        assert_eq!(
+            groups
+                .get(&DiminishingGroupRuntime::Blind)
+                .map(|state| state.active_stack_count),
+            Some(1)
+        );
+        assert_eq!(
+            groups
+                .get(&DiminishingGroupRuntime::Polymorph)
+                .map(|state| state.active_stack_count),
+            Some(0),
+            "Blind should not consume the target's existing Polymorph DR state"
+        );
+    }
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    assert!(
+        !packets.iter().any(|packet| {
+            packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16
+                || packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16
+        }),
+        "Blind should not emit direct-damage packets; packets={packets:?}"
+    );
+}
+
+#[tokio::test]
+async fn distract_live_rank_one_uses_generic_destination_area_distract_profile() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let distract = wow_db::get_spell_template_query(&spell_db_pool, 1725)
+        .await
+        .unwrap()
+        .expect("Distract rank 1 should exist in the local spell_template");
+    let helper = wow_db::get_spell_template_query(&spell_db_pool, 1728)
+        .await
+        .unwrap()
+        .expect("Distract helper row should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 1725)
+        .await
+        .unwrap();
+    let trainer_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer WHERE spell = ?")
+            .bind(1725u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+    let trainer_template_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer_template WHERE spell = ?")
+            .bind(1725u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+
+    assert!(
+        chain.is_none(),
+        "this local dump does not expose a spell_chain row for Distract"
+    );
+    assert_eq!(trainer_count, 0);
+    assert_eq!(trainer_template_count, 0);
+    assert_eq!(distract.spell_name, "Distract");
+    assert_eq!(helper.spell_name, "Distract");
+    assert_eq!(distract.spell_level, 22);
+    assert_eq!(distract.base_level, 22);
+    assert_eq!(distract.spell_family_name, SPELL_FAMILY_ROGUE);
+    assert_eq!(distract.effect1, SPELL_EFFECT_DISTRACT);
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_DISTRACT),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&distract).expect("Distract profile");
+    let SpellPowerCost::Energy { cost: energy_cost } = profile.power else {
+        panic!(
+            "Distract should use rogue energy cost, got {:?}",
+            profile.power
+        );
+    };
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(energy_cost, distract.mana_cost);
+    assert_eq!(profile.damage, 0);
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let spell_info = SpellInfo::from_template(&distract);
+    let effect = spell_info.effects[0];
+    assert_eq!(effect.dispatch, SpellEffectDispatch::Distract);
+    assert!(effect_targets_destination_hostile_area(effect));
+
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Distract rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::DestinationAreaEnemy);
+    assert!(plan.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::Distract
+            && effect.target == SpellPlanEffectTarget::DestinationAreaEnemy
+    }));
+    assert!(spell_template_coverage_issues(&distract).is_empty());
+}
+
+#[tokio::test]
+async fn distract_cast_failure_only_blocks_when_all_nearby_targets_are_already_in_combat() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_radii: load_spell_radii(&dbc_dir.join("SpellRadius.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let distract = wow_db::get_spell_template_query(&spell_db_pool, 1725)
+        .await
+        .unwrap()
+        .expect("Distract rank 1 should exist in the local spell_template");
+    let profile = player_spell_cast_profile(&distract).expect("Distract profile");
+    let position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), position);
+    player.class = 4;
+    player.level = 22;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+
+    let destination = wow_proto::SpellTargetLocation {
+        x: 8.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    let mut first = test_creature_spawn(6);
+    first.guid = 81;
+    first.position_x = destination.x + 1.0;
+    first.position_y = destination.y;
+    first.position_z = destination.z;
+    first.template.faction = 17;
+    let first_target = creature_spawn_guid(&first);
+    let mut second = test_creature_spawn(6);
+    second.guid = 82;
+    second.position_x = destination.x - 1.0;
+    second.position_y = destination.y;
+    second.position_z = destination.z;
+    second.template.faction = 17;
+    let second_target = creature_spawn_guid(&second);
+    maps.share_db_creature_snapshots(
+        0,
+        vec![
+            DbCreatureRuntime::new(first),
+            DbCreatureRuntime::new(second),
+        ],
+    )
+    .await;
+
+    let targets = SpellCastTargets {
+        target_mask: SPELL_CAST_TARGET_DEST_LOCATION,
+        unit_target: None,
+        gameobject_target: None,
+        source_location: None,
+        destination: Some(destination),
+    };
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 22,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    maps.begin_db_creature_combat(
+        0,
+        first_target,
+        ObjectGuid::new(HighGuid::Player, 0, 8),
+        Instant::now(),
+    )
+    .await
+    .expect("first distract target should enter combat");
+    maps.begin_db_creature_combat(
+        0,
+        second_target,
+        ObjectGuid::new(HighGuid::Player, 0, 8),
+        Instant::now(),
+    )
+    .await
+    .expect("second distract target should enter combat");
+
+    assert_eq!(
+        spell_cast_failure(
+            shared_world,
+            &spell_db_pool,
+            &mut session,
+            &distract,
+            &profile,
+            &targets,
+            Instant::now()
+        )
+        .await
+        .unwrap(),
+        Some(SPELL_FAILED_TARGET_IN_COMBAT)
+    );
+
+    maps.clear_db_creature_combat(0, first_target).await;
+    assert_eq!(
+        spell_cast_failure(
+            shared_world,
+            &spell_db_pool,
+            &mut session,
+            &distract,
+            &profile,
+            &targets,
+            Instant::now()
+        )
+        .await
+        .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn distract_live_rank_one_stops_and_turns_only_out_of_combat_targets() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_radii: load_spell_radii(&dbc_dir.join("SpellRadius.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+
+    let distract = wow_db::get_spell_template_query(&spell_db_pool, 1725)
+        .await
+        .unwrap()
+        .expect("Distract rank 1 should exist in the local spell_template");
+    object_mgr
+        .prime_spell_template_for_test(1725, Some(distract.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 4;
+    player.level = 22;
+    player.power4 = POWER_ENERGY_DEFAULT;
+    player.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(player).await.unwrap();
+
+    let destination = wow_proto::SpellTargetLocation {
+        x: 8.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    let now = Instant::now();
+
+    let mut peaceful_spawn = test_creature_spawn(6);
+    peaceful_spawn.guid = 83;
+    peaceful_spawn.position_x = destination.x + 2.0;
+    peaceful_spawn.position_y = destination.y + 3.0;
+    peaceful_spawn.position_z = destination.z;
+    peaceful_spawn.template.faction = 17;
+    peaceful_spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    peaceful_spawn.spawn_dist = 8.0;
+    let peaceful_target = creature_spawn_guid(&peaceful_spawn);
+    let peaceful_position = db_creature_spawn_position(&peaceful_spawn);
+    let mut peaceful = DbCreatureRuntime::new(peaceful_spawn);
+    peaceful.motion = CreatureMotionState::Random(CreatureRandomMotion {
+        start: peaceful_position,
+        destination: WorldPosition::new(
+            0,
+            peaceful_position.x + 1.0,
+            peaceful_position.y,
+            peaceful_position.z,
+            0.0,
+        ),
+        path: vec![WorldPosition::new(
+            0,
+            peaceful_position.x + 1.0,
+            peaceful_position.y,
+            peaceful_position.z,
+            0.0,
+        )],
+        started_at: now,
+        duration: Duration::from_secs(4),
+    });
+    peaceful.next_random_move_at = None;
+
+    let mut combat_spawn = test_creature_spawn(6);
+    combat_spawn.guid = 84;
+    combat_spawn.position_x = destination.x - 2.0;
+    combat_spawn.position_y = destination.y + 3.0;
+    combat_spawn.position_z = destination.z;
+    combat_spawn.template.faction = 17;
+    combat_spawn.movement_type = DB_MOTION_TYPE_RANDOM;
+    combat_spawn.spawn_dist = 8.0;
+    let combat_target = creature_spawn_guid(&combat_spawn);
+    let combat_position = db_creature_spawn_position(&combat_spawn);
+    let mut combat = DbCreatureRuntime::new(combat_spawn);
+    combat.motion = CreatureMotionState::Random(CreatureRandomMotion {
+        start: combat_position,
+        destination: WorldPosition::new(
+            0,
+            combat_position.x - 1.0,
+            combat_position.y,
+            combat_position.z,
+            0.0,
+        ),
+        path: vec![WorldPosition::new(
+            0,
+            combat_position.x - 1.0,
+            combat_position.y,
+            combat_position.z,
+            0.0,
+        )],
+        started_at: now,
+        duration: Duration::from_secs(4),
+    });
+    combat.next_random_move_at = None;
+
+    maps.share_db_creature_snapshots(0, vec![peaceful, combat])
+        .await;
+    maps.begin_db_creature_combat(
+        0,
+        combat_target,
+        ObjectGuid::new(HighGuid::Player, 0, 8),
+        now,
+    )
+    .await
+    .expect("combat distract target should enter combat");
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&1725u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_DEST_LOCATION.to_le_bytes());
+    body.extend_from_slice(&destination.x.to_le_bytes());
+    body.extend_from_slice(&destination.y.to_le_bytes());
+    body.extend_from_slice(&destination.z.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(1725);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 22,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    let distract_seconds = SpellInfo::from_template(&distract)
+        .effects
+        .into_iter()
+        .find(|effect| effect.dispatch == SpellEffectDispatch::Distract)
+        .and_then(|effect| {
+            spell_effect_calculated_u32(effect, test_spell_effect_value_context(&distract))
+        })
+        .expect("Distract should keep a generic effect value");
+    let cast_started = Instant::now();
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 7,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let peaceful = maps.db_creature_snapshot(0, peaceful_target).await.unwrap();
+    assert!(matches!(peaceful.motion, CreatureMotionState::Idle));
+    let expected_orientation = normalize_orientation(
+        (destination.y - peaceful.current_position.y)
+            .atan2(destination.x - peaceful.current_position.x),
+    );
+    assert!(
+        (peaceful.current_position.orientation - expected_orientation).abs() <= 0.001,
+        "Distract should turn the peaceful creature toward the destination"
+    );
+    assert!(peaceful.next_random_move_at.is_some_and(|at| {
+        at >= cast_started + Duration::from_secs(u64::from(distract_seconds).saturating_sub(1))
+    }));
+
+    let combat = maps.db_creature_snapshot(0, combat_target).await.unwrap();
+    assert!(matches!(combat.motion, CreatureMotionState::Random(_)));
+    assert!(combat.next_random_move_at.is_none());
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .filter(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16)
+            .count()
+            >= 2,
+        "Distract should emit stop + facing movement packets; packets={packets:?}"
+    );
+    assert!(
+        !packets.iter().any(|packet| {
+            packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16
+                || packet.opcode == WorldOpcode::SmsgAttackStart as u16
+        }),
+        "Distract should not deal damage or start combat; packets={packets:?}"
+    );
+}
+
+#[tokio::test]
+async fn sprint_live_rank_one_applies_self_run_speed_buff_and_cooldown() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let sprint = wow_db::get_spell_template_query(&spell_db_pool, 2983)
+        .await
+        .unwrap()
+        .expect("Sprint rank 1 should exist in the local spell_template");
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let sprint_duration = *load_spell_durations(&dbc_dir.join("SpellDuration.dbc"))
+        .get(&sprint.duration_index)
+        .expect("Sprint duration index should resolve through SpellDuration.dbc");
+    let mut world_data = WorldDataFiles::fallback();
+    world_data
+        .spell_durations
+        .insert(sprint.duration_index, sprint_duration);
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(2983, Some(sprint.clone()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let player_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), player_position);
+    caster.class = 4;
+    caster.level = 10;
+    caster.power4 = POWER_ENERGY_DEFAULT;
+    caster.max_power4 = POWER_ENERGY_DEFAULT;
+    maps.add_player(caster).await.unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&2983u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(2983);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 4,
+                level: 10,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_energy: POWER_ENERGY_DEFAULT,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    let cast_started_at = Instant::now();
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert!(
+        snapshot.spell_cooldowns_until.contains_key(&2983),
+        "Sprint should record its 300s spell cooldown when the cast succeeds"
+    );
+    assert_eq!(session.character.player_energy, POWER_ENERGY_DEFAULT);
+    assert_eq!(session.auras.active_auras.len(), 1);
+    let active_aura = &session.auras.active_auras[0];
+    assert_eq!(active_aura.spell_id, 2983);
+    assert_eq!(active_aura.caster, ObjectGuid::new(HighGuid::Player, 0, 7));
+    assert_eq!(active_aura.level, 10);
+    assert!(active_aura.positive);
+    assert_eq!(active_aura.duration_millis, Some(15_000));
+    assert!(
+        active_aura
+            .expires_at
+            .is_some_and(|expires_at| expires_at > cast_started_at)
+    );
+    assert!(
+        active_aura_speed_percent_multiplier(&session.auras.active_auras) > 1.0,
+        "Sprint should raise the owner's generic run-speed multiplier"
+    );
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    let run_speed_packet = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgForceRunSpeedChange as u16)
+        .expect("Sprint should force the owner's run speed when the aura lands");
+    let run_speed = f32::from_le_bytes(
+        run_speed_packet.body[run_speed_packet.body.len() - 4..]
+            .try_into()
+            .unwrap(),
+    );
+    assert_eq!(
+        run_speed,
+        player_run_speed_from_auras(&session.auras.active_auras)
+    );
 }
 
 #[tokio::test]
@@ -8494,7 +14487,7 @@ async fn lesser_heal_live_rank_one_heals_friendly_player_target() {
         sessions: &sessions,
     };
 
-    let caster_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let caster_position = WorldPosition::new(0, -8946.0, -130.0, 83.5, 0.0);
     let mut caster = test_player_runtime(7, SessionId::next(), caster_position);
     caster.class = 5;
     caster.level = 1;
@@ -8560,9 +14553,11 @@ async fn lesser_heal_live_rank_one_heals_friendly_player_target() {
     assert_eq!(session.character.player_mana, 100 - lesser_heal.mana_cost);
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
     let heal_log = packets
         .iter()
         .find(|packet| packet.opcode == WorldOpcode::SmsgSpellHealLog as u16)
@@ -8659,7 +14654,9 @@ async fn heal_live_rank_one_heals_friendly_player_target() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
-    object_mgr.prime_spell_template_for_test(2054, Some(heal.clone())).await;
+    object_mgr
+        .prime_spell_template_for_test(2054, Some(heal.clone()))
+        .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
         maps: &maps,
@@ -8733,9 +14730,11 @@ async fn heal_live_rank_one_heals_friendly_player_target() {
     assert_eq!(session.character.player_mana, 200 - heal.mana_cost);
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
     let heal_log = packets
         .iter()
         .find(|packet| packet.opcode == WorldOpcode::SmsgSpellHealLog as u16)
@@ -8750,8 +14749,331 @@ async fn heal_live_rank_one_heals_friendly_player_target() {
         ObjectGuid::new(HighGuid::Player, 0, 7)
     );
     assert_eq!(read_u32(&heal_log.body, &mut cursor).unwrap(), 2054);
-    assert_eq!(read_u32(&heal_log.body, &mut cursor).unwrap(), target.health - 10);
+    assert_eq!(
+        read_u32(&heal_log.body, &mut cursor).unwrap(),
+        target.health - 10
+    );
     assert_eq!(heal_log.body[cursor], 0);
+}
+
+#[tokio::test]
+async fn prayer_of_healing_live_rank_one_uses_generic_group_heal_path() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let prayer_of_healing = wow_db::get_spell_template_query(&spell_db_pool, 596)
+        .await
+        .unwrap()
+        .expect("Prayer of Healing rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 596)
+        .await
+        .unwrap()
+        .expect("Prayer of Healing rank 1 should exist in spell_chain");
+    let max_rank = wow_db::get_spell_chain_query(&spell_db_pool, 25316)
+        .await
+        .unwrap()
+        .expect("Prayer of Healing max local rank should exist in spell_chain");
+
+    assert_eq!(chain.spell_id, 596);
+    assert_eq!(chain.prev_spell, 0);
+    assert_eq!(chain.first_spell, 596);
+    assert_eq!(chain.rank, 1);
+    assert_eq!(max_rank.first_spell, 596);
+    assert_eq!(max_rank.rank, 5);
+
+    assert_eq!(prayer_of_healing.spell_name, "Prayer of Healing");
+    assert_eq!(prayer_of_healing.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(prayer_of_healing.effect1, SPELL_EFFECT_HEAL);
+    assert_eq!(prayer_of_healing.effect2, 0);
+    assert_eq!(prayer_of_healing.effect3, 0);
+    assert_eq!(
+        prayer_of_healing.effect_implicit_target_a1,
+        TARGET_ENUM_UNITS_PARTY_WITHIN_CASTER_RANGE
+    );
+    assert!(prayer_of_healing.effect_radius_index1 != 0);
+    assert!(
+        CMANGOS_SPELL_FIXES_SQL.contains(
+            "UPDATE spell_template SET AttributesEx2=AttributesEx2|0x00000004 WHERE Id IN(596,996,10960,10961,25308,25316,23455,23458,23459,25329,27803,27804,27805);"
+        ),
+        "local cmangos fixes should retain the Prayer of Healing priest-heal target override"
+    );
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_HEAL),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile =
+        player_spell_cast_profile(&prayer_of_healing).expect("prayer of healing rank 1 profile");
+    assert_eq!(profile.kind, SpellCastKind::DirectHeal);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost } if cost == prayer_of_healing.mana_cost
+    ));
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let spell_info = SpellInfo::from_template(&prayer_of_healing);
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Prayer of Healing rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::FriendlyUnit);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![(
+            SpellEffectDispatch::Heal,
+            0,
+            SpellPlanEffectTarget::CasterAreaFriendly,
+        )]
+    );
+    assert!(effect_targets_caster_centered_friendly_area(
+        spell_info.effects[0]
+    ));
+
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = MapRuntimeManager {
+        spell_radii: load_spell_radii(&dbc_dir.join("SpellRadius.dbc")),
+        ..MapRuntimeManager::default()
+    };
+    assert!(
+        maps.spell_radius(prayer_of_healing.effect_radius_index1)
+            .is_some_and(|radius| radius.radius > 0.0),
+        "Prayer of Healing should resolve a positive SpellRadius.dbc entry"
+    );
+    assert!(
+        spell_effect_radius_yards(&maps, spell_info.effects[0]).is_some_and(|radius| radius > 0.0)
+    );
+    assert!(spell_template_coverage_issues(&prayer_of_healing).is_empty());
+}
+
+#[tokio::test]
+async fn prayer_of_healing_live_rank_one_heals_only_in_range_party_members() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let prayer_of_healing = wow_db::get_spell_template_query(&spell_db_pool, 596)
+        .await
+        .unwrap()
+        .expect("Prayer of Healing rank 1 should exist in the local spell_template");
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_cast_times: load_spell_cast_times(&dbc_dir.join("SpellCastTimes.dbc")),
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_radii: load_spell_radii(&dbc_dir.join("SpellRadius.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(596, Some(prayer_of_healing.clone()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let caster_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), caster_position);
+    caster.class = 5;
+    caster.level = 30;
+    caster.health = 50;
+    caster.max_health = 250;
+    caster.power1 = 500;
+    caster.max_power1 = 500;
+    maps.add_player(caster).await.unwrap();
+
+    let mut in_range_party = test_player_runtime(
+        8,
+        SessionId::next(),
+        WorldPosition::new(0, -8946.0, -130.0, 83.5, 0.0),
+    );
+    in_range_party.class = 1;
+    in_range_party.level = 30;
+    in_range_party.health = 40;
+    in_range_party.max_health = 250;
+    maps.add_player(in_range_party).await.unwrap();
+
+    let mut out_of_range_party = test_player_runtime(
+        9,
+        SessionId::next(),
+        WorldPosition::new(0, -7000.0, -130.0, 83.5, 0.0),
+    );
+    out_of_range_party.class = 1;
+    out_of_range_party.level = 30;
+    out_of_range_party.health = 35;
+    out_of_range_party.max_health = 250;
+    maps.add_player(out_of_range_party).await.unwrap();
+
+    let mut non_party = test_player_runtime(
+        10,
+        SessionId::next(),
+        WorldPosition::new(0, -8945.0, -130.0, 83.5, 0.0),
+    );
+    non_party.class = 1;
+    non_party.level = 30;
+    non_party.health = 25;
+    non_party.max_health = 250;
+    maps.add_player(non_party).await.unwrap();
+
+    let parties = PartyManager::default();
+    let invite = parties
+        .invite(
+            PartyMember {
+                guid: 7,
+                name: "Ada".to_string(),
+            },
+            PartyMember {
+                guid: 8,
+                name: "Ben".to_string(),
+            },
+            SessionId(8),
+        )
+        .await;
+    assert_eq!(invite.result, PartyResult::Ok);
+    let accepted = parties.accept(8).await;
+    assert_eq!(accepted.result, PartyResult::Ok);
+    let invite = parties
+        .invite(
+            PartyMember {
+                guid: 7,
+                name: "Ada".to_string(),
+            },
+            PartyMember {
+                guid: 9,
+                name: "Cara".to_string(),
+            },
+            SessionId(9),
+        )
+        .await;
+    assert_eq!(invite.result, PartyResult::Ok);
+    let accepted = parties.accept(9).await;
+    assert_eq!(accepted.result, PartyResult::Ok);
+    let party_members = parties.party_members(8).await;
+    assert_eq!(party_members.len(), 3);
+    assert!(party_members.iter().any(|member| member.guid == 7));
+    assert!(party_members.iter().any(|member| member.guid == 8));
+    assert!(party_members.iter().any(|member| member.guid == 9));
+
+    let target_guid = ObjectGuid::new(HighGuid::Player, 0, 8);
+    let mut body = Vec::new();
+    body.extend_from_slice(&596u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target_guid).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(596);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 5,
+                level: 30,
+                xp: 0,
+                position: caster_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 50,
+            player_mana: 500,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &parties,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let cast_time_ms =
+        spell_cast_time_millis(maps.spell_cast_time(prayer_of_healing.casting_time_index));
+    assert!(cast_time_ms > 0);
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some()
+    );
+    tokio::time::sleep(Duration::from_millis(u64::from(cast_time_ms) + 50)).await;
+    complete_pending_player_spell_cast(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &parties,
+        },
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+    assert_eq!(session.auras.active_auras.len(), 1);
+
+    let caster = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    let in_range_party = maps.player_runtime_snapshot(0, 8).await.unwrap();
+    let out_of_range_party = maps.player_runtime_snapshot(0, 9).await.unwrap();
+    let non_party = maps.player_runtime_snapshot(0, 10).await.unwrap();
+
+    assert!(in_range_party.health > 40);
+    assert!(caster.health > 50);
+    assert_eq!(session.character.player_health, caster.health);
+    assert_eq!(out_of_range_party.health, 35);
+    assert_eq!(non_party.health, 25);
+    assert_eq!(
+        session.character.player_mana,
+        500 - prayer_of_healing.mana_cost
+    );
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16),
+        "Prayer of Healing should emit SMSG_SPELL_GO on a successful cast"
+    );
+    assert_eq!(
+        packets
+            .iter()
+            .filter(|packet| packet.opcode == WorldOpcode::SmsgSpellHealLog as u16)
+            .count(),
+        2,
+        "Prayer of Healing rank 1 should emit one heal log per healed party member in range"
+    );
 }
 
 #[tokio::test]
@@ -8957,9 +15279,384 @@ async fn power_word_fortitude_live_rank_one_applies_stamina_aura_to_friendly_pla
     assert_eq!(session.character.player_mana, 100 - fortitude.mana_cost);
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+}
+
+#[tokio::test]
+async fn prayer_of_fortitude_live_rank_one_uses_generic_group_stamina_buff_path() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let prayer_of_fortitude = wow_db::get_spell_template_query(&spell_db_pool, 21562)
+        .await
+        .unwrap()
+        .expect("Prayer of Fortitude rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 21562)
+        .await
+        .unwrap()
+        .expect("Prayer of Fortitude rank 1 should exist in spell_chain");
+    let max_rank = wow_db::get_spell_chain_query(&spell_db_pool, 21564)
+        .await
+        .unwrap()
+        .expect("Prayer of Fortitude max local rank should exist in spell_chain");
+
+    assert_eq!(chain.spell_id, 21562);
+    assert_eq!(chain.prev_spell, 0);
+    assert_eq!(chain.first_spell, 21562);
+    assert_eq!(chain.rank, 1);
+    assert_eq!(max_rank.first_spell, 21562);
+    assert_eq!(max_rank.rank, 2);
+
+    assert_eq!(prayer_of_fortitude.spell_name, "Prayer of Fortitude");
+    assert_eq!(prayer_of_fortitude.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(prayer_of_fortitude.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(prayer_of_fortitude.effect2, 0);
+    assert_eq!(prayer_of_fortitude.effect3, 0);
+    assert_eq!(
+        prayer_of_fortitude.effect_apply_aura_name1,
+        SPELL_AURA_MOD_STAT
+    );
+    assert_eq!(
+        prayer_of_fortitude.effect_implicit_target_a1,
+        TARGET_UNIT_FRIEND_AND_PARTY
+    );
+    assert_eq!(prayer_of_fortitude.effect_misc_value1, 2);
+    assert!(prayer_of_fortitude.effect_radius_index1 != 0);
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_APPLY_AURA),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_MOD_STAT),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile =
+        player_spell_cast_profile(&prayer_of_fortitude).expect("prayer of fortitude profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost } if cost == prayer_of_fortitude.mana_cost
+    ));
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let spell_info = SpellInfo::from_template(&prayer_of_fortitude);
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Prayer of Fortitude rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::FriendlyUnit);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![(
+            SpellEffectDispatch::ApplyAura,
+            SPELL_AURA_MOD_STAT,
+            SpellPlanEffectTarget::TargetPartyFriendly,
+        )]
+    );
+    assert!(effect_targets_target_party_friendly_area(
+        spell_info.effects[0]
+    ));
+
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = MapRuntimeManager {
+        spell_radii: load_spell_radii(&dbc_dir.join("SpellRadius.dbc")),
+        ..MapRuntimeManager::default()
+    };
+    assert!(
+        maps.spell_radius(prayer_of_fortitude.effect_radius_index1)
+            .is_some_and(|radius| radius.radius > 0.0),
+        "Prayer of Fortitude should resolve a positive SpellRadius.dbc entry"
+    );
+    assert!(
+        spell_effect_radius_yards(&maps, spell_info.effects[0]).is_some_and(|radius| radius > 0.0)
+    );
+    assert!(spell_template_coverage_issues(&prayer_of_fortitude).is_empty());
+}
+
+#[tokio::test]
+async fn prayer_of_fortitude_live_rank_one_buffs_only_in_range_party_members() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let prayer_of_fortitude = wow_db::get_spell_template_query(&spell_db_pool, 21562)
+        .await
+        .unwrap()
+        .expect("Prayer of Fortitude rank 1 should exist in the local spell_template");
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_cast_times: load_spell_cast_times(&dbc_dir.join("SpellCastTimes.dbc")),
+        spell_radii: load_spell_radii(&dbc_dir.join("SpellRadius.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(21562, Some(prayer_of_fortitude.clone()))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let caster_world_stats = PlayerWorldStats {
+        base_health: 80,
+        base_mana: 100,
+        stats: [30; MAX_STATS],
+        next_level_xp: 400,
+    };
+    let member_world_stats = PlayerWorldStats {
+        base_health: 60,
+        base_mana: 0,
+        stats: [25; MAX_STATS],
+        next_level_xp: 400,
+    };
+
+    let caster_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), caster_position);
+    caster.class = 5;
+    caster.level = 48;
+    caster.base_world_stats = caster_world_stats;
+    caster.effective_world_stats = caster_world_stats;
+    caster.health = caster_world_stats.max_health();
+    caster.max_health = caster_world_stats.max_health();
+    caster.power1 = 100_000;
+    caster.max_power1 = 100_000;
+    maps.add_player(caster).await.unwrap();
+
+    let mut in_range_party = test_player_runtime(
+        8,
+        SessionId::next(),
+        WorldPosition::new(0, -8946.0, -130.0, 83.5, 0.0),
+    );
+    in_range_party.class = 1;
+    in_range_party.level = 48;
+    in_range_party.base_world_stats = member_world_stats;
+    in_range_party.effective_world_stats = member_world_stats;
+    in_range_party.health = member_world_stats.max_health();
+    in_range_party.max_health = member_world_stats.max_health();
+    maps.add_player(in_range_party).await.unwrap();
+
+    let mut distant_party = test_player_runtime(
+        9,
+        SessionId::next(),
+        WorldPosition::new(0, -8900.0, -130.0, 83.5, 0.0),
+    );
+    distant_party.class = 1;
+    distant_party.level = 48;
+    distant_party.base_world_stats = member_world_stats;
+    distant_party.effective_world_stats = member_world_stats;
+    distant_party.health = member_world_stats.max_health();
+    distant_party.max_health = member_world_stats.max_health();
+    maps.add_player(distant_party).await.unwrap();
+
+    let mut nearby_party = test_player_runtime(
+        10,
+        SessionId::next(),
+        WorldPosition::new(0, -8945.0, -130.0, 83.5, 0.0),
+    );
+    nearby_party.class = 1;
+    nearby_party.level = 48;
+    nearby_party.base_world_stats = member_world_stats;
+    nearby_party.effective_world_stats = member_world_stats;
+    nearby_party.health = member_world_stats.max_health();
+    nearby_party.max_health = member_world_stats.max_health();
+    maps.add_player(nearby_party).await.unwrap();
+
+    let mut non_party = test_player_runtime(
+        11,
+        SessionId::next(),
+        WorldPosition::new(0, -8945.0, -130.0, 83.5, 0.0),
+    );
+    non_party.class = 1;
+    non_party.level = 48;
+    non_party.base_world_stats = member_world_stats;
+    non_party.effective_world_stats = member_world_stats;
+    non_party.health = member_world_stats.max_health();
+    non_party.max_health = member_world_stats.max_health();
+    maps.add_player(non_party).await.unwrap();
+
+    let parties = PartyManager::default();
+    let invite = parties
+        .invite(
+            PartyMember {
+                guid: 7,
+                name: "Ada".to_string(),
+            },
+            PartyMember {
+                guid: 8,
+                name: "Ben".to_string(),
+            },
+            SessionId(8),
+        )
+        .await;
+    assert_eq!(invite.result, PartyResult::Ok);
+    let accepted = parties.accept(8).await;
+    assert_eq!(accepted.result, PartyResult::Ok);
+    let invite = parties
+        .invite(
+            PartyMember {
+                guid: 7,
+                name: "Ada".to_string(),
+            },
+            PartyMember {
+                guid: 9,
+                name: "Cara".to_string(),
+            },
+            SessionId(9),
+        )
+        .await;
+    assert_eq!(invite.result, PartyResult::Ok);
+    let accepted = parties.accept(9).await;
+    assert_eq!(accepted.result, PartyResult::Ok);
+    let invite = parties
+        .invite(
+            PartyMember {
+                guid: 7,
+                name: "Ada".to_string(),
+            },
+            PartyMember {
+                guid: 10,
+                name: "Dee".to_string(),
+            },
+            SessionId(10),
+        )
+        .await;
+    assert_eq!(invite.result, PartyResult::Ok);
+    let accepted = parties.accept(10).await;
+    assert_eq!(accepted.result, PartyResult::Ok);
+
+    let target_guid = ObjectGuid::new(HighGuid::Player, 0, 8);
+    let mut body = Vec::new();
+    body.extend_from_slice(&21562u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target_guid).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(21562);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 5,
+                level: 48,
+                xp: 0,
+                position: caster_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: caster_world_stats.max_health(),
+            player_mana: 100_000,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &parties,
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16),
+        "Prayer of Fortitude cast should reach SMSG_SPELL_GO; packets={packets:?}"
+    );
+
+    let in_range_party = maps.player_runtime_snapshot(0, 8).await.unwrap();
+    let distant_party = maps.player_runtime_snapshot(0, 9).await.unwrap();
+    let nearby_party = maps.player_runtime_snapshot(0, 10).await.unwrap();
+    let non_party = maps.player_runtime_snapshot(0, 11).await.unwrap();
+    let spell_info = SpellInfo::from_template(&prayer_of_fortitude);
+    let expected_modifiers = spell_aura_stat_modifiers(
+        &spell_info,
+        test_spell_effect_value_context(&prayer_of_fortitude),
+    );
+    let radius = spell_effect_radius_yards(&maps, spell_info.effects[0]).unwrap();
+    assert!(radius > 0.0);
+    assert!(
+        in_range_party.position.distance_to(&distant_party.position) < radius,
+        "live Prayer of Fortitude row should still include the distant party member inside its DBC radius"
+    );
+
+    assert_eq!(in_range_party.active_auras.len(), 1);
+    assert_eq!(in_range_party.active_auras[0].spell_id, 21562);
+    assert_eq!(
+        in_range_party.active_auras[0].stat_modifiers,
+        expected_modifiers
+    );
+    assert_eq!(nearby_party.active_auras.len(), 1);
+    assert_eq!(nearby_party.active_auras[0].spell_id, 21562);
+    assert_eq!(
+        nearby_party.active_auras[0].stat_modifiers,
+        expected_modifiers
+    );
+    assert_eq!(distant_party.active_auras.len(), 1);
+    assert_eq!(distant_party.active_auras[0].spell_id, 21562);
+    assert_eq!(
+        distant_party.active_auras[0].stat_modifiers,
+        expected_modifiers
+    );
+    assert!(non_party.active_auras.is_empty());
+
+    let expected_party_world_stats =
+        player_world_stats_with_active_auras(member_world_stats, &in_range_party.active_auras);
+    assert_eq!(
+        in_range_party.max_health,
+        expected_party_world_stats.max_health()
+    );
+    assert_eq!(
+        nearby_party.max_health,
+        expected_party_world_stats.max_health()
+    );
+    assert_eq!(
+        distant_party.max_health,
+        expected_party_world_stats.max_health()
+    );
+    assert_eq!(non_party.max_health, member_world_stats.max_health());
+    assert_eq!(
+        session.character.player_mana,
+        100_000 - prayer_of_fortitude.mana_cost
+    );
 }
 
 #[tokio::test]
@@ -9050,7 +15747,10 @@ async fn renew_live_rank_one_uses_generic_friendly_periodic_heal_path() {
         .expect("Renew rank 1 should build a periodic regen payload");
     assert_eq!(regen.health_amount, 9);
     assert_eq!(regen.mana_amount, 0);
-    assert_eq!(regen.school_mask, spell_school_mask_from_school(renew.school));
+    assert_eq!(
+        regen.school_mask,
+        spell_school_mask_from_school(renew.school)
+    );
     assert_eq!(regen.tick_millis, renew.effect_amplitude1);
     assert_eq!(aura.duration_millis, Some(15_000));
     assert!(aura.positive);
@@ -9168,14 +15868,19 @@ async fn renew_live_rank_one_applies_periodic_heal_aura_to_friendly_player_targe
         .expect("Renew should apply a periodic heal aura");
     assert_eq!(regen.health_amount, 9);
     assert_eq!(regen.mana_amount, 0);
-    assert_eq!(regen.school_mask, spell_school_mask_from_school(renew.school));
+    assert_eq!(
+        regen.school_mask,
+        spell_school_mask_from_school(renew.school)
+    );
     assert_eq!(regen.tick_millis, renew.effect_amplitude1);
     assert_eq!(session.character.player_mana, 100 - renew.mana_cost);
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
 }
 
 #[tokio::test]
@@ -9215,7 +15920,10 @@ async fn power_word_shield_live_rank_one_uses_generic_friendly_absorb_path() {
         power_word_shield.effect_apply_aura_name1,
         SPELL_AURA_SCHOOL_ABSORB
     );
-    assert_eq!(power_word_shield.effect_implicit_target_a1, TARGET_UNIT_RAID);
+    assert_eq!(
+        power_word_shield.effect_implicit_target_a1,
+        TARGET_UNIT_RAID
+    );
     assert!(
         CMANGOS_SPELL_FIXES_SQL.contains(
             "UPDATE spell_template SET EffectBonusCoefficient1=0.1 WHERE Id IN (17,592,600,3747,6065,6066,10898,10899,10900,10901); -- Power Word: Shield"
@@ -9387,15 +16095,19 @@ async fn power_word_shield_live_rank_one_applies_weakened_soul_and_bounces_recas
         .find(|aura| aura.spell_id == 6788)
         .expect("Weakened Soul aura should remain active on the target");
     assert!(weakened_soul.visible);
-    assert_eq!(session.character.player_mana, 100 - power_word_shield.mana_cost);
+    assert_eq!(
+        session.character.player_mana,
+        100 - power_word_shield.mana_cost
+    );
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
 
-    let profile =
-        player_spell_cast_profile(&power_word_shield).expect("power word shield profile");
+    let profile = player_spell_cast_profile(&power_word_shield).expect("power word shield profile");
     let targets = SpellCastTargets {
         target_mask: SPELL_CAST_TARGET_UNIT,
         unit_target: Some(target_guid),
@@ -9456,7 +16168,10 @@ async fn shadow_word_pain_live_rank_one_uses_generic_hostile_periodic_damage_pat
         shadow_word_pain.effect_apply_aura_name1,
         SPELL_AURA_PERIODIC_DAMAGE
     );
-    assert_eq!(shadow_word_pain.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert_eq!(
+        shadow_word_pain.effect_implicit_target_a1,
+        TARGET_UNIT_ENEMY
+    );
     assert_eq!(shadow_word_pain.effect_amplitude1, 3_000);
     assert_ne!(shadow_word_pain.duration_index, 0);
     assert_eq!(
@@ -9468,8 +16183,7 @@ async fn shadow_word_pain_live_rank_one_uses_generic_hostile_periodic_damage_pat
         SpellMechanicSupport::Implemented
     );
 
-    let profile =
-        player_spell_cast_profile(&shadow_word_pain).expect("shadow word pain profile");
+    let profile = player_spell_cast_profile(&shadow_word_pain).expect("shadow word pain profile");
     assert_eq!(profile.kind, SpellCastKind::AuraApplication);
     assert!(matches!(
         profile.power,
@@ -9595,10 +16309,11 @@ async fn shadow_word_pain_live_rank_one_applies_periodic_damage_to_hostile_creat
     let cast_time_ms =
         spell_cast_time_millis(maps.spell_cast_time(shadow_word_pain.casting_time_index));
     if cast_time_ms > 0 {
-        assert!(maps
-            .next_pending_player_spell_cast_due_at(0, 7)
-            .await
-            .is_some());
+        assert!(
+            maps.next_pending_player_spell_cast_due_at(0, 7)
+                .await
+                .is_some()
+        );
         tokio::time::sleep(Duration::from_millis(u64::from(cast_time_ms) + 50)).await;
         complete_pending_player_spell_cast(
             &mut stream,
@@ -9626,7 +16341,8 @@ async fn shadow_word_pain_live_rank_one_applies_periodic_damage_to_hostile_creat
         .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
         .expect("Shadow Word: Pain should emit SMSG_SPELL_GO on a successful hostile cast");
     let caster_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
-    let (hits, misses) = spell_go_hit_and_miss_targets_from_body(&spell_go.body, caster_guid, caster_guid);
+    let (hits, misses) =
+        spell_go_hit_and_miss_targets_from_body(&spell_go.body, caster_guid, caster_guid);
     assert_eq!(hits, vec![target], "misses={misses:?}");
     assert!(misses.is_empty(), "hits={hits:?} misses={misses:?}");
 
@@ -9889,10 +16605,11 @@ async fn smite_live_rank_one_cast_spends_mana_and_emits_spell_damage_log() {
 
     let cast_time_ms = spell_cast_time_millis(maps.spell_cast_time(smite.casting_time_index));
     if cast_time_ms > 0 {
-        assert!(maps
-            .next_pending_player_spell_cast_due_at(0, 7)
-            .await
-            .is_some());
+        assert!(
+            maps.next_pending_player_spell_cast_due_at(0, 7)
+                .await
+                .is_some()
+        );
         tokio::time::sleep(Duration::from_millis(u64::from(cast_time_ms) + 50)).await;
         complete_pending_player_spell_cast(
             &mut stream,
@@ -9925,7 +16642,8 @@ async fn smite_live_rank_one_cast_spends_mana_and_emits_spell_damage_log() {
         .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
         .expect("Smite should emit SMSG_SPELL_GO on a successful hostile cast");
     let caster_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
-    let (hits, misses) = spell_go_hit_and_miss_targets_from_body(&spell_go.body, caster_guid, caster_guid);
+    let (hits, misses) =
+        spell_go_hit_and_miss_targets_from_body(&spell_go.body, caster_guid, caster_guid);
     assert_eq!(hits, vec![target], "misses={misses:?}");
     assert!(misses.is_empty(), "hits={hits:?} misses={misses:?}");
 
@@ -9943,13 +16661,2387 @@ async fn smite_live_rank_one_cast_spends_mana_and_emits_spell_damage_log() {
         caster_guid
     );
     assert_eq!(read_u32(&spell_damage.body, &mut cursor).unwrap(), 585);
-    assert_eq!(read_u32(&spell_damage.body, &mut cursor).unwrap(), landed_damage);
+    assert_eq!(
+        read_u32(&spell_damage.body, &mut cursor).unwrap(),
+        landed_damage
+    );
     assert_eq!(spell_damage.body[cursor], smite.school as u8);
     assert!(
         !packets
             .iter()
             .any(|packet| packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16),
         "Smite should stay on the spell damage log lane, not melee attacker-state packets"
+    );
+}
+
+#[tokio::test]
+async fn shadow_bolt_live_rank_one_row_uses_generic_hostile_cast_time_damage_path() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let shadow_bolt = wow_db::get_spell_template_query(&spell_db_pool, 686)
+        .await
+        .unwrap()
+        .expect("Shadow Bolt rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 686)
+        .await
+        .unwrap()
+        .expect("Shadow Bolt rank 1 should exist in spell_chain");
+    let max_rank = wow_db::get_spell_chain_query(&spell_db_pool, 25307)
+        .await
+        .unwrap()
+        .expect("Shadow Bolt rank 10 should exist in spell_chain");
+    let starter_spell_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_spell WHERE class = ? AND Spell = ?",
+    )
+    .bind(9u8)
+    .bind(686u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let starter_action_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_action WHERE class = ? AND action = ?",
+    )
+    .bind(9u8)
+    .bind(686u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+
+    assert_eq!(chain.spell_id, 686);
+    assert_eq!(chain.prev_spell, 0);
+    assert_eq!(chain.first_spell, 686);
+    assert_eq!(chain.rank, 1);
+    assert_eq!(max_rank.first_spell, 686);
+    assert_eq!(max_rank.rank, 10);
+    assert!(starter_spell_count > 0);
+    assert!(starter_action_count > 0);
+
+    assert_eq!(shadow_bolt.spell_name, "Shadow Bolt");
+    assert_eq!(shadow_bolt.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(shadow_bolt.spell_level, 1);
+    assert_eq!(shadow_bolt.school, 5);
+    assert_ne!(shadow_bolt.casting_time_index, 0);
+    assert_ne!(shadow_bolt.range_index, 0);
+    assert!(shadow_bolt.speed > 0.0);
+    assert_eq!(shadow_bolt.effect1, SPELL_EFFECT_SCHOOL_DAMAGE);
+    assert_eq!(shadow_bolt.effect2, 0);
+    assert_eq!(shadow_bolt.effect3, 0);
+    assert_eq!(shadow_bolt.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_SCHOOL_DAMAGE),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&shadow_bolt).expect("shadow bolt profile");
+    assert_eq!(profile.kind, SpellCastKind::InstantDamage);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost } if cost == shadow_bolt.mana_cost
+    ));
+    assert!(profile.damage > 0);
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let spell_info = SpellInfo::from_template(&shadow_bolt);
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Shadow Bolt rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(plan.has_hostile_unit_damage());
+    assert!(plan.uses_db_creature_unit_target_outcome());
+    assert_eq!(plan.channel, None);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.target))
+            .collect::<Vec<_>>(),
+        vec![(
+            SpellEffectDispatch::SchoolDamage,
+            SpellPlanEffectTarget::HostileUnit,
+        )]
+    );
+    assert!(spell_template_coverage_issues(&shadow_bolt).is_empty());
+}
+
+#[tokio::test]
+async fn shadow_bolt_live_rank_one_cast_spends_mana_and_emits_spell_damage_log() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let shadow_bolt = wow_db::get_spell_template_query(&spell_db_pool, 686)
+        .await
+        .unwrap()
+        .expect("Shadow Bolt rank 1 should exist in the local spell_template");
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_ranges.insert(
+        shadow_bolt.range_index,
+        SpellRangeEntry {
+            min_range: 0.0,
+            max_range: 30.0,
+            flags: 0,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let mut runtime_shadow_bolt = shadow_bolt.clone();
+    runtime_shadow_bolt.attributes_ex2 |= TEST_SPELL_ATTR_EX2_CANT_CRIT;
+    runtime_shadow_bolt.attributes_ex3 |= TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
+    object_mgr
+        .prime_spell_template_for_test(686, Some(runtime_shadow_bolt))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let caster_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), caster_position);
+    caster.class = 9;
+    caster.level = 1;
+    caster.power1 = 100;
+    caster.max_power1 = 100;
+    maps.add_player(caster).await.unwrap();
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 65;
+    kobold.position_x = -8948.0;
+    kobold.position_y = -130.0;
+    kobold.position_z = 83.5;
+    kobold.template.faction = 17;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&686u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(686);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 1,
+                xp: 0,
+                position: caster_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let cast_time_ms = spell_cast_time_millis(maps.spell_cast_time(shadow_bolt.casting_time_index));
+    if cast_time_ms > 0 {
+        assert!(
+            maps.next_pending_player_spell_cast_due_at(0, 7)
+                .await
+                .is_some()
+        );
+        tokio::time::sleep(Duration::from_millis(u64::from(cast_time_ms) + 50)).await;
+        complete_pending_player_spell_cast(
+            &mut stream,
+            SpellCastDeps {
+                character_db_pool: &spell_db_pool,
+                world_db_pool: &spell_db_pool,
+                account_id: 1,
+                shared_world,
+                parties: &PartyManager::default(),
+            },
+            &mut session,
+            &mut header_crypto,
+        )
+        .await
+        .unwrap();
+    }
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let opcodes = packets
+        .iter()
+        .map(|packet| packet.opcode)
+        .collect::<Vec<_>>();
+    assert!(opcodes.contains(&(WorldOpcode::SmsgCastResult as u16)));
+    let spell_go = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+        .expect("Shadow Bolt should emit SMSG_SPELL_GO on a successful hostile cast");
+    let caster_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let (hits, misses) =
+        spell_go_hit_and_miss_targets_from_body(&spell_go.body, caster_guid, caster_guid);
+    assert_eq!(hits, vec![target], "misses={misses:?}");
+    assert!(misses.is_empty(), "hits={hits:?} misses={misses:?}");
+    assert_eq!(
+        session.character.player_mana,
+        100 - shadow_bolt.mana_cost,
+        "Shadow Bolt should spend mana when the cast completes"
+    );
+    assert_eq!(
+        maps.player_runtime_snapshot(0, 7).await.unwrap().power1,
+        100 - shadow_bolt.mana_cost
+    );
+    assert!(
+        !opcodes.contains(&(WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)),
+        "Shadow Bolt missile damage should wait for projectile impact after SPELL_GO"
+    );
+    assert_eq!(
+        maps.db_creature_snapshot(0, target).await.unwrap().health,
+        120
+    );
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some(),
+        "Shadow Bolt should keep a pending missile-impact event after cast completion"
+    );
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    complete_pending_player_spell_cast(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    let landed_damage = 120 - creature.health;
+    assert!(landed_damage > 0);
+    assert!(creature.active_auras.is_empty());
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let spell_damage = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+        .expect("Shadow Bolt should emit the generic spell damage log");
+    let mut cursor = 0;
+    assert_eq!(
+        read_packed_guid(&spell_damage.body, &mut cursor).unwrap(),
+        target
+    );
+    assert_eq!(
+        read_packed_guid(&spell_damage.body, &mut cursor).unwrap(),
+        caster_guid
+    );
+    assert_eq!(read_u32(&spell_damage.body, &mut cursor).unwrap(), 686);
+    assert_eq!(
+        read_u32(&spell_damage.body, &mut cursor).unwrap(),
+        landed_damage
+    );
+    assert_eq!(spell_damage.body[cursor], shadow_bolt.school as u8);
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16),
+        "Shadow Bolt should stay on the spell damage log lane, not melee attacker-state packets"
+    );
+}
+
+#[tokio::test]
+async fn demon_skin_live_family_uses_generic_self_armor_and_in_combat_regen_auras() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let demon_skin = wow_db::get_spell_template_query(&spell_db_pool, 687)
+        .await
+        .unwrap()
+        .expect("Demon Skin rank 1 should exist in the local spell_template");
+    let rank_two = wow_db::get_spell_template_query(&spell_db_pool, 696)
+        .await
+        .unwrap()
+        .expect("Demon Skin rank 2 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 687)
+        .await
+        .unwrap()
+        .expect("Demon Skin rank 1 should exist in spell_chain");
+    let max_rank = wow_db::get_spell_chain_query(&spell_db_pool, 696)
+        .await
+        .unwrap()
+        .expect("Demon Skin rank 2 should exist in spell_chain");
+    let starter_spell_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_spell WHERE class = ? AND Spell = ?",
+    )
+    .bind(9u8)
+    .bind(687u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let starter_action_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_action WHERE class = ? AND action = ?",
+    )
+    .bind(9u8)
+    .bind(687u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+
+    assert_eq!(chain.spell_id, 687);
+    assert_eq!(chain.prev_spell, 0);
+    assert_eq!(chain.first_spell, 687);
+    assert_eq!(chain.rank, 1);
+    assert_eq!(max_rank.first_spell, 687);
+    assert_eq!(max_rank.rank, 2);
+    assert!(starter_spell_count > 0);
+    assert!(starter_action_count > 0);
+
+    assert_eq!(demon_skin.spell_name, "Demon Skin");
+    assert_eq!(demon_skin.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(demon_skin.spell_level, 1);
+    assert_eq!(rank_two.rank.as_deref(), Some("Rank 2"));
+    assert_eq!(rank_two.spell_level, 10);
+    assert_eq!(demon_skin.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(demon_skin.effect2, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(demon_skin.effect3, 0);
+    assert_eq!(
+        demon_skin.effect_apply_aura_name1,
+        SPELL_AURA_MOD_RESISTANCE
+    );
+    assert_eq!(
+        demon_skin.effect_apply_aura_name2,
+        SPELL_AURA_MOD_HEALTH_REGEN_IN_COMBAT
+    );
+    assert_eq!(demon_skin.effect_implicit_target_a1, TARGET_UNIT_CASTER);
+    assert_eq!(demon_skin.effect_implicit_target_a2, TARGET_UNIT_CASTER);
+    assert_eq!(
+        demon_skin.effect_misc_value1,
+        SPELL_SCHOOL_MASK_NORMAL as i32
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_MOD_RESISTANCE),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_MOD_HEALTH_REGEN_IN_COMBAT),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&demon_skin).expect("demon skin profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost } if cost == demon_skin.mana_cost
+    ));
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let spell_info = SpellInfo::from_template(&demon_skin);
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Demon Skin rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::Caster);
+    assert_eq!(plan.channel, None);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                SpellEffectDispatch::ApplyAura,
+                SPELL_AURA_MOD_RESISTANCE,
+                SpellPlanEffectTarget::Caster,
+            ),
+            (
+                SpellEffectDispatch::ApplyAura,
+                SPELL_AURA_MOD_HEALTH_REGEN_IN_COMBAT,
+                SpellPlanEffectTarget::Caster,
+            ),
+        ]
+    );
+    assert!(spell_template_coverage_issues(&demon_skin).is_empty());
+
+    let aura = build_active_aura(
+        &demon_skin,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        demon_skin.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&demon_skin),
+        Instant::now(),
+        None,
+    );
+    assert!(aura.positive);
+    assert_eq!(aura.periodic_regen, None);
+    assert!(aura.stat_modifiers.iter().any(|modifier| {
+        matches!(
+            modifier,
+            AuraStatModifier::Resistance { school_mask, amount }
+                if *school_mask == SPELL_SCHOOL_MASK_NORMAL && *amount > 0
+        )
+    }));
+    assert!(
+        aura.stat_modifiers
+            .contains(&AuraStatModifier::HealthRegenInCombat { amount: 3 })
+    );
+}
+
+#[tokio::test]
+async fn immolate_live_rank_one_row_uses_generic_hostile_damage_plus_periodic_damage_path() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let immolate = wow_db::get_spell_template_query(&spell_db_pool, 348)
+        .await
+        .unwrap()
+        .expect("Immolate rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 348)
+        .await
+        .unwrap()
+        .expect("Immolate rank 1 should exist in spell_chain");
+    let max_rank = wow_db::get_spell_chain_query(&spell_db_pool, 25309)
+        .await
+        .unwrap()
+        .expect("Immolate rank 8 should exist in spell_chain");
+    let starter_spell_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_spell WHERE class = ? AND Spell = ?",
+    )
+    .bind(9u8)
+    .bind(348u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let starter_action_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_action WHERE class = ? AND action = ?",
+    )
+    .bind(9u8)
+    .bind(348u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let trainer_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer WHERE spell = ?")
+            .bind(348u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+    let trainer_template_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer_template WHERE spell = ?")
+            .bind(348u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+
+    assert_eq!(chain.spell_id, 348);
+    assert_eq!(chain.prev_spell, 0);
+    assert_eq!(chain.first_spell, 348);
+    assert_eq!(chain.rank, 1);
+    assert_eq!(max_rank.first_spell, 348);
+    assert_eq!(max_rank.rank, 8);
+    assert_eq!(starter_spell_count, 0);
+    assert_eq!(starter_action_count, 0);
+    assert_eq!(trainer_count, 0);
+    assert_eq!(trainer_template_count, 0);
+
+    assert_eq!(immolate.spell_name, "Immolate");
+    assert_eq!(immolate.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(immolate.spell_level, 1);
+    assert_eq!(immolate.school, 2);
+    assert_ne!(immolate.casting_time_index, 0);
+    assert_ne!(immolate.duration_index, 0);
+    assert_ne!(immolate.range_index, 0);
+    assert_eq!(immolate.effect3, 0);
+    assert!(
+        [
+            (
+                immolate.effect1,
+                immolate.effect_apply_aura_name1,
+                immolate.effect_implicit_target_a1,
+                immolate.effect_amplitude1,
+            ),
+            (
+                immolate.effect2,
+                immolate.effect_apply_aura_name2,
+                immolate.effect_implicit_target_a2,
+                immolate.effect_amplitude2,
+            ),
+        ]
+        .into_iter()
+        .any(|(effect, aura, target, amplitude)| {
+            effect == SPELL_EFFECT_APPLY_AURA
+                && aura == SPELL_AURA_PERIODIC_DAMAGE
+                && target == TARGET_UNIT_ENEMY
+                && amplitude == 3_000
+        }),
+        "Immolate rank 1 should keep a hostile periodic damage aura in its live row"
+    );
+    assert!(
+        [
+            (immolate.effect1, immolate.effect_implicit_target_a1),
+            (immolate.effect2, immolate.effect_implicit_target_a2),
+        ]
+        .into_iter()
+        .any(|(effect, target)| effect == SPELL_EFFECT_SCHOOL_DAMAGE && target == TARGET_UNIT_ENEMY),
+        "Immolate rank 1 should keep direct spell damage in its live row"
+    );
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_SCHOOL_DAMAGE),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_APPLY_AURA),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_PERIODIC_DAMAGE),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&immolate).expect("immolate profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost } if cost == immolate.mana_cost
+    ));
+    assert!(
+        profile.damage > 0,
+        "Immolate should keep its direct-damage effect on the generic mixed damage+aura lane"
+    );
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let spell_info = SpellInfo::from_template(&immolate);
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Immolate rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(plan.has_hostile_direct_effect());
+    assert!(plan.has_hostile_unit_damage());
+    assert!(plan.uses_db_creature_unit_target_outcome());
+    assert_eq!(plan.channel, None);
+    assert_eq!(plan.effects.len(), 2);
+    assert!(plan.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::SchoolDamage
+            && effect.target == SpellPlanEffectTarget::HostileUnit
+    }));
+    assert!(plan.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::ApplyAura
+            && effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE
+            && effect.target == SpellPlanEffectTarget::HostileUnit
+    }));
+    assert!(spell_template_coverage_issues(&immolate).is_empty());
+
+    let periodic_effect = spell_info
+        .effects
+        .into_iter()
+        .find(|effect| {
+            effect.dispatch == SpellEffectDispatch::ApplyAura
+                && effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE
+        })
+        .expect("Immolate rank 1 should expose a periodic damage aura effect");
+    let aura = build_active_aura(
+        &immolate,
+        ObjectGuid::new(HighGuid::Unit, 0, 45),
+        immolate.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&immolate),
+        Instant::now(),
+        None,
+    );
+    assert!(!aura.positive);
+    let periodic = aura
+        .periodic_damage
+        .as_ref()
+        .expect("Immolate rank 1 should build a periodic damage aura");
+    assert_eq!(periodic.aura_name, SPELL_AURA_PERIODIC_DAMAGE);
+    assert_eq!(periodic.school, immolate.school);
+    assert_eq!(periodic.tick_millis, periodic_effect.amplitude);
+    assert!(periodic.amount > 0);
+}
+
+#[tokio::test]
+async fn immolate_live_rank_one_applies_direct_damage_then_hostile_periodic_damage_aura() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let immolate = wow_db::get_spell_template_query(&spell_db_pool, 348)
+        .await
+        .unwrap()
+        .expect("Immolate rank 1 should exist in the local spell_template");
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_cast_times: load_spell_cast_times(&dbc_dir.join("SpellCastTimes.dbc")),
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let mut runtime_immolate = immolate.clone();
+    runtime_immolate.attributes_ex2 |= TEST_SPELL_ATTR_EX2_CANT_CRIT;
+    runtime_immolate.attributes_ex3 |= TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
+    object_mgr
+        .prime_spell_template_for_test(348, Some(runtime_immolate))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    assert!(
+        maps.spell_cast_time(immolate.casting_time_index).is_some(),
+        "Immolate rank 1 should resolve its DBC cast time"
+    );
+    assert!(
+        maps.spell_duration(immolate.duration_index).is_some(),
+        "Immolate rank 1 should resolve its DBC duration"
+    );
+    assert!(
+        maps.spell_range(immolate.range_index).is_some(),
+        "Immolate rank 1 should resolve its DBC range"
+    );
+
+    let caster_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), caster_position);
+    caster.class = 9;
+    caster.level = 1;
+    caster.power1 = 100;
+    caster.max_power1 = 100;
+    maps.add_player(caster).await.unwrap();
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 65;
+    kobold.position_x = -8948.0;
+    kobold.position_y = -130.0;
+    kobold.position_z = 83.5;
+    kobold.template.faction = 17;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let spell_info = SpellInfo::from_template(&immolate);
+    let periodic_effect = spell_info
+        .effects
+        .into_iter()
+        .find(|effect| {
+            effect.dispatch == SpellEffectDispatch::ApplyAura
+                && effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE
+        })
+        .expect("Immolate rank 1 should expose a periodic damage aura effect");
+    let expected_periodic_damage =
+        spell_effect_calculated_u32(periodic_effect, test_spell_effect_value_context(&immolate))
+            .expect("Immolate should calculate a periodic damage amount");
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&348u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(348);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 1,
+                xp: 0,
+                position: caster_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let cast_time_ms = spell_cast_time_millis(maps.spell_cast_time(immolate.casting_time_index));
+    assert!(cast_time_ms > 0);
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some()
+    );
+    tokio::time::sleep(Duration::from_millis(u64::from(cast_time_ms) + 50)).await;
+    complete_pending_player_spell_cast(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        session.auras.active_auras.is_empty(),
+        "Immolate must not become a player buff"
+    );
+    assert_eq!(session.character.player_mana, 100 - immolate.mana_cost);
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let spell_go = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+        .expect("Immolate should emit SMSG_SPELL_GO on a successful hostile cast");
+    let caster_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let (hits, misses) =
+        spell_go_hit_and_miss_targets_from_body(&spell_go.body, caster_guid, caster_guid);
+    assert_eq!(hits, vec![target], "misses={misses:?}");
+    assert!(misses.is_empty(), "hits={hits:?} misses={misses:?}");
+
+    let spell_damage = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+        .expect("Immolate should emit a direct spell damage log before the DoT aura");
+    let mut cursor = 0;
+    assert_eq!(
+        read_packed_guid(&spell_damage.body, &mut cursor).unwrap(),
+        target
+    );
+    assert_eq!(
+        read_packed_guid(&spell_damage.body, &mut cursor).unwrap(),
+        caster_guid
+    );
+    assert_eq!(read_u32(&spell_damage.body, &mut cursor).unwrap(), 348);
+    let direct_damage = read_u32(&spell_damage.body, &mut cursor).unwrap();
+    assert!(direct_damage > 0);
+    assert_eq!(spell_damage.body[cursor], immolate.school as u8);
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(creature.health, 120 - direct_damage);
+    assert_eq!(creature.active_auras.len(), 1);
+    let aura = &creature.active_auras[0];
+    let periodic = aura
+        .periodic_damage
+        .as_ref()
+        .expect("Immolate should apply a periodic damage aura");
+    assert_eq!(aura.spell_id, 348);
+    assert!(!aura.positive);
+    assert_eq!(
+        aura.duration_millis,
+        maps.spell_duration(immolate.duration_index)
+            .map(|duration| duration.duration_millis as u32)
+    );
+    assert_eq!(periodic.aura_name, SPELL_AURA_PERIODIC_DAMAGE);
+    assert_eq!(periodic.school, immolate.school);
+    assert_eq!(periodic.amount, expected_periodic_damage);
+    assert_eq!(periodic.tick_millis, periodic_effect.amplitude);
+
+    let aura_update = packets
+        .iter()
+        .find(|packet| {
+            packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+                && packet
+                    .body
+                    .windows(4)
+                    .any(|window| window == 348u32.to_le_bytes().as_slice())
+        })
+        .expect("Immolate should update the creature debuff aura slot");
+    let (values, trailing) = decode_values_update_block(&aura_update.body[5..], target);
+    assert!(trailing.is_empty());
+    let debuff_slot = MAX_POSITIVE_AURA_SLOTS;
+    assert_eq!(values[UNIT_FIELD_AURA + debuff_slot], Some(348));
+    assert_eq!(
+        values[UNIT_FIELD_AURAFLAGS + (debuff_slot / 8)],
+        Some(NEGATIVE_AURA_FLAGS)
+    );
+    assert_eq!(values[UNIT_FIELD_AURALEVELS + (debuff_slot / 4)], Some(1));
+
+    let tick_at = periodic.next_tick_at;
+    let tick_packets = maps
+        .advance_all_db_creature_auras(tick_at, 1_000)
+        .await
+        .unwrap();
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(
+        creature.health,
+        120 - direct_damage - expected_periodic_damage
+    );
+    let periodic_log = tick_packets
+        .iter()
+        .find(|(_, packet)| packet.opcode == WorldOpcode::SmsgPeriodicAuraLog as u16)
+        .expect("Immolate tick should broadcast a periodic aura log");
+    let mut cursor = PackedGuid::packed_size(target) + PackedGuid::packed_size(aura.caster);
+    assert_eq!(read_u32(&periodic_log.1.body, &mut cursor).unwrap(), 348);
+    assert_eq!(read_u32(&periodic_log.1.body, &mut cursor).unwrap(), 1);
+    assert_eq!(
+        read_u32(&periodic_log.1.body, &mut cursor).unwrap(),
+        SPELL_AURA_PERIODIC_DAMAGE
+    );
+    assert_eq!(
+        read_u32(&periodic_log.1.body, &mut cursor).unwrap(),
+        expected_periodic_damage
+    );
+    assert_eq!(
+        read_u32(&periodic_log.1.body, &mut cursor).unwrap(),
+        immolate.school
+    );
+}
+
+#[tokio::test]
+async fn corruption_live_rank_one_row_uses_generic_hostile_periodic_damage_path() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let corruption = wow_db::get_spell_template_query(&spell_db_pool, 172)
+        .await
+        .unwrap()
+        .expect("Corruption rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 172)
+        .await
+        .unwrap()
+        .expect("Corruption rank 1 should exist in spell_chain");
+    let max_rank = wow_db::get_spell_chain_query(&spell_db_pool, 25311)
+        .await
+        .unwrap()
+        .expect("Corruption rank 7 should exist in spell_chain");
+    let starter_spell_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_spell WHERE class = ? AND Spell = ?",
+    )
+    .bind(9u8)
+    .bind(172u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let starter_action_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_action WHERE class = ? AND action = ?",
+    )
+    .bind(9u8)
+    .bind(172u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let trainer_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer WHERE spell = ?")
+            .bind(172u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+    let trainer_template_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer_template WHERE spell = ?")
+            .bind(172u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+
+    assert_eq!(chain.spell_id, 172);
+    assert_eq!(chain.prev_spell, 0);
+    assert_eq!(chain.first_spell, 172);
+    assert_eq!(chain.rank, 1);
+    assert_eq!(max_rank.first_spell, 172);
+    assert_eq!(max_rank.rank, 7);
+    assert_eq!(starter_spell_count, 0);
+    assert_eq!(starter_action_count, 0);
+    assert_eq!(trainer_count, 0);
+    assert_eq!(trainer_template_count, 0);
+
+    assert_eq!(corruption.spell_name, "Corruption");
+    assert_eq!(corruption.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(corruption.spell_level, 4);
+    assert_eq!(corruption.school, 5);
+    assert_ne!(corruption.duration_index, 0);
+    assert_ne!(corruption.range_index, 0);
+    assert_eq!(corruption.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(corruption.effect2, 0);
+    assert_eq!(corruption.effect3, 0);
+    assert_eq!(
+        corruption.effect_apply_aura_name1,
+        SPELL_AURA_PERIODIC_DAMAGE
+    );
+    assert_eq!(corruption.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert_eq!(corruption.effect_amplitude1, 3_000);
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_APPLY_AURA),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_PERIODIC_DAMAGE),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&corruption).expect("corruption profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost } if cost == corruption.mana_cost
+    ));
+    assert_eq!(profile.damage, 0);
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let spell_info = SpellInfo::from_template(&corruption);
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Corruption rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(!plan.has_hostile_direct_effect());
+    assert!(!plan.has_hostile_unit_damage());
+    assert!(plan.uses_db_creature_unit_target_outcome());
+    assert_eq!(plan.channel, None);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![(
+            SpellEffectDispatch::ApplyAura,
+            SPELL_AURA_PERIODIC_DAMAGE,
+            SpellPlanEffectTarget::HostileUnit,
+        )]
+    );
+    assert!(spell_template_coverage_issues(&corruption).is_empty());
+
+    let aura = build_active_aura(
+        &corruption,
+        ObjectGuid::new(HighGuid::Unit, 0, 45),
+        corruption.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&corruption),
+        Instant::now(),
+        None,
+    );
+    assert!(!aura.positive);
+    let periodic = aura
+        .periodic_damage
+        .as_ref()
+        .expect("Corruption rank 1 should build a periodic damage aura");
+    assert_eq!(periodic.aura_name, SPELL_AURA_PERIODIC_DAMAGE);
+    assert_eq!(periodic.school, corruption.school);
+    assert_eq!(periodic.tick_millis, corruption.effect_amplitude1);
+    assert!(periodic.amount > 0);
+}
+
+#[tokio::test]
+async fn corruption_live_rank_one_applies_hostile_periodic_damage_aura() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let corruption = wow_db::get_spell_template_query(&spell_db_pool, 172)
+        .await
+        .unwrap()
+        .expect("Corruption rank 1 should exist in the local spell_template");
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let mut runtime_corruption = corruption.clone();
+    runtime_corruption.attributes_ex2 |= TEST_SPELL_ATTR_EX2_CANT_CRIT;
+    runtime_corruption.attributes_ex3 |= TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
+    object_mgr
+        .prime_spell_template_for_test(172, Some(runtime_corruption))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    assert!(
+        maps.spell_duration(corruption.duration_index).is_some(),
+        "Corruption rank 1 should resolve its DBC duration"
+    );
+    assert!(
+        maps.spell_range(corruption.range_index).is_some(),
+        "Corruption rank 1 should resolve its DBC range"
+    );
+
+    let caster_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), caster_position);
+    caster.class = 9;
+    caster.level = 4;
+    caster.power1 = 100;
+    caster.max_power1 = 100;
+    maps.add_player(caster).await.unwrap();
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 65;
+    kobold.position_x = -8948.0;
+    kobold.position_y = -130.0;
+    kobold.position_z = 83.5;
+    kobold.template.faction = 17;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let expected_aura = build_active_aura(
+        &corruption,
+        target,
+        corruption.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&corruption),
+        Instant::now(),
+        None,
+    );
+    let expected_periodic_damage = expected_aura
+        .periodic_damage
+        .as_ref()
+        .expect("Corruption should build a periodic damage aura")
+        .amount;
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&172u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(172);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 4,
+                xp: 0,
+                position: caster_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        session.auras.active_auras.is_empty(),
+        "Corruption must not become a player buff"
+    );
+    assert_eq!(session.character.player_mana, 100 - corruption.mana_cost);
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let opcodes = packets
+        .iter()
+        .map(|packet| packet.opcode)
+        .collect::<Vec<_>>();
+    assert!(opcodes.contains(&(WorldOpcode::SmsgCastResult as u16)));
+    let spell_go = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+        .expect("Corruption should emit SMSG_SPELL_GO on a successful hostile cast");
+    let caster_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let (hits, misses) =
+        spell_go_hit_and_miss_targets_from_body(&spell_go.body, caster_guid, caster_guid);
+    assert_eq!(hits, vec![target], "misses={misses:?}");
+    assert!(misses.is_empty(), "hits={hits:?} misses={misses:?}");
+    assert!(
+        !opcodes.contains(&(WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)),
+        "Corruption should not emit an immediate direct spell damage log"
+    );
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(creature.health, 120);
+    assert_eq!(creature.active_auras.len(), 1);
+    let aura = &creature.active_auras[0];
+    let periodic = aura
+        .periodic_damage
+        .as_ref()
+        .expect("Corruption should apply a periodic damage aura");
+    assert_eq!(aura.spell_id, 172);
+    assert!(!aura.positive);
+    assert_eq!(
+        aura.duration_millis,
+        maps.spell_duration(corruption.duration_index)
+            .map(|duration| duration.duration_millis as u32)
+    );
+    assert_eq!(periodic.aura_name, SPELL_AURA_PERIODIC_DAMAGE);
+    assert_eq!(periodic.school, corruption.school);
+    assert_eq!(periodic.amount, expected_periodic_damage);
+    assert_eq!(periodic.tick_millis, corruption.effect_amplitude1);
+
+    let aura_update = packets
+        .iter()
+        .find(|packet| {
+            packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+                && packet
+                    .body
+                    .windows(4)
+                    .any(|window| window == 172u32.to_le_bytes().as_slice())
+        })
+        .expect("Corruption should update the creature debuff aura slot");
+    let (values, trailing) = decode_values_update_block(&aura_update.body[5..], target);
+    assert!(trailing.is_empty());
+    let debuff_slot = MAX_POSITIVE_AURA_SLOTS;
+    assert_eq!(values[UNIT_FIELD_AURA + debuff_slot], Some(172));
+    assert_eq!(
+        values[UNIT_FIELD_AURAFLAGS + (debuff_slot / 8)],
+        Some(NEGATIVE_AURA_FLAGS)
+    );
+    assert_eq!(values[UNIT_FIELD_AURALEVELS + (debuff_slot / 4)], Some(4));
+
+    let tick_at = periodic.next_tick_at;
+    let tick_packets = maps
+        .advance_all_db_creature_auras(tick_at, 1_000)
+        .await
+        .unwrap();
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(creature.health, 120 - expected_periodic_damage);
+    let periodic_log = tick_packets
+        .iter()
+        .find(|(_, packet)| packet.opcode == WorldOpcode::SmsgPeriodicAuraLog as u16)
+        .expect("Corruption tick should broadcast a periodic aura log");
+    let mut cursor = PackedGuid::packed_size(target) + PackedGuid::packed_size(aura.caster);
+    assert_eq!(read_u32(&periodic_log.1.body, &mut cursor).unwrap(), 172);
+    assert_eq!(read_u32(&periodic_log.1.body, &mut cursor).unwrap(), 1);
+    assert_eq!(
+        read_u32(&periodic_log.1.body, &mut cursor).unwrap(),
+        SPELL_AURA_PERIODIC_DAMAGE
+    );
+    assert_eq!(
+        read_u32(&periodic_log.1.body, &mut cursor).unwrap(),
+        expected_periodic_damage
+    );
+    assert_eq!(
+        read_u32(&periodic_log.1.body, &mut cursor).unwrap(),
+        corruption.school
+    );
+    assert_eq!(read_u32(&periodic_log.1.body, &mut cursor).unwrap(), 0);
+    assert_eq!(
+        i32::from_le_bytes(periodic_log.1.body[cursor..cursor + 4].try_into().unwrap()),
+        0
+    );
+}
+
+#[test]
+fn cmangos_spell_scripts_route_registered_dummy_effects_to_spellscript_dispatch() {
+    let mut life_tap = test_spell_template(1454);
+    life_tap.spell_name = "Life Tap".to_string();
+    life_tap.effect1 = SPELL_EFFECT_DUMMY;
+    life_tap.effect_base_points1 = 20;
+    life_tap.effect_implicit_target_a1 = TARGET_UNIT_CASTER;
+    life_tap.spell_family_name = SPELL_FAMILY_WARLOCK;
+
+    assert_eq!(
+        spell_script_for_name("spell_life_tap"),
+        Some(SpellScriptId::WarlockLifeTap)
+    );
+    assert_eq!(
+        spell_script_for_spell_id(life_tap.id),
+        Some(SpellScriptId::WarlockLifeTap)
+    );
+
+    let spell_info = SpellInfo::from_template(&life_tap);
+    assert_eq!(
+        spell_info.effects[0].dispatch,
+        SpellEffectDispatch::SpellScript
+    );
+    assert_eq!(spell_template_coverage_issues(&life_tap), Vec::new());
+
+    let profile = player_spell_cast_profile(&life_tap).expect("scripted spell profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert_eq!(profile.aura_target, SpellAuraTarget::Caster);
+}
+
+#[test]
+fn cmangos_aura_scripts_route_periodic_amount_hooks_by_registered_spell() {
+    assert_eq!(
+        aura_script_for_name("spell_curse_of_agony"),
+        Some(AuraScriptId::WarlockCurseOfAgony)
+    );
+    assert_eq!(
+        aura_script_for_spell_id(980),
+        Some(AuraScriptId::WarlockCurseOfAgony)
+    );
+
+    let script = AuraScriptId::WarlockCurseOfAgony;
+    assert_eq!(
+        aura_script_periodic_amount(script, 10, AuraPeriodicAmountContext { tick_number: 4 }),
+        5
+    );
+    assert_eq!(
+        aura_script_periodic_amount(script, 10, AuraPeriodicAmountContext { tick_number: 8 }),
+        10
+    );
+    assert_eq!(
+        aura_script_periodic_amount(script, 10, AuraPeriodicAmountContext { tick_number: 9 }),
+        15
+    );
+}
+
+#[test]
+fn cmangos_life_tap_spellscript_checks_health_and_builds_mana_action() {
+    let mut life_tap = test_spell_template(1454);
+    life_tap.spell_name = "Life Tap".to_string();
+    life_tap.effect1 = SPELL_EFFECT_DUMMY;
+    life_tap.effect_base_points1 = 20;
+    life_tap.effect_implicit_target_a1 = TARGET_UNIT_CASTER;
+    life_tap.spell_family_name = SPELL_FAMILY_WARLOCK;
+
+    let profile = player_spell_cast_profile(&life_tap).expect("scripted spell profile");
+    let targets = SpellCastTargets::empty();
+    let active_auras = Vec::new();
+    let context = SpellScriptCastContext {
+        spell_template: &life_tap,
+        spell_profile: &profile,
+        targets: &targets,
+        active_auras: &active_auras,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 1),
+        character_guid: 1,
+        map_id: 0,
+        caster_health: 21,
+        caster_mana: 0,
+        now: Instant::now(),
+    };
+    let script = SpellScriptId::WarlockLifeTap;
+
+    assert_eq!(spell_script_on_init(script, context).power, None);
+    assert_eq!(spell_script_on_check_cast(script, context, true), None);
+    assert_eq!(
+        spell_script_on_check_cast(
+            script,
+            SpellScriptCastContext {
+                caster_health: 20,
+                ..context
+            },
+            true,
+        ),
+        Some(SPELL_FAILED_FIZZLE)
+    );
+    spell_script_on_successful_start(script, context);
+    spell_script_on_cast(script, context);
+    spell_script_on_hit(script, context, None);
+    spell_script_on_after_hit(script, context);
+    assert_eq!(spell_script_on_successful_finish(script, context), None);
+
+    let effect = SpellInfo::from_template(&life_tap).effects[0];
+    assert_eq!(
+        spell_script_on_effect_execute(
+            script,
+            SpellScriptEffectContext {
+                cast: context,
+                effect_index: 0,
+                effect,
+            },
+        ),
+        SpellScriptEffectResult {
+            handled: true,
+            action: Some(SpellScriptEffectAction::LifeTap {
+                health_cost: 21,
+                mana_spell_id: 31_818,
+                mana_amount: 21,
+            }),
+        }
+    );
+}
+
+#[tokio::test]
+async fn drain_soul_live_rank_one_uses_generic_channel_death_item_aura_lane() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let drain_soul = wow_db::get_spell_template_query(&spell_db_pool, 1120)
+        .await
+        .unwrap()
+        .expect("Drain Soul rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 1120)
+        .await
+        .unwrap()
+        .expect("Drain Soul rank 1 should exist in spell_chain");
+    let max_rank = wow_db::get_spell_chain_query(&spell_db_pool, 11675)
+        .await
+        .unwrap()
+        .expect("Drain Soul rank 4 should exist in spell_chain");
+    let starter_spell_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_spell WHERE class = ? AND Spell = ?",
+    )
+    .bind(9u8)
+    .bind(1120u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let starter_action_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_action WHERE class = ? AND action = ?",
+    )
+    .bind(9u8)
+    .bind(1120u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let trainer_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer WHERE spell = ?")
+            .bind(1120u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+    let trainer_template_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer_template WHERE spell = ?")
+            .bind(1120u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+
+    assert_eq!(chain.spell_id, 1120);
+    assert_eq!(chain.prev_spell, 0);
+    assert_eq!(chain.first_spell, 1120);
+    assert_eq!(chain.rank, 1);
+    assert_eq!(max_rank.first_spell, 1120);
+    assert_eq!(max_rank.rank, 4);
+    assert_eq!(starter_spell_count, 0);
+    assert_eq!(starter_action_count, 0);
+    assert_eq!(trainer_count, 0);
+    assert_eq!(trainer_template_count, 0);
+
+    assert_eq!(drain_soul.spell_name, "Drain Soul");
+    assert_eq!(drain_soul.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(drain_soul.spell_level, 10);
+    assert_eq!(drain_soul.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(
+        drain_soul.effect_apply_aura_name1,
+        SPELL_AURA_CHANNEL_DEATH_ITEM
+    );
+    assert_eq!(drain_soul.effect_item_type1, 6265);
+    assert_eq!(drain_soul.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert_eq!(drain_soul.spell_family_name, SPELL_FAMILY_WARLOCK);
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_CHANNEL_DEATH_ITEM),
+        SpellMechanicSupport::Implemented
+    );
+    let plan = SpellInfo::from_template(&drain_soul)
+        .player_spell_plan()
+        .expect("Drain Soul rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert_eq!(
+        plan.channel,
+        Some(SpellPlanChannel::UnitAura {
+            duration_index: drain_soul.duration_index,
+            interrupt_flags: drain_soul.channel_interrupt_flags,
+        })
+    );
+
+    let effects = channel_death_item_spell_effects(
+        &SpellInfo::from_template(&drain_soul),
+        test_spell_effect_value_context(&drain_soul),
+    );
+    assert_eq!(
+        effects,
+        vec![ChannelDeathItemSpellEffect {
+            item_template: 6265,
+            requested_count: 1,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn drain_soul_channel_death_item_awards_one_soul_shard_for_duplicate_same_caster_auras() {
+    let _guard = conjure_item_db_test_lock().lock().await;
+    let character_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/characters").unwrap();
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let account_id = 905_600u32;
+    let created = wow_db::create_character(
+        &character_db_pool,
+        &world_db_pool,
+        wow_db::NewCharacter {
+            account_id,
+            name: "Ds5600Ok".to_string(),
+            race: 1,
+            class: 9,
+            gender: 0,
+            skin: 0,
+            face: 0,
+            hair_style: 0,
+            hair_color: 0,
+            facial_hair: 0,
+        },
+    )
+    .await
+    .unwrap();
+
+    let test_result: anyhow::Result<_> = async {
+        let inventory_before =
+            wow_db::get_character_inventory_items(&character_db_pool, created.guid).await?;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut stream = WorldPacketSink::new(tx);
+        let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+        let maps = Arc::new(MapRuntimeManager::default());
+        let sessions = Arc::new(SessionRegistry::default());
+        let object_mgr = ObjectMgr::default();
+        let shared_world = SharedWorldDeps {
+            object_mgr: &object_mgr,
+            maps: &maps,
+            sessions: &sessions,
+        };
+        let mut player = test_player_runtime(created.guid, SessionId::next(), created.position);
+        player.class = 9;
+        player.level = 10;
+        player.inventory = inventory_before.clone();
+        maps.add_player(player).await.unwrap();
+
+        let aura = ActiveAura {
+            spell_id: 1120,
+            caster: ObjectGuid::new(HighGuid::Player, 0, created.guid),
+            level: 10,
+            interrupt_flags: 0,
+            positive: false,
+            visible: true,
+            duration_millis: Some(15_000),
+            expires_at: Some(Instant::now() + Duration::from_secs(15)),
+            periodic_damage: None,
+            periodic_regen: None,
+            stat_modifiers: Vec::new(),
+            proc_triggers: Vec::new(),
+        };
+        let mut creature = DbCreatureRuntime::new(test_creature_spawn(6));
+        creature.spawn.guid = 905_600;
+        creature.spawn.template.faction = 17;
+        creature.spawn.template.min_level = 10;
+        creature.spawn.template.max_level = 10;
+        creature.loot_owner = Some(CreatureLootOwner::Player(created.guid));
+        creature.active_auras = vec![aura.clone(), aura];
+
+        let mut session = WorldSessionState {
+            character: CharacterSessionState {
+                active_character: Some(ActiveCharacter {
+                    guid: created.guid,
+                    name: created.name.clone(),
+                    race: created.race,
+                    class: created.class,
+                    level: 10,
+                    xp: 0,
+                    position: created.position,
+                    movement_flags: 0,
+                    client_time: 0,
+                    fall_time: 0,
+                    jump: JumpInfo::default(),
+                }),
+                ..CharacterSessionState::default()
+            },
+            movement: MovementSessionState {
+                db_creature_navigation: DbCreatureNavigationGuardrail {
+                    world_data_files: WorldDataFiles::fallback().into(),
+                    ..DbCreatureNavigationGuardrail::default()
+                },
+                ..MovementSessionState::default()
+            },
+            ..WorldSessionState::default()
+        };
+        session.inventory.items = inventory_before.clone();
+
+        award_channel_death_items_for_db_creature_kill(
+            &mut stream,
+            CombatRewardDeps {
+                character_db_pool: &character_db_pool,
+                world_db_pool: &world_db_pool,
+                shared_world,
+                parties: &PartyManager::default(),
+            },
+            &mut session,
+            &creature,
+            &mut header_crypto,
+        )
+        .await?;
+
+        let inventory_after =
+            wow_db::get_character_inventory_items(&character_db_pool, created.guid).await?;
+        let snapshot_after = maps
+            .player_runtime_snapshot(created.position.map_id, created.guid)
+            .await;
+        let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        Ok((
+            inventory_after,
+            session.inventory.items.clone(),
+            snapshot_after,
+            packets,
+        ))
+    }
+    .await;
+
+    let _ = wow_db::delete_character(&character_db_pool, account_id, created.guid).await;
+
+    let (inventory_after, session_inventory, snapshot_after, packets) = test_result.unwrap();
+    let shard_count = inventory_after
+        .iter()
+        .filter(|item| item.item_template == 6265)
+        .map(|item| item.count)
+        .sum::<u32>();
+    assert_eq!(shard_count, 1);
+    assert!(
+        session_inventory
+            .iter()
+            .any(|item| item.item_template == 6265 && item.count == 1)
+    );
+    let snapshot_after = snapshot_after.expect("player snapshot after shard reward");
+    assert!(
+        snapshot_after
+            .inventory
+            .iter()
+            .any(|item| item.item_template == 6265 && item.count == 1)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgItemPushResult as u16)
+    );
+}
+
+#[tokio::test]
+async fn life_tap_spellscript_cast_spends_health_and_restores_mana() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+
+    let mut life_tap = test_spell_template(1454);
+    life_tap.spell_name = "Life Tap".to_string();
+    life_tap.effect1 = SPELL_EFFECT_DUMMY;
+    life_tap.effect_base_points1 = 20;
+    life_tap.effect_implicit_target_a1 = TARGET_UNIT_CASTER;
+    life_tap.spell_family_name = SPELL_FAMILY_WARLOCK;
+    object_mgr
+        .prime_spell_template_for_test(1454, Some(life_tap))
+        .await;
+
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), position);
+    player.class = 9;
+    player.level = 6;
+    player.health = 100;
+    player.max_health = 100;
+    player.power1 = 10;
+    player.max_power1 = 100;
+    maps.add_player(player).await.unwrap();
+
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let mut active_spells = HashSet::new();
+    active_spells.insert(1454);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 6,
+                xp: 0,
+                position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_health: 100,
+            player_mana: 10,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&1454u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 7,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(session.character.player_health, 79);
+    assert_eq!(session.character.player_mana, 31);
+    let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
+    assert_eq!(snapshot.health, 79);
+    assert_eq!(snapshot.power1, 31);
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let energize = packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgSpellEnergizeLog as u16)
+        .expect("Life Tap should log its triggered mana gain");
+    let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let mut cursor = 0;
+    assert_eq!(
+        read_packed_guid(&energize.body, &mut cursor).unwrap(),
+        caster
+    );
+    assert_eq!(
+        read_packed_guid(&energize.body, &mut cursor).unwrap(),
+        caster
+    );
+    assert_eq!(read_u32(&energize.body, &mut cursor).unwrap(), 31_818);
+    assert_eq!(
+        read_u32(&energize.body, &mut cursor).unwrap(),
+        POWER_TYPE_MANA
+    );
+    assert_eq!(read_u32(&energize.body, &mut cursor).unwrap(), 21);
+}
+
+#[test]
+fn cmangos_aurascript_hooks_default_to_noop_except_periodic_amount() {
+    let script = AuraScriptId::WarlockCurseOfAgony;
+    let mut curse_of_agony = test_spell_template(980);
+    curse_of_agony.spell_name = "Curse of Agony".to_string();
+    curse_of_agony.school = 5;
+    curse_of_agony.effect1 = SPELL_EFFECT_APPLY_AURA;
+    curse_of_agony.effect_apply_aura_name1 = SPELL_AURA_PERIODIC_DAMAGE;
+    curse_of_agony.effect_base_points1 = 3;
+    curse_of_agony.effect_amplitude1 = 2_000;
+    curse_of_agony.effect_implicit_target_a1 = TARGET_UNIT_ENEMY;
+    curse_of_agony.spell_family_name = SPELL_FAMILY_WARLOCK;
+
+    let aura = build_active_aura(
+        &curse_of_agony,
+        ObjectGuid::new(HighGuid::Player, 0, 1),
+        8,
+        test_spell_effect_value_context(&curse_of_agony),
+        Instant::now(),
+        None,
+    );
+    let apply_context = AuraScriptApplyContext {
+        aura: &aura,
+        apply: true,
+    };
+    let proc_context = AuraScriptProcContext {
+        proc_flags: PROC_FLAG_TAKE_MELEE_SWING,
+        proc_ex: 0,
+    };
+
+    aura_script_on_holder_init(script, apply_context);
+    aura_script_on_aura_init(script, &aura);
+    assert_eq!(
+        aura_script_duration(
+            script,
+            24_000,
+            AuraScriptDurationContext {
+                caster: aura.caster,
+                level: aura.level,
+            },
+        ),
+        24_000
+    );
+    aura_script_on_apply(script, apply_context);
+    aura_script_on_after_apply(script, apply_context);
+    aura_script_on_periodic_trigger(script, &aura);
+    aura_script_on_periodic_dummy(script, &aura);
+    aura_script_on_periodic_tick_end(script, &aura);
+    aura_script_on_heartbeat(script, &aura);
+    assert!(aura_script_on_check_proc(script, &aura, proc_context));
+    assert_eq!(
+        aura_script_on_proc(script, &aura, proc_context),
+        AuraScriptProcResult::Continue
+    );
+    assert_eq!(
+        aura_script_periodic_amount(script, 10, AuraPeriodicAmountContext { tick_number: 9 }),
+        15
+    );
+}
+
+#[tokio::test]
+async fn curse_of_agony_live_rank_one_uses_generic_ramping_periodic_damage_path() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let curse_of_agony = wow_db::get_spell_template_query(&spell_db_pool, 980)
+        .await
+        .unwrap()
+        .expect("Curse of Agony rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&spell_db_pool, 980)
+        .await
+        .unwrap()
+        .expect("Curse of Agony rank 1 should exist in spell_chain");
+    let max_rank = wow_db::get_spell_chain_query(&spell_db_pool, 11713)
+        .await
+        .unwrap()
+        .expect("Curse of Agony rank 6 should exist in spell_chain");
+    let starter_spell_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_spell WHERE class = ? AND Spell = ?",
+    )
+    .bind(9u8)
+    .bind(980u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let starter_action_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM playercreateinfo_action WHERE class = ? AND action = ?",
+    )
+    .bind(9u8)
+    .bind(980u32)
+    .fetch_one(&spell_db_pool)
+    .await
+    .unwrap();
+    let trainer_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer WHERE spell = ?")
+            .bind(980u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+    let trainer_template_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM npc_trainer_template WHERE spell = ?")
+            .bind(980u32)
+            .fetch_one(&spell_db_pool)
+            .await
+            .unwrap();
+
+    assert_eq!(chain.spell_id, 980);
+    assert_eq!(chain.prev_spell, 0);
+    assert_eq!(chain.first_spell, 980);
+    assert_eq!(chain.rank, 1);
+    assert_eq!(max_rank.first_spell, 980);
+    assert_eq!(max_rank.rank, 6);
+    assert_eq!(starter_spell_count, 0);
+    assert_eq!(starter_action_count, 0);
+    assert_eq!(trainer_count, 0);
+    assert_eq!(trainer_template_count, 0);
+
+    assert_eq!(curse_of_agony.spell_name, "Curse of Agony");
+    assert_eq!(curse_of_agony.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(curse_of_agony.spell_level, 8);
+    assert_eq!(curse_of_agony.school, 5);
+    assert_ne!(curse_of_agony.duration_index, 0);
+    assert_ne!(curse_of_agony.range_index, 0);
+    assert_eq!(curse_of_agony.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(curse_of_agony.effect2, 0);
+    assert_eq!(curse_of_agony.effect3, 0);
+    assert_eq!(
+        curse_of_agony.effect_apply_aura_name1,
+        SPELL_AURA_PERIODIC_DAMAGE
+    );
+    assert_eq!(curse_of_agony.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
+    assert_eq!(curse_of_agony.effect_amplitude1, 2_000);
+    assert_eq!(curse_of_agony.spell_family_name, SPELL_FAMILY_WARLOCK);
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_APPLY_AURA),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_PERIODIC_DAMAGE),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&curse_of_agony).expect("curse of agony profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost } if cost == curse_of_agony.mana_cost
+    ));
+    assert_eq!(profile.damage, 0);
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let spell_info = SpellInfo::from_template(&curse_of_agony);
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Curse of Agony rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+    assert!(!plan.has_hostile_direct_effect());
+    assert!(!plan.has_hostile_unit_damage());
+    assert!(plan.uses_db_creature_unit_target_outcome());
+    assert_eq!(plan.channel, None);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| (effect.dispatch, effect.aura_name, effect.target))
+            .collect::<Vec<_>>(),
+        vec![(
+            SpellEffectDispatch::ApplyAura,
+            SPELL_AURA_PERIODIC_DAMAGE,
+            SpellPlanEffectTarget::HostileUnit,
+        )]
+    );
+    assert!(spell_template_coverage_issues(&curse_of_agony).is_empty());
+
+    let aura = build_active_aura(
+        &curse_of_agony,
+        ObjectGuid::new(HighGuid::Unit, 0, 45),
+        curse_of_agony.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&curse_of_agony),
+        Instant::now(),
+        None,
+    );
+    assert!(!aura.positive);
+    let periodic = aura
+        .periodic_damage
+        .as_ref()
+        .expect("Curse of Agony rank 1 should build a periodic damage aura");
+    assert_eq!(periodic.aura_name, SPELL_AURA_PERIODIC_DAMAGE);
+    assert_eq!(periodic.school, curse_of_agony.school);
+    assert_eq!(periodic.tick_millis, curse_of_agony.effect_amplitude1);
+    assert_eq!(
+        periodic.profile,
+        PeriodicDamageProfile::AuraScript(AuraScriptId::WarlockCurseOfAgony)
+    );
+    assert!(periodic.amount > 0);
+}
+
+#[tokio::test]
+async fn curse_of_agony_live_rank_one_applies_ramping_periodic_damage_ticks() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let curse_of_agony = wow_db::get_spell_template_query(&spell_db_pool, 980)
+        .await
+        .unwrap()
+        .expect("Curse of Agony rank 1 should exist in the local spell_template");
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let mut runtime_curse = curse_of_agony.clone();
+    runtime_curse.attributes_ex2 |= TEST_SPELL_ATTR_EX2_CANT_CRIT;
+    runtime_curse.attributes_ex3 |= TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
+    object_mgr
+        .prime_spell_template_for_test(980, Some(runtime_curse))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    assert!(
+        maps.spell_duration(curse_of_agony.duration_index).is_some(),
+        "Curse of Agony rank 1 should resolve its DBC duration"
+    );
+    assert!(
+        maps.spell_range(curse_of_agony.range_index).is_some(),
+        "Curse of Agony rank 1 should resolve its DBC range"
+    );
+
+    let caster_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), caster_position);
+    caster.class = 9;
+    caster.level = 8;
+    caster.power1 = 100;
+    caster.max_power1 = 100;
+    maps.add_player(caster).await.unwrap();
+
+    let mut kobold = test_creature_spawn(6);
+    kobold.guid = 65;
+    kobold.position_x = -8948.0;
+    kobold.position_y = -130.0;
+    kobold.position_z = 83.5;
+    kobold.template.faction = 17;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
+
+    let expected_aura = build_active_aura(
+        &curse_of_agony,
+        target,
+        curse_of_agony.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&curse_of_agony),
+        Instant::now(),
+        None,
+    );
+    let expected_periodic = expected_aura
+        .periodic_damage
+        .as_ref()
+        .expect("Curse of Agony should build a periodic damage aura");
+    let base_tick = expected_periodic.amount;
+    let early_tick = base_tick / 2;
+    let middle_tick = base_tick;
+    let late_tick = base_tick + base_tick.div_ceil(2);
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&980u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(980);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 8,
+                xp: 0,
+                position: caster_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &spell_db_pool,
+            world_db_pool: &spell_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert!(session.auras.active_auras.is_empty());
+    assert_eq!(
+        session.character.player_mana,
+        100 - curse_of_agony.mana_cost
+    );
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let opcodes = packets
+        .iter()
+        .map(|packet| packet.opcode)
+        .collect::<Vec<_>>();
+    assert!(opcodes.contains(&(WorldOpcode::SmsgCastResult as u16)));
+    assert!(opcodes.contains(&(WorldOpcode::SmsgSpellGo as u16)));
+    assert!(
+        !opcodes.contains(&(WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)),
+        "Curse of Agony should not emit an immediate direct spell damage log"
+    );
+
+    let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+    assert_eq!(creature.health, 120);
+    assert_eq!(creature.active_auras.len(), 1);
+    let aura = &creature.active_auras[0];
+    let periodic = aura
+        .periodic_damage
+        .as_ref()
+        .expect("Curse of Agony should apply a periodic damage aura");
+    assert_eq!(aura.spell_id, 980);
+    assert!(!aura.positive);
+    assert_eq!(
+        periodic.profile,
+        PeriodicDamageProfile::AuraScript(AuraScriptId::WarlockCurseOfAgony)
+    );
+    assert_eq!(periodic.tick_millis, curse_of_agony.effect_amplitude1);
+
+    let mut expected_health = 120u32;
+    let mut next_tick_at = periodic.next_tick_at;
+    for (tick_number, expected_damage) in [
+        early_tick,
+        early_tick,
+        early_tick,
+        early_tick,
+        middle_tick,
+        middle_tick,
+        middle_tick,
+        middle_tick,
+        late_tick,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tick_packets = maps
+            .advance_all_db_creature_auras(next_tick_at, 1_000 + tick_number as u64)
+            .await
+            .unwrap();
+        expected_health = expected_health.saturating_sub(expected_damage);
+        let creature = maps.db_creature_snapshot(0, target).await.unwrap();
+        assert_eq!(creature.health, expected_health);
+        let aura = &creature.active_auras[0];
+        next_tick_at = aura.periodic_damage.unwrap().next_tick_at;
+
+        let periodic_log = tick_packets
+            .iter()
+            .find(|(_, packet)| packet.opcode == WorldOpcode::SmsgPeriodicAuraLog as u16)
+            .expect("Curse of Agony tick should broadcast a periodic aura log");
+        let mut cursor = PackedGuid::packed_size(target) + PackedGuid::packed_size(aura.caster);
+        assert_eq!(read_u32(&periodic_log.1.body, &mut cursor).unwrap(), 980);
+        assert_eq!(read_u32(&periodic_log.1.body, &mut cursor).unwrap(), 1);
+        assert_eq!(
+            read_u32(&periodic_log.1.body, &mut cursor).unwrap(),
+            SPELL_AURA_PERIODIC_DAMAGE
+        );
+        assert_eq!(
+            read_u32(&periodic_log.1.body, &mut cursor).unwrap(),
+            expected_damage
+        );
+        assert_eq!(
+            read_u32(&periodic_log.1.body, &mut cursor).unwrap(),
+            curse_of_agony.school
+        );
+        assert_eq!(read_u32(&periodic_log.1.body, &mut cursor).unwrap(), 0);
+        assert_eq!(
+            i32::from_le_bytes(periodic_log.1.body[cursor..cursor + 4].try_into().unwrap()),
+            0
+        );
+    }
+}
+
+#[tokio::test]
+async fn summon_imp_live_rank_one_row_uses_generic_summon_pet_lane() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let summon_imp = wow_db::get_spell_template_query(&spell_db_pool, 688)
+        .await
+        .unwrap()
+        .expect("Summon Imp rank 1 should exist in the local spell_template");
+    assert_eq!(summon_imp.spell_name, "Summon Imp");
+    assert_eq!(summon_imp.effect1, SPELL_EFFECT_SUMMON_PET);
+    assert_eq!(summon_imp.effect_misc_value1, 416);
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_SUMMON_PET),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&summon_imp).expect("summon imp profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost } if cost == summon_imp.mana_cost
+    ));
+    assert_eq!(profile.damage, 0);
+
+    let spell_info = SpellInfo::from_template(&summon_imp);
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Summon Imp rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::Caster);
+    assert_eq!(
+        plan.effects
+            .iter()
+            .map(|effect| effect.dispatch)
+            .collect::<Vec<_>>(),
+        vec![SpellEffectDispatch::SummonPet]
+    );
+    assert!(spell_template_coverage_issues(&summon_imp).is_empty());
+}
+
+#[tokio::test]
+async fn eye_of_kilrogg_live_rank_one_row_uses_generic_summon_possessed_lane() {
+    let spell_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let eye = wow_db::get_spell_template_query(&spell_db_pool, 126)
+        .await
+        .unwrap()
+        .expect("Eye of Kilrogg rank 1 should exist in the local spell_template");
+    assert_eq!(eye.spell_name, "Eye of Kilrogg");
+    assert_eq!(eye.effect1, SPELL_EFFECT_SUMMON_POSSESSED);
+    assert_eq!(eye.effect_misc_value1, 4277);
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_SUMMON_POSSESSED),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&eye).expect("eye of kilrogg profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost } if cost == eye.mana_cost
+    ));
+    assert_eq!(profile.damage, 0);
+
+    let spell_info = SpellInfo::from_template(&eye);
+    let plan = spell_info
+        .player_spell_plan()
+        .expect("Eye of Kilrogg rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::Caster);
+    let dispatches = plan
+        .effects
+        .iter()
+        .map(|effect| effect.dispatch)
+        .collect::<Vec<_>>();
+    assert!(
+        dispatches.contains(&SpellEffectDispatch::SummonPossessed),
+        "Eye of Kilrogg rank 1 should keep the generic summon-possessed dispatch in its live row"
+    );
+    assert!(spell_template_coverage_issues(&eye).is_empty());
+}
+
+#[tokio::test]
+async fn summon_pet_effect_spawns_player_owned_pet_and_replaces_existing_owner_summon() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(688, Some(summon_imp_spell_template()))
+        .await;
+    object_mgr
+        .prime_creature_template_for_test(416, Some(test_creature_template(416)))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let caster_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), caster_position);
+    caster.class = 9;
+    caster.level = 4;
+    caster.power1 = 100;
+    caster.max_power1 = 100;
+    maps.add_player(caster).await.unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&688u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(688);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 4,
+                xp: 0,
+                position: caster_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(session.character.player_mana, 35);
+
+    let first_pet = {
+        let map = maps.get_or_create_map(0, 0).await;
+        let map = map.lock().await;
+        assert_eq!(map.creatures.len(), 1);
+        map.creatures
+            .values()
+            .next()
+            .cloned()
+            .expect("summon pet should create one runtime creature")
+    };
+    assert!(first_pet.guid().is_pet());
+    assert_eq!(first_pet.spawn.entry, 416);
+    assert_eq!(
+        first_pet.owner_guid,
+        Some(ObjectGuid::new(HighGuid::Player, 0, 7))
+    );
+    assert_eq!(first_pet.created_by_spell, Some(688));
+    assert_eq!(first_pet.pet_number, Some(first_pet.spawn.guid));
+    assert!(first_pet.player_controlled);
+    assert_eq!(first_pet.spawn.template.faction, faction_for_race(1));
+
+    let block = build_db_creature_runtime_create_block(&first_pet).unwrap();
+    let packed_guid_mask = block[1];
+    let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&block[values_start..]);
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    assert_eq!(values[UNIT_FIELD_SUMMONEDBY], Some(owner_guid.raw() as u32));
+    assert_eq!(
+        values[UNIT_FIELD_SUMMONEDBY + 1],
+        Some((owner_guid.raw() >> 32) as u32)
+    );
+    assert_eq!(values[UNIT_FIELD_CREATEDBY], Some(owner_guid.raw() as u32));
+    assert_eq!(
+        values[UNIT_FIELD_CREATEDBY + 1],
+        Some((owner_guid.raw() >> 32) as u32)
+    );
+    assert_eq!(values[UNIT_FIELD_PETNUMBER], Some(first_pet.spawn.guid));
+    assert_eq!(values[UNIT_CREATED_BY_SPELL], Some(688));
+    assert!(values[UNIT_FIELD_PET_NAME_TIMESTAMP].is_some());
+    assert_eq!(values[UNIT_NPC_FLAGS], Some(0));
+    assert_eq!(
+        values[UNIT_FIELD_FLAGS].unwrap() & UNIT_FLAG_PLAYER_CONTROLLED,
+        UNIT_FLAG_PLAYER_CONTROLLED
+    );
+
+    let first_guid = first_pet.guid();
+    let first_packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        first_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+
+    session.character.player_mana = 100;
+    {
+        let map = maps.get_or_create_map(0, 0).await;
+        let mut map = map.lock().await;
+        let _ = map.update_player_power1(7, 100).unwrap();
+    }
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let second_pet = {
+        let map = maps.get_or_create_map(0, 0).await;
+        let map = map.lock().await;
+        assert_eq!(map.creatures.len(), 1);
+        map.creatures
+            .values()
+            .next()
+            .cloned()
+            .expect("recast should still leave exactly one runtime pet")
+    };
+    assert_ne!(second_pet.guid(), first_guid);
+    assert_eq!(
+        second_pet.owner_guid,
+        Some(ObjectGuid::new(HighGuid::Player, 0, 7))
+    );
+    let second_packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        second_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgDestroyObject as u16)
+    );
+    assert!(
+        second_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
     );
 }
 
@@ -10135,14 +19227,17 @@ async fn mind_blast_live_rank_one_cast_records_cooldown_and_emits_spell_damage_l
     .unwrap();
 
     let caster = maps.player_runtime_snapshot(0, 7).await.unwrap();
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_some());
-    assert!(caster
-        .spell_global_cooldowns_until
-        .get(&133)
-        .is_some_and(|until| *until > cast_started_at));
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some()
+    );
+    assert!(
+        caster
+            .spell_global_cooldowns_until
+            .get(&133)
+            .is_some_and(|until| *until > cast_started_at)
+    );
     assert!(
         caster.spell_cooldowns_until.contains_key(&8092),
         "Mind Blast should record its spell id on the cooldown map when its category cooldown starts"
@@ -10177,10 +19272,12 @@ async fn mind_blast_live_rank_one_cast_records_cooldown_and_emits_spell_damage_l
     let caster = maps.player_runtime_snapshot(0, 7).await.unwrap();
     assert_eq!(caster.power1, 100 - mind_blast.mana_cost);
     assert_eq!(session.character.player_mana, 100 - mind_blast.mana_cost);
-    assert!(caster
-        .spell_global_cooldowns_until
-        .get(&19)
-        .is_some_and(|until| *until >= *cooldown_until));
+    assert!(
+        caster
+            .spell_global_cooldowns_until
+            .get(&19)
+            .is_some_and(|until| *until >= *cooldown_until)
+    );
 
     let creature = maps.db_creature_snapshot(0, target).await.unwrap();
     let landed_damage = 120 - creature.health;
@@ -10212,7 +19309,10 @@ async fn mind_blast_live_rank_one_cast_records_cooldown_and_emits_spell_damage_l
         caster_guid
     );
     assert_eq!(read_u32(&spell_damage.body, &mut cursor).unwrap(), 8092);
-    assert_eq!(read_u32(&spell_damage.body, &mut cursor).unwrap(), landed_damage);
+    assert_eq!(
+        read_u32(&spell_damage.body, &mut cursor).unwrap(),
+        landed_damage
+    );
     assert_eq!(spell_damage.body[cursor], mind_blast.school as u8);
     assert!(
         !packets
@@ -10401,7 +19501,6 @@ async fn healing_taken_aura_reduces_player_direct_heal_casts() {
         },
         auras: AuraSessionState {
             active_auras: vec![dampen_magic],
-            ..AuraSessionState::default()
         },
         ..WorldSessionState::default()
     };
@@ -10517,7 +19616,6 @@ async fn healing_taken_aura_increases_player_direct_heal_casts() {
         },
         auras: AuraSessionState {
             active_auras: vec![amplify_magic],
-            ..AuraSessionState::default()
         },
         ..WorldSessionState::default()
     };
@@ -10700,17 +19798,19 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         vec![WorldOpcode::SmsgSpellStart as u16],
         "cast-time spells should wait for scheduled completion before GO/effects"
     );
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_some());
-    assert!(maps
-        .player_runtime_snapshot(0, 7)
-        .await
-        .unwrap()
-        .spell_global_cooldowns_until
-        .get(&133)
-        .is_some_and(|until| *until > Instant::now()));
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some()
+    );
+    assert!(
+        maps.player_runtime_snapshot(0, 7)
+            .await
+            .unwrap()
+            .spell_global_cooldowns_until
+            .get(&133)
+            .is_some_and(|until| *until > Instant::now())
+    );
     assert_eq!(session.character.player_mana, 100);
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
@@ -10757,10 +19857,11 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         !opcodes.contains(&(WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)),
         "missile damage should wait for projectile impact after SPELL_GO"
     );
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_some());
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some()
+    );
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
         120
@@ -10788,9 +19889,11 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
             .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16),
         "after cast completion the real client can begin a new Fireball while the previous missile is still traveling"
     );
-    assert!(!spam_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+    assert!(
+        !spam_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
     assert!(
         maps.next_pending_player_spell_cast_due_at(0, 7)
             .await
@@ -10863,10 +19966,11 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
         !opcodes.contains(&(WorldOpcode::SmsgAttackerStateUpdate as u16)),
         "Fireball impact should not also emit a melee hit log"
     );
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_some());
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some()
+    );
     assert_eq!(session.character.player_mana, 50);
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
@@ -10889,13 +19993,16 @@ async fn cast_time_spell_sends_start_before_delayed_go_and_effects() {
     .await
     .unwrap();
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_none());
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_none()
+    );
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
         92
@@ -10909,7 +20016,9 @@ async fn slam_active_cast_ignores_damage_pushback_without_interrupt_flags() {
     let character_guid = 7;
     let now = Instant::now();
     let slam = slam_spell_template();
-    assert!(spell_template_requires_main_hand_weapon_or_weapon_class(&slam));
+    assert!(spell_template_requires_main_hand_weapon_or_weapon_class(
+        &slam
+    ));
     maps.set_active_player_spell_cast(
         map_id,
         character_guid,
@@ -10973,13 +20082,16 @@ async fn frost_armor_live_rows_build_generic_armor_and_chilled_proc() {
     );
     assert!(frost_armor_aura.positive);
     assert!(
-        frost_armor_aura.stat_modifiers.iter().any(|modifier| matches!(
-            modifier,
-            AuraStatModifier::Resistance {
-                school_mask,
-                amount
-            } if *school_mask == 1 && *amount == 30
-        )),
+        frost_armor_aura
+            .stat_modifiers
+            .iter()
+            .any(|modifier| matches!(
+                modifier,
+                AuraStatModifier::Resistance {
+                    school_mask,
+                    amount
+                } if *school_mask == 1 && *amount == 30
+            )),
         "rank 1 Frost Armor should map its live DBC row to +30 physical armor"
     );
     assert_eq!(frost_armor_aura.proc_triggers.len(), 1);
@@ -11127,7 +20239,10 @@ async fn inner_fire_live_rank_one_builds_charge_limited_armor_aura() {
     )));
     assert_eq!(aura.proc_triggers.len(), 1);
     assert_eq!(aura.proc_triggers[0].triggered_spell_id, 0);
-    assert_ne!(aura.proc_triggers[0].proc_flags & PROC_FLAG_TAKE_MELEE_SWING, 0);
+    assert_ne!(
+        aura.proc_triggers[0].proc_flags & PROC_FLAG_TAKE_MELEE_SWING,
+        0
+    );
     assert_eq!(
         aura.proc_triggers[0].remaining_charges,
         Some(inner_fire.proc_charges),
@@ -11228,12 +20343,80 @@ async fn levitate_live_row_uses_generic_self_feather_fall_aura_path() {
     );
     assert!(aura.positive);
     assert!(aura.visible);
-    assert!(aura
-        .stat_modifiers
-        .contains(&AuraStatModifier::FeatherFall));
+    assert!(aura.stat_modifiers.contains(&AuraStatModifier::FeatherFall));
     assert!(aura.stat_modifiers.contains(&AuraStatModifier::Hover));
     assert!(aura.stat_modifiers.contains(&AuraStatModifier::WaterWalk));
     assert!(spell_template_coverage_issues(&levitate).is_empty());
+}
+
+#[tokio::test]
+async fn unending_breath_live_row_uses_generic_water_breathing_aura_path() {
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let unending_breath = wow_db::get_spell_template_query(&world_db_pool, 5697)
+        .await
+        .unwrap()
+        .expect("Unending Breath should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&world_db_pool, 5697)
+        .await
+        .unwrap();
+
+    assert!(
+        chain.is_none(),
+        "Unending Breath should stay a single-rank spell in the local dump"
+    );
+    assert_eq!(unending_breath.spell_name, "Unending Breath");
+    assert_eq!(unending_breath.spell_level, 16);
+    assert!(
+        unending_breath.rank.as_deref().unwrap_or("").is_empty(),
+        "Unending Breath should stay unranked in the local dump"
+    );
+    assert_eq!(unending_breath.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(
+        unending_breath.effect_apply_aura_name1,
+        SPELL_AURA_WATER_BREATHING
+    );
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_APPLY_AURA),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_aura_support(unending_breath.effect_apply_aura_name1),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&unending_breath).expect("unending breath profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost } if cost == unending_breath.mana_cost
+    ));
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&unending_breath)
+        .player_spell_plan()
+        .expect("Unending Breath should build a generic player spell plan");
+    assert_eq!(plan.profile.kind, SpellCastKind::AuraApplication);
+    assert!(plan.effects.iter().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::ApplyAura
+            && effect.aura_name == SPELL_AURA_WATER_BREATHING
+    }));
+
+    let aura = build_active_aura(
+        &unending_breath,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        unending_breath.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&unending_breath),
+        Instant::now(),
+        None,
+    );
+    assert!(aura.positive);
+    assert!(aura.visible);
+    assert!(aura.stat_modifiers.contains(&AuraStatModifier::WaterBreathing));
+    assert!(spell_template_coverage_issues(&unending_breath).is_empty());
 }
 
 #[tokio::test]
@@ -11402,7 +20585,10 @@ async fn shackle_undead_live_rank_one_only_targets_undead_creatures() {
 
     maps.share_db_creature_snapshots(
         0,
-        vec![DbCreatureRuntime::new(humanoid), DbCreatureRuntime::new(undead)],
+        vec![
+            DbCreatureRuntime::new(humanoid),
+            DbCreatureRuntime::new(undead),
+        ],
     )
     .await;
 
@@ -11457,20 +20643,24 @@ async fn shackle_undead_live_rank_one_only_targets_undead_creatures() {
         .find(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
         .expect("Shackle Undead should fail on non-undead creatures");
     assert_eq!(failure.body[5], SPELL_FAILED_BAD_TARGETS);
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
     assert_eq!(session.character.player_mana, 100);
-    assert!(maps
-        .db_creature_snapshot(0, humanoid_target)
-        .await
-        .unwrap()
-        .active_auras
-        .is_empty());
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_none());
+    assert!(
+        maps.db_creature_snapshot(0, humanoid_target)
+            .await
+            .unwrap()
+            .active_auras
+            .is_empty()
+    );
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_none()
+    );
 
     let success_position = WorldPosition::new(0, -8950.0, -131.0, 83.5, 0.0);
     let mut success_caster = test_player_runtime(8, SessionId::next(), success_position);
@@ -11538,10 +20728,12 @@ async fn shackle_undead_live_rank_one_only_targets_undead_creatures() {
     let cast_time_ms =
         spell_cast_time_millis(maps.spell_cast_time(shackle_undead.casting_time_index));
     assert!(cast_time_ms > 0);
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 8)
-        .await
-        .is_some(), "Shackle Undead should stay pending until cast completion; packets={start_opcodes:?}");
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 8)
+            .await
+            .is_some(),
+        "Shackle Undead should stay pending until cast completion; packets={start_opcodes:?}"
+    );
     tokio::time::sleep(Duration::from_millis(u64::from(cast_time_ms) + 50)).await;
     complete_pending_player_spell_cast(
         &mut stream,
@@ -11572,7 +20764,12 @@ async fn shackle_undead_live_rank_one_only_targets_undead_creatures() {
         "successful Shackle Undead cast should not emit SMSG_SPELL_FAILURE"
     );
     let undead_snapshot = maps.db_creature_snapshot(0, undead_target).await.unwrap();
-    assert!(undead_snapshot.active_auras.iter().any(|aura| aura.spell_id == 9484));
+    assert!(
+        undead_snapshot
+            .active_auras
+            .iter()
+            .any(|aura| aura.spell_id == 9484)
+    );
     assert!(active_aura_has_stun(&undead_snapshot.active_auras));
     assert_eq!(
         success_session.character.player_mana,
@@ -11717,11 +20914,9 @@ async fn mana_burn_live_rank_one_burns_creature_mana_and_deals_generic_spell_dam
         .await;
 
     let burn_effect = SpellInfo::from_template(&mana_burn).effects[0];
-    let requested_burn = spell_effect_calculated_u32(
-        burn_effect,
-        test_spell_effect_value_context(&mana_burn),
-    )
-    .expect("Mana Burn should calculate a direct power burn amount");
+    let requested_burn =
+        spell_effect_calculated_u32(burn_effect, test_spell_effect_value_context(&mana_burn))
+            .expect("Mana Burn should calculate a direct power burn amount");
     let expected_burn = 80u32.min(requested_burn);
     let expected_damage =
         ((expected_burn as f32) * burn_effect.multiple_value.max(0.0)).trunc() as u32;
@@ -11770,13 +20965,13 @@ async fn mana_burn_live_rank_one_burns_creature_mana_and_deals_generic_spell_dam
     .await
     .unwrap();
 
-    let cast_time_ms =
-        spell_cast_time_millis(maps.spell_cast_time(mana_burn.casting_time_index));
+    let cast_time_ms = spell_cast_time_millis(maps.spell_cast_time(mana_burn.casting_time_index));
     assert!(cast_time_ms > 0);
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_some());
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some()
+    );
     tokio::time::sleep(Duration::from_millis(u64::from(cast_time_ms) + 50)).await;
     complete_pending_player_spell_cast(
         &mut stream,
@@ -11946,17 +21141,20 @@ async fn mana_burn_live_rank_one_fails_bad_targets_on_non_mana_creatures() {
         .find(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
         .expect("Mana Burn should fail on non-mana creatures");
     assert_eq!(failure.body[5], SPELL_FAILED_BAD_TARGETS);
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
     assert_eq!(session.character.player_mana, 200);
     let creature = maps.db_creature_snapshot(0, target).await.unwrap();
     assert_eq!(creature.power1, 0);
     assert_eq!(creature.health, 120);
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_none());
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -11996,7 +21194,10 @@ async fn holy_fire_live_rank_one_row_uses_generic_hostile_damage_plus_periodic_d
     assert_eq!(holy_fire.effect3, 0);
     assert_eq!(holy_fire.effect_implicit_target_a1, TARGET_UNIT_ENEMY);
     assert_eq!(holy_fire.effect_implicit_target_a2, TARGET_UNIT_ENEMY);
-    assert_eq!(holy_fire.effect_apply_aura_name2, SPELL_AURA_PERIODIC_DAMAGE);
+    assert_eq!(
+        holy_fire.effect_apply_aura_name2,
+        SPELL_AURA_PERIODIC_DAMAGE
+    );
     assert_eq!(holy_fire.effect_amplitude2, 2_000);
     assert_eq!(
         spell_effect_support(SPELL_EFFECT_SCHOOL_DAMAGE),
@@ -12126,11 +21327,9 @@ async fn holy_fire_live_rank_one_applies_direct_damage_then_hostile_periodic_dam
 
     let effects = SpellInfo::from_template(&holy_fire).effects;
     let periodic_effect = effects[1];
-    let expected_periodic_damage = spell_effect_calculated_u32(
-        periodic_effect,
-        test_spell_effect_value_context(&holy_fire),
-    )
-    .expect("Holy Fire should calculate a periodic holy damage amount");
+    let expected_periodic_damage =
+        spell_effect_calculated_u32(periodic_effect, test_spell_effect_value_context(&holy_fire))
+            .expect("Holy Fire should calculate a periodic holy damage amount");
 
     let mut body = Vec::new();
     body.extend_from_slice(&14914u32.to_le_bytes());
@@ -12176,13 +21375,13 @@ async fn holy_fire_live_rank_one_applies_direct_damage_then_hostile_periodic_dam
     .await
     .unwrap();
 
-    let cast_time_ms =
-        spell_cast_time_millis(maps.spell_cast_time(holy_fire.casting_time_index));
+    let cast_time_ms = spell_cast_time_millis(maps.spell_cast_time(holy_fire.casting_time_index));
     assert!(cast_time_ms > 0);
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_some());
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some()
+    );
     tokio::time::sleep(Duration::from_millis(u64::from(cast_time_ms) + 50)).await;
     complete_pending_player_spell_cast(
         &mut stream,
@@ -12389,7 +21588,6 @@ async fn frost_armor_taken_melee_proc_applies_chilled_to_attacker() {
         },
         auras: AuraSessionState {
             active_auras: vec![frost_armor_aura],
-            ..AuraSessionState::default()
         },
         ..WorldSessionState::default()
     };
@@ -12495,7 +21693,10 @@ async fn retaliation_proc_hits_front_attacker_but_not_attacker_behind_player() {
 
     maps.share_db_creature_snapshots(
         0,
-        vec![DbCreatureRuntime::new(front), DbCreatureRuntime::new(behind)],
+        vec![
+            DbCreatureRuntime::new(front),
+            DbCreatureRuntime::new(behind),
+        ],
     )
     .await;
 
@@ -12530,7 +21731,6 @@ async fn retaliation_proc_hits_front_attacker_but_not_attacker_behind_player() {
         },
         auras: AuraSessionState {
             active_auras: vec![retaliation_aura],
-            ..AuraSessionState::default()
         },
         ..WorldSessionState::default()
     };
@@ -12575,8 +21775,20 @@ async fn retaliation_proc_hits_front_attacker_but_not_attacker_behind_player() {
     .await
     .unwrap();
 
-    assert!(maps.db_creature_snapshot(0, front_target).await.unwrap().health < 200);
-    assert_eq!(maps.db_creature_snapshot(0, behind_target).await.unwrap().health, 200);
+    assert!(
+        maps.db_creature_snapshot(0, front_target)
+            .await
+            .unwrap()
+            .health
+            < 200
+    );
+    assert_eq!(
+        maps.db_creature_snapshot(0, behind_target)
+            .await
+            .unwrap()
+            .health,
+        200
+    );
 }
 
 #[tokio::test]
@@ -13170,7 +22382,10 @@ async fn arcane_explosion_live_rank_one_damages_nearby_hostile_creatures() {
     assert!(second.health < 120);
     assert_eq!(friendly.health, 120);
     assert_eq!(out_of_range.health, 120);
-    assert_eq!(session.character.player_mana, 500 - arcane_explosion.mana_cost);
+    assert_eq!(
+        session.character.player_mana,
+        500 - arcane_explosion.mana_cost
+    );
     assert!(
         maps.active_db_creature_combat_snapshot(0, first_target, caster)
             .await
@@ -13352,7 +22567,10 @@ async fn remove_lesser_curse_live_rank_one_dispels_matching_friendly_player_curs
     let target = maps.player_runtime_snapshot(0, 8).await.unwrap();
     assert_eq!(target.active_auras.len(), 1);
     assert_eq!(target.active_auras[0].spell_id, 118);
-    assert_eq!(session.character.player_mana, 100 - remove_lesser_curse.mana_cost);
+    assert_eq!(
+        session.character.player_mana,
+        100 - remove_lesser_curse.mana_cost
+    );
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(
@@ -13505,7 +22723,10 @@ async fn cure_disease_live_rank_one_row_uses_generic_friendly_disease_dispel_pat
         .await
         .unwrap();
 
-    assert!(chain.is_none(), "Cure Disease should stay a single-rank spell in the local dump");
+    assert!(
+        chain.is_none(),
+        "Cure Disease should stay a single-rank spell in the local dump"
+    );
     assert_eq!(cure_disease.spell_name, "Cure Disease");
     assert_eq!(cure_disease.spell_level, 14);
     assert!(
@@ -13985,10 +23206,11 @@ async fn dispel_magic_live_rank_one_dispels_matching_friendly_player_magic_aura(
     let cast_time_ms =
         spell_cast_time_millis(maps.spell_cast_time(dispel_magic.casting_time_index));
     assert!(cast_time_ms > 0);
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_some());
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some()
+    );
     tokio::time::sleep(Duration::from_millis(u64::from(cast_time_ms) + 50)).await;
     complete_pending_player_spell_cast(
         &mut stream,
@@ -14158,10 +23380,11 @@ async fn dispel_magic_live_rank_one_dispels_matching_hostile_creature_magic_aura
     let cast_time_ms =
         spell_cast_time_millis(maps.spell_cast_time(dispel_magic.casting_time_index));
     assert!(cast_time_ms > 0);
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_some());
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some()
+    );
     tokio::time::sleep(Duration::from_millis(u64::from(cast_time_ms) + 50)).await;
     complete_pending_player_spell_cast(
         &mut stream,
@@ -14314,10 +23537,11 @@ async fn dispel_magic_live_rank_one_fails_out_of_range_on_hostile_creature_targe
     .await
     .unwrap();
 
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_none());
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_none()
+    );
     assert_eq!(session.character.player_mana, 100);
     assert_eq!(
         maps.db_creature_snapshot(0, target)
@@ -14332,7 +23556,9 @@ async fn dispel_magic_live_rank_one_fails_out_of_range_on_hostile_creature_targe
     let failure = packets
         .iter()
         .find(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
-        .expect("Dispel Magic should fail immediately when the hostile creature target is out of range");
+        .expect(
+            "Dispel Magic should fail immediately when the hostile creature target is out of range",
+        );
     assert_eq!(failure.body[5], SPELL_FAILED_OUT_OF_RANGE);
     assert!(
         !packets
@@ -14497,9 +23723,11 @@ async fn flamestrike_damages_hostile_creatures_at_destination_only() {
     assert_eq!(hostile.health, direct_health.saturating_sub(12));
     assert_eq!(friendly.health, 120);
     assert_eq!(out_of_radius.health, 120);
-    assert!(tick_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgPeriodicAuraLog as u16));
+    assert!(
+        tick_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgPeriodicAuraLog as u16)
+    );
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert_eq!(
@@ -14635,9 +23863,11 @@ async fn blizzard_creates_channel_dynamic_object_and_ticks_area_damage() {
         8,
         "Classic MSG_CHANNEL_START is spell id + duration, no caster guid"
     );
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
     assert_eq!(session.character.player_mana, 180);
 
     let tick_packets = maps
@@ -14656,20 +23886,26 @@ async fn blizzard_creates_channel_dynamic_object_and_ticks_area_damage() {
         .is_some(),
         "Blizzard periodic damage should aggro targets it damages"
     );
-    assert!(tick_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgPeriodicAuraLog as u16));
+    assert!(
+        tick_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgPeriodicAuraLog as u16)
+    );
 
     let expire_packets = maps
         .advance_all_dynamic_objects(Instant::now() + Duration::from_secs(5), 1_005)
         .await
         .unwrap();
-    assert!(expire_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgDestroyObject as u16));
-    assert!(expire_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::MsgChannelUpdate as u16));
+    assert!(
+        expire_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgDestroyObject as u16)
+    );
+    assert!(
+        expire_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::MsgChannelUpdate as u16)
+    );
 }
 
 #[tokio::test]
@@ -14777,23 +24013,29 @@ async fn cancel_cast_clears_blizzard_dynamic_object_channel() {
     .unwrap();
     let _ = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
 
-    assert!(cancel_pending_player_spell_cast(
-        &mut stream,
-        &maps,
-        &sessions,
-        &mut session,
-        SPELL_FAILED_INTERRUPTED,
-        &mut header_crypto,
-    )
-    .await
-    .unwrap());
+    assert!(
+        cancel_pending_player_spell_cast(
+            &mut stream,
+            &maps,
+            &sessions,
+            &mut session,
+            SPELL_FAILED_INTERRUPTED,
+            &mut header_crypto,
+        )
+        .await
+        .unwrap()
+    );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgDestroyObject as u16));
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::MsgChannelUpdate as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgDestroyObject as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::MsgChannelUpdate as u16)
+    );
 
     let tick_packets = maps
         .advance_all_dynamic_objects(Instant::now() + Duration::from_millis(1_500), 1_000)
@@ -14917,9 +24159,11 @@ async fn arcane_missiles_starts_unit_channel_and_ticks_triggered_damage() {
             .any(|packet| packet.opcode == WorldOpcode::MsgChannelStart as u16),
         "{opcodes:?}"
     );
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
     let channel_update_values = packets
         .iter()
         .filter(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
@@ -14958,20 +24202,25 @@ async fn arcane_missiles_starts_unit_channel_and_ticks_triggered_damage() {
             .count(),
         1
     );
-    assert!(!first_launch_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgAttackStart as u16));
-    assert!(!first_launch_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
-    assert!(maps
-        .active_db_creature_combat_snapshot(
+    assert!(
+        !first_launch_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgAttackStart as u16)
+    );
+    assert!(
+        !first_launch_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
+    assert!(
+        maps.active_db_creature_combat_snapshot(
             0,
             hostile_target,
             ObjectGuid::new(HighGuid::Player, 0, 7)
         )
         .await
-        .is_none());
+        .is_none()
+    );
 
     let first_impact_packets = maps
         .advance_all_player_channels(Instant::now() + Duration::from_millis(600), 1_001)
@@ -14979,20 +24228,25 @@ async fn arcane_missiles_starts_unit_channel_and_ticks_triggered_damage() {
         .unwrap();
     let hostile = maps.db_creature_snapshot(0, hostile_target).await.unwrap();
     assert_eq!(hostile.health, 96);
-    assert!(first_impact_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
-    assert!(first_impact_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgAttackStart as u16));
-    assert!(maps
-        .active_db_creature_combat_snapshot(
+    assert!(
+        first_impact_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
+    assert!(
+        first_impact_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgAttackStart as u16)
+    );
+    assert!(
+        maps.active_db_creature_combat_snapshot(
             0,
             hostile_target,
             ObjectGuid::new(HighGuid::Player, 0, 7)
         )
         .await
-        .is_some());
+        .is_some()
+    );
 
     let second_launch_packets = maps
         .advance_all_player_channels(Instant::now() + Duration::from_millis(1_100), 1_002)
@@ -15005,20 +24259,26 @@ async fn arcane_missiles_starts_unit_channel_and_ticks_triggered_damage() {
             .count(),
         1
     );
-    assert!(!second_launch_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::MsgChannelUpdate as u16));
+    assert!(
+        !second_launch_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::MsgChannelUpdate as u16)
+    );
 
     let second_impact_packets = maps
         .advance_all_player_channels(Instant::now() + Duration::from_millis(1_600), 1_003)
         .await
         .unwrap();
-    assert!(second_impact_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
-    assert!(!second_impact_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::MsgChannelUpdate as u16));
+    assert!(
+        second_impact_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
+    assert!(
+        !second_impact_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::MsgChannelUpdate as u16)
+    );
     assert_eq!(
         maps.db_creature_snapshot(0, hostile_target)
             .await
@@ -15039,9 +24299,11 @@ async fn arcane_missiles_starts_unit_channel_and_ticks_triggered_damage() {
             .count(),
         1
     );
-    assert!(!third_launch_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::MsgChannelUpdate as u16));
+    assert!(
+        !third_launch_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::MsgChannelUpdate as u16)
+    );
     assert_eq!(
         maps.db_creature_snapshot(0, hostile_target)
             .await
@@ -15060,9 +24322,11 @@ async fn arcane_missiles_starts_unit_channel_and_ticks_triggered_damage() {
         hostile.health, 48,
         "rank 1 Arcane Missiles should still land its third missile after channel expiry"
     );
-    assert!(final_impact_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+    assert!(
+        final_impact_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
 
     let clear_packets = maps
         .advance_all_player_channels(Instant::now() + Duration::from_millis(3_100), 1_006)
@@ -15148,15 +24412,21 @@ fn arcane_missile_impact_death_stops_target_motion() {
     let launch_packets = map
         .advance_player_channels(now + Duration::from_millis(100), 1_001)
         .unwrap();
-    assert!(launch_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
-    assert!(!launch_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgAttackStart as u16));
-    assert!(!launch_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgMonsterMove as u16));
+    assert!(
+        launch_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        !launch_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgAttackStart as u16)
+    );
+    assert!(
+        !launch_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgMonsterMove as u16)
+    );
 
     let impact_packets = map
         .advance_player_channels(now + Duration::from_millis(600), 1_002)
@@ -15164,12 +24434,126 @@ fn arcane_missile_impact_death_stops_target_motion() {
     let creature = map.creatures.get(&target.raw()).unwrap();
     assert_eq!(creature.health, 0);
     assert!(matches!(creature.motion, CreatureMotionState::Idle));
-    assert!(impact_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgAttackStart as u16));
-    assert!(impact_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgMonsterMove as u16));
+    assert_eq!(map.take_player_channel_death_finalizations(7).len(), 1);
+    assert!(
+        impact_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgAttackStart as u16)
+    );
+    assert!(
+        !impact_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgMonsterMove as u16)
+    );
+}
+
+#[tokio::test]
+async fn pending_channel_death_finalization_drains_into_session_owned_packets() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    let player_position = WorldPosition::new(0, -8958.0, -132.0, 83.5312, 0.0);
+    maps.add_player(test_player_runtime(7, SessionId(7), player_position))
+        .await
+        .unwrap();
+
+    let map_handle = {
+        maps.maps
+            .lock()
+            .await
+            .get(&(player_position.map_id, 0))
+            .cloned()
+            .expect("player map handle")
+    };
+    map_handle
+        .lock()
+        .await
+        .pending_player_channel_death_finalizations
+        .push(PendingPlayerChannelDeathFinalization {
+            caster_character_guid: 7,
+            death_finalization: DbCreatureDeathFinalizationEvent {
+                killed: ObjectGuid::new(HighGuid::Unit, 0, 900_001),
+                respawn_epoch_secs: None,
+                motion_stop_packet: Some(OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgMonsterMove as u16,
+                    body: vec![1],
+                }),
+                attack_stop_packet: OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgAttackStop as u16,
+                    body: vec![2],
+                },
+                combat_flag_packet: OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgUpdateObject as u16,
+                    body: vec![3],
+                },
+                observer_packets: Vec::new(),
+            },
+        });
+
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 8,
+                level: 20,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    finalize_pending_player_channel_deaths(
+        &mut stream,
+        CombatRewardDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            shared_world: SharedWorldDeps {
+                object_mgr: &object_mgr,
+                maps: &maps,
+                sessions: &sessions,
+            },
+            parties: &PartyManager::default(),
+        },
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgAttackStop as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    assert!(
+        maps.take_player_channel_death_finalizations(player_position.map_id, 7)
+            .await
+            .is_empty()
+    );
 }
 
 #[test]
@@ -15188,7 +24572,8 @@ fn arcane_missiles_channel_clears_when_target_moves_beyond_upkeep_range() {
     hostile.position_z = player_position.z;
     hostile.template.faction = 17;
     let target = creature_spawn_guid(&hostile);
-    map.creatures.insert(target.raw(), DbCreatureRuntime::new(hostile));
+    map.creatures
+        .insert(target.raw(), DbCreatureRuntime::new(hostile));
 
     let event = map
         .start_player_periodic_trigger_channel(
@@ -15225,34 +24610,47 @@ fn arcane_missiles_channel_clears_when_target_moves_beyond_upkeep_range() {
     let launch_packets = map
         .advance_player_channels(now + Duration::from_millis(100), 1_001)
         .unwrap();
-    assert!(launch_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    assert!(
+        launch_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
 
     let first_impact_packets = map
         .advance_player_channels(now + Duration::from_millis(600), 1_002)
         .unwrap();
-    assert!(first_impact_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+    assert!(
+        first_impact_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
     assert_eq!(map.creatures.get(&target.raw()).unwrap().health, 96);
 
-    map.creatures.get_mut(&target.raw()).unwrap().current_position.x = player_position.x + 46.0;
+    map.creatures
+        .get_mut(&target.raw())
+        .unwrap()
+        .current_position
+        .x = player_position.x + 46.0;
 
     let clear_packets = map
         .advance_player_channels(now + Duration::from_millis(1_100), 1_003)
         .unwrap();
     assert!(!map.active_player_channels.contains_key(&7));
-    assert!(clear_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::MsgChannelUpdate as u16));
-    assert!(!clear_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
-    assert!(map
-        .pending_player_channel_impacts
-        .iter()
-        .all(|impact| impact.caster_character_guid != 7));
+    assert!(
+        clear_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::MsgChannelUpdate as u16)
+    );
+    assert!(
+        !clear_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        map.pending_player_channel_impacts
+            .iter()
+            .all(|impact| impact.caster_character_guid != 7)
+    );
     assert_eq!(
         map.creatures.get(&target.raw()).unwrap().health,
         96,
@@ -15352,9 +24750,11 @@ async fn arcane_missiles_without_selected_target_fails_before_spending_mana() {
         .find(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
         .expect("cast failure");
     assert_eq!(failure.body[5], SPELL_FAILED_BAD_IMPLICIT_TARGETS);
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::MsgChannelStart as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::MsgChannelStart as u16)
+    );
     assert_eq!(session.character.player_mana, 500);
     let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
     assert_eq!(snapshot.power1, 500);
@@ -15463,9 +24863,11 @@ async fn arcane_missiles_rejects_friendly_creature_target_before_channel_start()
         .find(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
         .expect("cast failure");
     assert_eq!(failure.body[5], SPELL_FAILED_BAD_TARGETS);
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::MsgChannelStart as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::MsgChannelStart as u16)
+    );
     assert_eq!(session.character.player_mana, 500);
     let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
     assert_eq!(snapshot.power1, 500);
@@ -15563,10 +24965,11 @@ async fn counterspell_interrupts_active_db_creature_spell_cast() {
     .await
     .unwrap()
     .expect("creature cast should start");
-    assert!(maps
-        .active_db_creature_spell_cast_due_at(0, hostile_target)
-        .await
-        .is_some());
+    assert!(
+        maps.active_db_creature_spell_cast_due_at(0, hostile_target)
+            .await
+            .is_some()
+    );
 
     let mut body = Vec::new();
     body.extend_from_slice(&2139u32.to_le_bytes());
@@ -15613,21 +25016,25 @@ async fn counterspell_interrupts_active_db_creature_spell_cast() {
     .unwrap();
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16
-            && packet.body[4] == 0));
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
-    assert!(maps
-        .active_db_creature_spell_cast_due_at(0, hostile_target)
-        .await
-        .is_none());
+    assert!(
+        packets.iter().any(
+            |packet| packet.opcode == WorldOpcode::SmsgCastResult as u16 && packet.body[4] == 0
+        )
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        maps.active_db_creature_spell_cast_due_at(0, hostile_target)
+            .await
+            .is_none()
+    );
     let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
     let after_counterspell = Instant::now();
-    assert!(maps
-        .prepare_db_creature_spell_cast_from_template(
+    assert!(
+        maps.prepare_db_creature_spell_cast_from_template(
             0,
             hostile_target,
             player_guid,
@@ -15635,9 +25042,10 @@ async fn counterspell_interrupts_active_db_creature_spell_cast() {
             after_counterspell,
         )
         .await
-        .is_none());
-    assert!(maps
-        .prepare_db_creature_spell_cast_from_template(
+        .is_none()
+    );
+    assert!(
+        maps.prepare_db_creature_spell_cast_from_template(
             0,
             hostile_target,
             player_guid,
@@ -15645,7 +25053,8 @@ async fn counterspell_interrupts_active_db_creature_spell_cast() {
             after_counterspell + Duration::from_secs(11),
         )
         .await
-        .is_some());
+        .is_some()
+    );
     assert_eq!(session.character.player_mana, 400);
     let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
     assert_eq!(snapshot.power1, 400);
@@ -15752,20 +25161,24 @@ async fn cancel_cast_clears_active_unit_channel() {
     .unwrap();
     let _ = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
 
-    assert!(cancel_pending_player_spell_cast(
-        &mut stream,
-        &maps,
-        &sessions,
-        &mut session,
-        SPELL_FAILED_INTERRUPTED,
-        &mut header_crypto,
-    )
-    .await
-    .unwrap());
+    assert!(
+        cancel_pending_player_spell_cast(
+            &mut stream,
+            &maps,
+            &sessions,
+            &mut session,
+            SPELL_FAILED_INTERRUPTED,
+            &mut header_crypto,
+        )
+        .await
+        .unwrap()
+    );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::MsgChannelUpdate as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::MsgChannelUpdate as u16)
+    );
 
     let tick_packets = maps
         .advance_all_player_channels(Instant::now() + Duration::from_millis(1_100), 1_000)
@@ -15773,9 +25186,11 @@ async fn cancel_cast_clears_active_unit_channel() {
         .unwrap();
     let hostile = maps.db_creature_snapshot(0, hostile_target).await.unwrap();
     assert_eq!(hostile.health, 120);
-    assert!(!tick_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+    assert!(
+        !tick_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
 }
 
 #[tokio::test]
@@ -15874,12 +25289,14 @@ async fn evocation_starts_self_channel_and_movement_cancels_it() {
         .expect("self-channel update packet");
     assert_eq!(channel_update_values[UNIT_CHANNEL_SPELL], Some(12051));
     assert_eq!(channel_update_values[UNIT_FIELD_CHANNEL_OBJECT], Some(0));
-    assert!(session
-        .auras
-        .active_auras
-        .iter()
-        .any(|aura| aura.spell_id == 12051
-            && active_aura_interrupt_flags(aura) & AURA_INTERRUPT_FLAG_MOVING != 0));
+    assert!(
+        session
+            .auras
+            .active_auras
+            .iter()
+            .any(|aura| aura.spell_id == 12051
+                && active_aura_interrupt_flags(aura) & AURA_INTERRUPT_FLAG_MOVING != 0)
+    );
     {
         let map = maps.maps.lock().await.get(&(0, 0)).cloned().unwrap();
         let map = map.lock().await;
@@ -15888,15 +25305,17 @@ async fn evocation_starts_self_channel_and_movement_cancels_it() {
         assert_eq!(channel.target, None);
     }
 
-    assert!(cancel_movement_interrupted_player_spell_cast(
-        &mut stream,
-        maps.as_ref(),
-        sessions.as_ref(),
-        &mut session,
-        &mut header_crypto,
-    )
-    .await
-    .unwrap());
+    assert!(
+        cancel_movement_interrupted_player_spell_cast(
+            &mut stream,
+            maps.as_ref(),
+            sessions.as_ref(),
+            &mut session,
+            &mut header_crypto,
+        )
+        .await
+        .unwrap()
+    );
     interrupt_player_consumable_auras(
         &mut stream,
         &maps,
@@ -15907,11 +25326,13 @@ async fn evocation_starts_self_channel_and_movement_cancels_it() {
     )
     .await
     .unwrap();
-    assert!(!session
-        .auras
-        .active_auras
-        .iter()
-        .any(|aura| aura.spell_id == 12051));
+    assert!(
+        !session
+            .auras
+            .active_auras
+            .iter()
+            .any(|aura| aura.spell_id == 12051)
+    );
     let map = maps.maps.lock().await.get(&(0, 0)).cloned().unwrap();
     assert!(!map.lock().await.active_player_channels.contains_key(&7));
 }
@@ -16067,9 +25488,383 @@ async fn frost_nova_live_rank_one_roots_neutral_attackable_creatures() {
         session.character.player_mana,
         available_mana - frost_nova_mana_cost
     );
-    assert!(packets
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+}
+
+#[tokio::test]
+async fn drain_soul_live_rank_one_starts_target_channel_and_movement_clears_target_aura() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let drain_soul = wow_db::get_spell_template_query(&world_db_pool, 1120)
+        .await
+        .unwrap()
+        .expect("Drain Soul rank 1 should exist in the local spell_template");
+    let available_mana = drain_soul.mana_cost.max(500);
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+        spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(1120, Some(drain_soul.clone()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, -8949.95, -132.493, 83.5312, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.class = 9;
+    player.level = 10;
+    player.power1 = available_mana;
+    maps.add_player(player).await.unwrap();
+
+    let mut hostile = test_creature_spawn(6);
+    hostile.guid = 54;
+    hostile.position_x = player_position.x + 10.0;
+    hostile.position_y = player_position.y;
+    hostile.position_z = 83.5312;
+    hostile.template.faction = 17;
+    let hostile_target = creature_spawn_guid(&hostile);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(hostile)])
+        .await;
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&1120u32.to_le_bytes());
+    body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+    PackedGuid::write(&mut body, hostile_target).unwrap();
+    let mut active_spells = HashSet::new();
+    active_spells.insert(1120);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Nora".to_string(),
+                race: 1,
+                class: 9,
+                level: 10,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: available_mana,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let opcodes = packets
         .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16));
+        .map(|packet| packet.opcode)
+        .collect::<Vec<_>>();
+    assert!(
+        packets.iter().any(|packet| {
+            packet.opcode == WorldOpcode::MsgChannelStart as u16
+                && u32::from_le_bytes(packet.body[0..4].try_into().unwrap()) == 1120
+        }),
+        "{opcodes:?}"
+    );
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let channel_update_values = packets
+        .iter()
+        .filter(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+        .find_map(|packet| {
+            if packet.body.len() <= 5 || packet.body[5] != UPDATE_TYPE_VALUES {
+                return None;
+            }
+            let values = decode_values_update_block(&packet.body[5..], player_guid).0;
+            (values[UNIT_CHANNEL_SPELL] == Some(1120)).then_some(values)
+        })
+        .expect("target-channel update packet");
+    assert_eq!(channel_update_values[UNIT_CHANNEL_SPELL], Some(1120));
+    assert_eq!(
+        channel_update_values[UNIT_FIELD_CHANNEL_OBJECT],
+        Some(hostile_target.raw() as u32)
+    );
+
+    let hostile_before_cancel = maps.db_creature_snapshot(0, hostile_target).await.unwrap();
+    assert!(
+        hostile_before_cancel
+            .active_auras
+            .iter()
+            .any(|aura| aura.spell_id == 1120 && aura.caster == player_guid)
+    );
+    {
+        let map = maps.maps.lock().await.get(&(0, 0)).cloned().unwrap();
+        let map = map.lock().await;
+        let channel = map.active_player_channels.get(&7).unwrap();
+        assert_eq!(channel.spell_id, 1120);
+        assert_eq!(channel.target, Some(hostile_target));
+    }
+
+    assert!(
+        cancel_movement_interrupted_player_spell_cast(
+            &mut stream,
+            maps.as_ref(),
+            sessions.as_ref(),
+            &mut session,
+            &mut header_crypto,
+        )
+        .await
+        .unwrap()
+    );
+
+    let hostile_after_cancel = maps.db_creature_snapshot(0, hostile_target).await.unwrap();
+    assert!(
+        !hostile_after_cancel
+            .active_auras
+            .iter()
+            .any(|aura| aura.spell_id == 1120)
+    );
+    let map = maps.maps.lock().await.get(&(0, 0)).cloned().unwrap();
+    assert!(!map.lock().await.active_player_channels.contains_key(&7));
+}
+
+#[tokio::test]
+async fn drain_soul_live_cast_aura_awards_soul_shard_on_db_creature_kill() {
+    let _guard = conjure_item_db_test_lock().lock().await;
+    let character_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/characters").unwrap();
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let drain_soul = wow_db::get_spell_template_query(&world_db_pool, 1120)
+        .await
+        .unwrap()
+        .expect("Drain Soul rank 1 should exist in the local spell_template");
+    let dbc_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("launcher")
+        .join("data")
+        .join("dbc");
+    let account_id = 905_601u32;
+    let created = wow_db::create_character(
+        &character_db_pool,
+        &world_db_pool,
+        wow_db::NewCharacter {
+            account_id,
+            name: "Ds5601Ok".to_string(),
+            race: 1,
+            class: 9,
+            gender: 0,
+            skin: 0,
+            face: 0,
+            hair_style: 0,
+            hair_color: 0,
+            facial_hair: 0,
+        },
+    )
+    .await
+    .unwrap();
+
+    let test_result: anyhow::Result<_> = async {
+        let inventory_before =
+            wow_db::get_character_inventory_items(&character_db_pool, created.guid).await?;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut stream = WorldPacketSink::new(tx);
+        let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+        let maps = Arc::new(MapRuntimeManager {
+            spell_durations: load_spell_durations(&dbc_dir.join("SpellDuration.dbc")),
+            spell_ranges: load_spell_ranges(&dbc_dir.join("SpellRange.dbc")),
+            ..MapRuntimeManager::default()
+        });
+        let sessions = Arc::new(SessionRegistry::default());
+        let object_mgr = ObjectMgr::default();
+        object_mgr
+            .prime_spell_template_for_test(1120, Some(drain_soul.clone()))
+            .await;
+        object_mgr
+            .prime_creature_ai_scripts_for_test(6, Vec::new())
+            .await;
+        let shared_world = SharedWorldDeps {
+            object_mgr: &object_mgr,
+            maps: &maps,
+            sessions: &sessions,
+        };
+        let mut player = test_player_runtime(created.guid, SessionId::next(), created.position);
+        player.class = 9;
+        player.level = 10;
+        player.power1 = drain_soul.mana_cost.max(500);
+        player.inventory = inventory_before.clone();
+        maps.add_player(player).await.unwrap();
+
+        let mut hostile = test_creature_spawn(6);
+        hostile.guid = 905_601;
+        hostile.position_x = created.position.x + 10.0;
+        hostile.position_y = created.position.y;
+        hostile.position_z = created.position.z;
+        hostile.template.faction = 17;
+        hostile.template.min_level = 4;
+        hostile.template.max_level = 10;
+        let hostile_target = creature_spawn_guid(&hostile);
+        let mut creature = DbCreatureRuntime::new(hostile);
+        creature.loot_owner = Some(CreatureLootOwner::Player(created.guid));
+        maps.share_db_creature_snapshots(created.position.map_id, vec![creature])
+            .await;
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&1120u32.to_le_bytes());
+        body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
+        PackedGuid::write(&mut body, hostile_target).unwrap();
+        let mut active_spells = HashSet::new();
+        active_spells.insert(1120);
+        let mut session = WorldSessionState {
+            character: CharacterSessionState {
+                active_character: Some(ActiveCharacter {
+                    guid: created.guid,
+                    name: created.name.clone(),
+                    race: created.race,
+                    class: created.class,
+                    level: 10,
+                    xp: 0,
+                    position: created.position,
+                    movement_flags: 0,
+                    client_time: 0,
+                    fall_time: 0,
+                    jump: JumpInfo::default(),
+                }),
+                player_mana: drain_soul.mana_cost.max(500),
+                active_spells,
+                ..CharacterSessionState::default()
+            },
+            ..WorldSessionState::default()
+        };
+        session.inventory.items = inventory_before.clone();
+
+        handle_cast_spell(
+            &mut stream,
+            SpellCastDeps {
+                character_db_pool: &character_db_pool,
+                world_db_pool: &world_db_pool,
+                account_id,
+                shared_world,
+                parties: &PartyManager::default(),
+            },
+            read_cast_spell_request(&body),
+            &mut session,
+            &mut header_crypto,
+        )
+        .await?;
+
+        let packets_after_cast = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        let opcodes = packets_after_cast
+            .iter()
+            .map(|packet| packet.opcode)
+            .collect::<Vec<_>>();
+        let creature_after_cast = maps
+            .db_creature_snapshot(created.position.map_id, hostile_target)
+            .await
+            .expect("Drain Soul target snapshot after cast");
+        assert!(
+            creature_after_cast
+                .active_auras
+                .iter()
+                .any(|aura| aura.spell_id == 1120),
+            "{opcodes:?}"
+        );
+
+        award_channel_death_items_for_db_creature_kill(
+            &mut stream,
+            CombatRewardDeps {
+                character_db_pool: &character_db_pool,
+                world_db_pool: &world_db_pool,
+                shared_world,
+                parties: &PartyManager::default(),
+            },
+            &mut session,
+            &creature_after_cast,
+            &mut header_crypto,
+        )
+        .await?;
+
+        let inventory_after =
+            wow_db::get_character_inventory_items(&character_db_pool, created.guid).await?;
+        let snapshot_after = maps
+            .player_runtime_snapshot(created.position.map_id, created.guid)
+            .await;
+        let packets = packets_after_cast
+            .into_iter()
+            .chain(std::iter::from_fn(|| rx.try_recv().ok()))
+            .collect::<Vec<_>>();
+        Ok((
+            inventory_after,
+            session.inventory.items.clone(),
+            snapshot_after,
+            packets,
+        ))
+    }
+    .await;
+
+    let _ = wow_db::delete_character(&character_db_pool, account_id, created.guid).await;
+
+    let (inventory_after, session_inventory, snapshot_after, packets) = test_result.unwrap();
+    let shard_count = inventory_after
+        .iter()
+        .filter(|item| item.item_template == 6265)
+        .map(|item| item.count)
+        .sum::<u32>();
+    assert_eq!(shard_count, 1);
+    assert!(
+        session_inventory
+            .iter()
+            .any(|item| item.item_template == 6265 && item.count == 1)
+    );
+    let snapshot_after =
+        snapshot_after.expect("player snapshot after live Drain Soul shard reward");
+    assert!(
+        snapshot_after
+            .inventory
+            .iter()
+            .any(|item| item.item_template == 6265 && item.count == 1)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
 }
 
 #[tokio::test]
@@ -16178,15 +25973,21 @@ async fn spell_cast_from_sitting_auto_stands_player_and_observers() {
         values[UNIT_FIELD_BYTES_1]
             == Some(unit_bytes_1_for_class(1) | u32::from(PLAYER_STAND_STATE_STAND))
     }));
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16));
-    assert!(observer_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16));
-    assert!(observer_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16)
+    );
+    assert!(
+        observer_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    assert!(
+        observer_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16)
+    );
 }
 
 #[tokio::test]
@@ -16529,10 +26330,11 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
     )
     .await
     .unwrap();
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_some());
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_some()
+    );
     let _ = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     let _ = std::iter::from_fn(|| observer_rx.try_recv().ok()).collect::<Vec<_>>();
 
@@ -16550,10 +26352,11 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
     .await
     .unwrap();
 
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(0, 7)
-        .await
-        .is_none());
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(0, 7)
+            .await
+            .is_none()
+    );
     assert_eq!(session.character.player_mana, 100);
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
@@ -16561,24 +26364,35 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     let observer_packets = std::iter::from_fn(|| observer_rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16
-            && packet.body[5] == SPELL_FAILED_INTERRUPTED));
-    assert!(observer_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16));
-    assert!(observer_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailedOther as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
     assert!(
-        !maps.player_runtime_snapshot(0, 7)
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16
+                && packet.body[5] == SPELL_FAILED_INTERRUPTED)
+    );
+    assert!(
+        observer_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16)
+    );
+    assert!(
+        observer_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailedOther as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
+    assert!(
+        !maps
+            .player_runtime_snapshot(0, 7)
             .await
             .unwrap()
             .spell_global_cooldowns_until
@@ -16602,9 +26416,11 @@ async fn moving_during_cast_time_interrupts_spell_before_damage_or_power_spend()
     .await
     .unwrap();
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16)
+    );
     assert!(!packets.iter().any(|packet| {
         packet.opcode == WorldOpcode::SmsgCastResult as u16
             && packet.body[5] == SPELL_FAILED_NOT_READY
@@ -16667,15 +26483,17 @@ async fn movement_does_not_interrupt_cast_without_movement_interrupt_flag() {
         ..WorldSessionState::default()
     };
 
-    assert!(!cancel_movement_interrupted_player_spell_cast(
-        &mut stream,
-        maps.as_ref(),
-        sessions.as_ref(),
-        &mut session,
-        &mut header_crypto,
-    )
-    .await
-    .unwrap());
+    assert!(
+        !cancel_movement_interrupted_player_spell_cast(
+            &mut stream,
+            maps.as_ref(),
+            sessions.as_ref(),
+            &mut session,
+            &mut header_crypto,
+        )
+        .await
+        .unwrap()
+    );
 
     assert_eq!(
         maps.next_pending_player_spell_cast_due_at(map_id, character_guid)
@@ -16762,32 +26580,41 @@ async fn movement_interrupts_cast_with_movement_interrupt_flag() {
         ..WorldSessionState::default()
     };
 
-    assert!(cancel_movement_interrupted_player_spell_cast(
-        &mut stream,
-        maps.as_ref(),
-        sessions.as_ref(),
-        &mut session,
-        &mut header_crypto,
-    )
-    .await
-    .unwrap());
-
-    assert!(maps
-        .next_pending_player_spell_cast_due_at(map_id, character_guid)
+    assert!(
+        cancel_movement_interrupted_player_spell_cast(
+            &mut stream,
+            maps.as_ref(),
+            sessions.as_ref(),
+            &mut session,
+            &mut header_crypto,
+        )
         .await
-        .is_none());
+        .unwrap()
+    );
+
+    assert!(
+        maps.next_pending_player_spell_cast_due_at(map_id, character_guid)
+            .await
+            .is_none()
+    );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     let observer_packets = std::iter::from_fn(|| observer_rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16
-            && packet.body[5] == SPELL_FAILED_INTERRUPTED));
-    assert!(observer_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16));
-    assert!(observer_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailedOther as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16
+                && packet.body[5] == SPELL_FAILED_INTERRUPTED)
+    );
+    assert!(
+        observer_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16)
+    );
+    assert!(
+        observer_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailedOther as u16)
+    );
 }
 
 #[tokio::test]
@@ -16798,7 +26625,7 @@ async fn movement_does_not_interrupt_channel_without_moving_interrupt_flag() {
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let target = creature_spawn_guid(&{
         let mut spawn = test_creature_spawn(6);
-    spawn.template.faction = 17;
+        spawn.template.faction = 17;
         spawn.guid = 45;
         spawn
     });
@@ -16812,7 +26639,7 @@ async fn movement_does_not_interrupt_channel_without_moving_interrupt_flag() {
             WorldPosition::new(map_id, -8949.95, -132.493, 83.5312, 0.0),
         );
         let mut spawn = test_creature_spawn(6);
-    spawn.template.faction = 17;
+        spawn.template.faction = 17;
         spawn.guid = 45;
         map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
     }
@@ -16835,17 +26662,19 @@ async fn movement_does_not_interrupt_channel_without_moving_interrupt_flag() {
     .await
     .unwrap();
 
-    assert!(maps
-        .cancel_movement_interrupted_player_channel(map_id, character_guid)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        maps.cancel_movement_interrupted_player_channel(map_id, character_guid)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let map = maps.maps.lock().await.get(&(map_id, 0)).cloned().unwrap();
-    assert!(map
-        .lock()
-        .await
-        .active_player_channels
-        .contains_key(&character_guid));
+    assert!(
+        map.lock()
+            .await
+            .active_player_channels
+            .contains_key(&character_guid)
+    );
 }
 
 #[tokio::test]
@@ -16856,7 +26685,7 @@ async fn movement_interrupts_channel_with_moving_interrupt_flag() {
     let caster = ObjectGuid::new(HighGuid::Player, 0, character_guid);
     let target = creature_spawn_guid(&{
         let mut spawn = test_creature_spawn(6);
-    spawn.template.faction = 17;
+        spawn.template.faction = 17;
         spawn.guid = 45;
         spawn
     });
@@ -16870,7 +26699,7 @@ async fn movement_interrupts_channel_with_moving_interrupt_flag() {
             WorldPosition::new(map_id, -8949.95, -132.493, 83.5312, 0.0),
         );
         let mut spawn = test_creature_spawn(6);
-    spawn.template.faction = 17;
+        spawn.template.faction = 17;
         spawn.guid = 45;
         map.share_db_creature_snapshots(vec![DbCreatureRuntime::new(spawn)]);
     }
@@ -16893,17 +26722,19 @@ async fn movement_interrupts_channel_with_moving_interrupt_flag() {
     .await
     .unwrap();
 
-    assert!(maps
-        .cancel_movement_interrupted_player_channel(map_id, character_guid)
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        maps.cancel_movement_interrupted_player_channel(map_id, character_guid)
+            .await
+            .unwrap()
+            .is_some()
+    );
     let map = maps.maps.lock().await.get(&(map_id, 0)).cloned().unwrap();
-    assert!(!map
-        .lock()
-        .await
-        .active_player_channels
-        .contains_key(&character_guid));
+    assert!(
+        !map.lock()
+            .await
+            .active_player_channels
+            .contains_key(&character_guid)
+    );
 }
 
 #[test]
@@ -17112,12 +26943,16 @@ async fn cast_time_spell_rechecks_facing_before_completion_go() {
         packet.opcode == WorldOpcode::SmsgCastResult as u16
             && packet.body[5] == SPELL_FAILED_UNIT_NOT_INFRONT
     }));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
     assert_eq!(session.character.player_mana, 100);
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
@@ -17270,12 +27105,16 @@ async fn cast_time_spell_rechecks_los_before_completion_go() {
         packet.opcode == WorldOpcode::SmsgCastResult as u16
             && packet.body[5] == SPELL_FAILED_LINE_OF_SIGHT
     }));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
     assert_eq!(session.character.player_mana, 100);
     assert_eq!(
         maps.db_creature_snapshot(0, target).await.unwrap().health,
@@ -17389,16 +27228,18 @@ async fn fireball_with_periodic_aura_applies_direct_damage_and_dot() {
     assert_eq!(aura.duration_millis, Some(4_000));
     assert_eq!(aura.periodic_damage.unwrap().amount, 3);
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
-    assert!(packets.iter().any(
-        |packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
+    assert!(packets.iter().any(|packet| {
+        packet.opcode == WorldOpcode::SmsgUpdateObject as u16
             && packet
                 .body
                 .windows(4)
                 .any(|window| window == 133u32.to_le_bytes().as_slice())
-    ));
+    }));
 }
 
 #[tokio::test]
@@ -17509,15 +27350,21 @@ async fn fireball_against_evading_creature_casts_then_reports_evade_miss() {
         "CMaNGOS SpellHitResult evade prevents both damage and the follow-up DoT"
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
     let spell_go = packets
         .iter()
         .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
@@ -17618,18 +27465,26 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
         "next-melee rage is spent when the queued swing fires, not when it is queued"
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16));
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
 }
 
 #[tokio::test]
@@ -17737,19 +27592,26 @@ async fn avoided_queued_heroic_strike_reports_miss_only_in_spell_go() {
     .unwrap();
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellLogMiss as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellLogMiss as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16)
+    );
     let spell_go = packets
         .iter()
         .find(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
         .expect("avoided queued Heroic Strike should report the miss in SMSG_SPELL_GO");
     let caster = ObjectGuid::new(HighGuid::Player, 0, 7);
     let (hits, misses) = spell_go_hit_and_miss_targets_from_body(&spell_go.body, caster, caster);
-    assert!(hits.is_empty(), "avoided yellow swing should not list hit targets");
+    assert!(
+        hits.is_empty(),
+        "avoided yellow swing should not list hit targets"
+    );
     assert_eq!(misses.len(), 1);
     assert_eq!(misses[0].0, target);
     assert!(
@@ -17851,17 +27713,26 @@ async fn heroic_strike_can_queue_before_target_is_in_melee_range() {
             mana_cost: 0,
         }),
         "queue packets: {:?}",
-        packets.iter().map(|packet| packet.opcode).collect::<Vec<_>>()
+        packets
+            .iter()
+            .map(|packet| packet.opcode)
+            .collect::<Vec<_>>()
     );
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailedOther as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailedOther as u16)
+    );
 
     let start = packets
         .iter()
@@ -18095,6 +27966,566 @@ async fn db_creature_death_clears_queued_next_melee_spell_for_target() {
 }
 
 #[tokio::test]
+async fn summon_possessed_effect_spawns_player_owned_runtime_creature() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(126, Some(eye_of_kilrogg_spell_template()))
+        .await;
+    object_mgr
+        .prime_spell_template_for_test(2585, Some(eye_of_kilrogg_passive_spell_template()))
+        .await;
+    object_mgr
+        .prime_creature_template_for_test(4277, Some(test_creature_template(4277)))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let caster_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), caster_position);
+    caster.class = 9;
+    caster.level = 22;
+    caster.power1 = 100;
+    caster.max_power1 = 100;
+    maps.add_player(caster).await.unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&126u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(126);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 22,
+                xp: 0,
+                position: caster_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(session.character.player_mana, 0);
+
+    let summoned_eye = {
+        let map = maps.get_or_create_map(0, 0).await;
+        let map = map.lock().await;
+        assert_eq!(map.creatures.len(), 1);
+        map.creatures
+            .values()
+            .next()
+            .cloned()
+            .expect("summon possessed should create one runtime creature")
+    };
+    assert_eq!(
+        summoned_eye.guid(),
+        ObjectGuid::new(HighGuid::Unit, 4277, summoned_eye.spawn.guid)
+    );
+    assert_eq!(summoned_eye.spawn.entry, 4277);
+    assert_eq!(
+        summoned_eye.owner_guid,
+        Some(ObjectGuid::new(HighGuid::Player, 0, 7))
+    );
+    assert_eq!(summoned_eye.created_by_spell, Some(126));
+    assert_eq!(summoned_eye.pet_number, None);
+    assert!(summoned_eye.player_controlled);
+    assert_eq!(
+        summoned_eye.charmer_guid,
+        Some(ObjectGuid::new(HighGuid::Player, 0, 7))
+    );
+    assert_eq!(summoned_eye.spawn.template.faction, faction_for_race(1));
+
+    let block = build_db_creature_runtime_create_block(&summoned_eye).unwrap();
+    let packed_guid_mask = block[1];
+    let update_flags_offset = 1 + 1 + packed_guid_mask.count_ones() as usize + 1;
+    let values_start = update_flags_offset + 1 + 56;
+    let values = decode_update_values(&block[values_start..]);
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    assert_eq!(values[UNIT_FIELD_SUMMONEDBY], Some(owner_guid.raw() as u32));
+    assert_eq!(
+        values[UNIT_FIELD_SUMMONEDBY + 1],
+        Some((owner_guid.raw() >> 32) as u32)
+    );
+    assert_eq!(values[UNIT_FIELD_CREATEDBY], Some(owner_guid.raw() as u32));
+    assert_eq!(
+        values[UNIT_FIELD_CREATEDBY + 1],
+        Some((owner_guid.raw() >> 32) as u32)
+    );
+    assert_eq!(values[UNIT_FIELD_CHARMEDBY], Some(owner_guid.raw() as u32));
+    assert_eq!(
+        values[UNIT_FIELD_CHARMEDBY + 1],
+        Some((owner_guid.raw() >> 32) as u32)
+    );
+    assert_eq!(values[UNIT_FIELD_PETNUMBER], None);
+    assert_eq!(values[UNIT_CREATED_BY_SPELL], Some(126));
+    assert_eq!(values[UNIT_FIELD_PET_NAME_TIMESTAMP], None);
+    assert_eq!(values[UNIT_NPC_FLAGS], Some(0));
+    assert_eq!(
+        values[UNIT_FIELD_FLAGS].unwrap() & (UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_POSSESSED),
+        UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_POSSESSED
+    );
+    assert_eq!(
+        session.movement.controlled_unit,
+        Some(ObjectGuid::new(HighGuid::Unit, 4277, summoned_eye.spawn.guid))
+    );
+    assert_eq!(session.movement.active_mover, session.movement.controlled_unit);
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let charm_update = packets
+        .iter()
+        .find_map(|packet| {
+            if packet.opcode != WorldOpcode::SmsgUpdateObject as u16
+                || packet.body.len() <= 5
+                || packet.body[5] != UPDATE_TYPE_VALUES
+            {
+                return None;
+            }
+            let (values, trailing) = decode_values_update_block(&packet.body[5..], player_guid);
+            (trailing.is_empty() && values[UNIT_FIELD_CHARM] == Some(summoned_eye.guid().raw() as u32))
+                .then_some(values)
+        })
+        .expect("summon possessed should update the player's charm field");
+    assert_eq!(
+        charm_update[UNIT_FIELD_CHARM + 1],
+        Some((summoned_eye.guid().raw() >> 32) as u32)
+    );
+    let client_control = packets
+        .iter()
+        .find(|packet| packet.opcode == 0x0159)
+        .expect("summon possessed should grant client control to the summoned eye");
+    let mut cursor = 0;
+    assert_eq!(
+        read_packed_guid(&client_control.body, &mut cursor).unwrap(),
+        summoned_eye.guid()
+    );
+    assert_eq!(client_control.body[cursor], 1);
+}
+
+#[tokio::test]
+async fn eye_of_kilrogg_cast_applies_hidden_bind_sight_aura_to_summoned_eye() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let passive_duration = SpellDurationEntry {
+        duration_millis: 60_000,
+        duration_per_level_millis: 0,
+        max_duration_millis: 60_000,
+    };
+    let maps = Arc::new(MapRuntimeManager {
+        spell_durations: HashMap::from([(21, passive_duration)]),
+        ..MapRuntimeManager::default()
+    });
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(126, Some(eye_of_kilrogg_spell_template()))
+        .await;
+    object_mgr
+        .prime_spell_template_for_test(2585, Some(eye_of_kilrogg_passive_spell_template()))
+        .await;
+    object_mgr
+        .prime_creature_template_for_test(4277, Some(test_creature_template(4277)))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let caster_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), caster_position);
+    caster.class = 9;
+    caster.level = 22;
+    caster.power1 = 100;
+    caster.max_power1 = 100;
+    maps.add_player(caster).await.unwrap();
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&126u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(126);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 22,
+                xp: 0,
+                position: caster_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let summoned_eye = {
+        let map = maps.get_or_create_map(0, 0).await;
+        let map = map.lock().await;
+        assert_eq!(map.creatures.len(), 1);
+        map.creatures
+            .values()
+            .next()
+            .cloned()
+            .expect("Eye of Kilrogg should create one runtime creature")
+    };
+    assert_eq!(summoned_eye.active_auras.len(), 1);
+    let aura = &summoned_eye.active_auras[0];
+    assert_eq!(aura.spell_id, 2585);
+    assert!(!aura.visible);
+    assert_eq!(
+        aura.duration_millis,
+        Some(passive_duration.duration_millis as u32)
+    );
+    assert_eq!(aura.stat_modifiers, vec![AuraStatModifier::FarSight]);
+    assert_eq!(
+        maps.player_runtime(0, 7).await.unwrap().farsight_target,
+        Some(summoned_eye.guid())
+    );
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets
+            .iter()
+            .filter(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+            .count()
+            >= 2,
+        "Eye of Kilrogg should send both summon-create and aura-update object packets"
+    );
+}
+
+#[tokio::test]
+async fn eye_of_kilrogg_controlled_movement_updates_summoned_eye_runtime() {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(126, Some(eye_of_kilrogg_spell_template()))
+        .await;
+    object_mgr
+        .prime_spell_template_for_test(2585, Some(eye_of_kilrogg_passive_spell_template()))
+        .await;
+    object_mgr
+        .prime_creature_template_for_test(4277, Some(test_creature_template(4277)))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), player_position);
+    caster.class = 9;
+    caster.level = 22;
+    caster.power1 = 100;
+    caster.max_power1 = 100;
+    maps.add_player(caster).await.unwrap();
+    let mut cast_body = Vec::new();
+    cast_body.extend_from_slice(&126u32.to_le_bytes());
+    cast_body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(126);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 22,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&cast_body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let summoned_eye = {
+        let map = maps.get_or_create_map(0, 0).await;
+        let map = map.lock().await;
+        map.creatures
+            .values()
+            .next()
+            .cloned()
+            .expect("Eye of Kilrogg should create one controlled summon")
+    };
+    let eye_guid = summoned_eye.guid();
+    session.movement.active_mover = Some(eye_guid);
+    session.movement.controlled_unit = Some(eye_guid);
+
+    let moved_position = WorldPosition::new(0, -8938.0, -129.0, 84.0, 0.75);
+    let movement = MovementInfo {
+        flags: MOVEFLAG_FORWARD,
+        client_time: 1234,
+        position: moved_position,
+        fall_time: 0,
+        jump: JumpInfo::default(),
+    };
+    let mut movement_body = Vec::new();
+    write_movement_info(
+        &mut movement_body,
+        movement.flags,
+        movement.client_time,
+        movement.position,
+        movement.fall_time,
+        &movement.jump,
+    );
+
+    handle_movement(
+        &mut stream,
+        MovementDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            object_mgr: &object_mgr,
+            maps: &maps,
+            sessions: &sessions,
+        },
+        WorldOpcode::MsgMoveStop as u32,
+        &movement_body,
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let eye_after = maps.db_creature_snapshot(0, eye_guid).await.unwrap();
+    assert_eq!(eye_after.current_position, moved_position);
+    assert_eq!(
+        maps.player_runtime_snapshot(0, 7).await.unwrap().position,
+        player_position
+    );
+    assert_eq!(
+        session.character.active_character.as_ref().unwrap().position,
+        player_position
+    );
+}
+
+#[tokio::test]
+async fn controlled_summon_cleanup_restores_player_mover_and_clears_client_control() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(126, Some(eye_of_kilrogg_spell_template()))
+        .await;
+    object_mgr
+        .prime_spell_template_for_test(2585, Some(eye_of_kilrogg_passive_spell_template()))
+        .await;
+    object_mgr
+        .prime_creature_template_for_test(4277, Some(test_creature_template(4277)))
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+
+    let player_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut caster = test_player_runtime(7, SessionId::next(), player_position);
+    caster.class = 9;
+    caster.level = 22;
+    caster.power1 = 100;
+    caster.max_power1 = 100;
+    maps.add_player(caster).await.unwrap();
+
+    let mut cast_body = Vec::new();
+    cast_body.extend_from_slice(&126u32.to_le_bytes());
+    cast_body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(126);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 22,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 100,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&cast_body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let summoned_eye = {
+        let map = maps.get_or_create_map(0, 0).await;
+        let map = map.lock().await;
+        map.creatures
+            .values()
+            .next()
+            .cloned()
+            .expect("Eye of Kilrogg should create one controlled summon")
+    };
+    let eye_guid = summoned_eye.guid();
+    assert_eq!(session.movement.controlled_unit, Some(eye_guid));
+    assert_eq!(session.movement.active_mover, Some(eye_guid));
+
+    maps.delete_db_creature_runtime(0, Some(eye_guid), None, Some(7))
+        .await
+        .unwrap()
+        .expect("controlled eye should delete cleanly");
+    assert_eq!(maps.player_runtime(0, 7).await.unwrap().farsight_target, None);
+
+    let cleaned = reconcile_invalid_controlled_unit_if_needed(
+        &mut stream,
+        &maps,
+        &sessions,
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+    assert!(cleaned);
+
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, 7);
+    assert_eq!(session.movement.controlled_unit, None);
+    assert_eq!(session.movement.active_mover, Some(player_guid));
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let expected_charm_clear = build_player_charm_update_body(7, None).unwrap();
+    assert!(packets
+        .iter()
+        .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+            && packet.body == expected_charm_clear),
+        "cleanup should clear the player's charm field"
+    );
+
+    assert!(packets.iter().any(|packet| {
+        if packet.opcode != 0x0159 {
+            return false;
+        }
+        let mut cursor = 0;
+        read_packed_guid(&packet.body, &mut cursor).ok() == Some(eye_guid)
+            && packet.body.get(cursor) == Some(&0)
+    }));
+}
+
+#[tokio::test]
 async fn battle_shout_uses_spell_template_gcd_cost_and_aura_slot() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut stream = WorldPacketSink::new(tx);
@@ -18172,10 +28603,12 @@ async fn battle_shout_uses_spell_template_gcd_cost_and_aura_slot() {
 
     assert_eq!(session.character.player_rage, 150);
     let snapshot = maps.player_runtime_snapshot(0, 7).await.unwrap();
-    assert!(snapshot
-        .spell_global_cooldowns_until
-        .get(&133)
-        .is_some_and(|until| *until > Instant::now()));
+    assert!(
+        snapshot
+            .spell_global_cooldowns_until
+            .get(&133)
+            .is_some_and(|until| *until > Instant::now())
+    );
     assert_eq!(session.auras.active_auras.len(), 1);
     let active_aura = &session.auras.active_auras[0];
     assert_eq!(active_aura.spell_id, 6673);
@@ -18183,21 +28616,27 @@ async fn battle_shout_uses_spell_template_gcd_cost_and_aura_slot() {
     assert_eq!(active_aura.level, 3);
     assert!(active_aura.positive);
     assert_eq!(active_aura.duration_millis, Some(120_000));
-    assert!(active_aura
-        .expires_at
-        .is_some_and(|expires_at| expires_at > Instant::now()));
+    assert!(
+        active_aura
+            .expires_at
+            .is_some_and(|expires_at| expires_at > Instant::now())
+    );
     assert_eq!(
         active_aura.stat_modifiers,
         vec![AuraStatModifier::AttackPower { amount: 15 }]
     );
 
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16));
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
     assert!(
         packets
             .iter()
@@ -18250,18 +28689,26 @@ async fn battle_shout_uses_spell_template_gcd_cost_and_aura_slot() {
 
     assert_eq!(session.character.player_rage, 150);
     let second_packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(second_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16));
-    assert!(second_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16));
-    assert!(!second_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16));
-    assert!(!second_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16));
+    assert!(
+        second_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
+    );
+    assert!(
+        second_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16)
+    );
+    assert!(
+        !second_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16)
+    );
+    assert!(
+        !second_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellGo as u16)
+    );
 }
 
 #[test]
@@ -18359,6 +28806,101 @@ async fn berserker_rage_purges_existing_fear_aura_conflicts() {
     assert_eq!(replace_spell_ids, vec![5782]);
     assert_eq!(active_auras.len(), 1);
     assert_eq!(active_auras[0].spell_id, 18499);
+}
+
+#[tokio::test]
+async fn fear_live_rank_one_row_uses_generic_hostile_fear_aura_lane() {
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let fear = wow_db::get_spell_template_query(&world_db_pool, 5782)
+        .await
+        .unwrap()
+        .expect("Fear rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&world_db_pool, 5782)
+        .await
+        .unwrap()
+        .expect("Fear rank 1 should exist in spell_chain");
+    let max_rank = wow_db::get_spell_chain_query(&world_db_pool, 6215)
+        .await
+        .unwrap()
+        .expect("Fear rank 3 should exist in spell_chain");
+
+    assert_eq!(chain.spell_id, 5782);
+    assert_eq!(chain.prev_spell, 0);
+    assert_eq!(chain.first_spell, 5782);
+    assert_eq!(chain.rank, 1);
+    assert_eq!(max_rank.spell_id, 6215);
+    assert_eq!(max_rank.prev_spell, 6213);
+    assert_eq!(max_rank.first_spell, 5782);
+    assert_eq!(max_rank.rank, 3);
+    assert_eq!(
+        spell_effect_support(SPELL_EFFECT_APPLY_AURA),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_MOD_FEAR),
+        SpellMechanicSupport::Implemented
+    );
+    assert!(
+        [
+            (
+                fear.effect1,
+                fear.effect_apply_aura_name1,
+                fear.effect_implicit_target_a1,
+            ),
+            (
+                fear.effect2,
+                fear.effect_apply_aura_name2,
+                fear.effect_implicit_target_a2,
+            ),
+            (
+                fear.effect3,
+                fear.effect_apply_aura_name3,
+                fear.effect_implicit_target_a3,
+            ),
+        ]
+        .into_iter()
+        .any(|(effect, aura, target)| {
+            effect == SPELL_EFFECT_APPLY_AURA
+                && aura == SPELL_AURA_MOD_FEAR
+                && target == TARGET_UNIT_ENEMY
+        }),
+        "Fear rank 1 should keep a generic hostile fear aura in its live row"
+    );
+    assert_eq!(
+        db_creature_spell_diminishing_group(&fear),
+        None,
+        "CMaNGOS keeps Warlock fear diminishing on the player-only lane, not DB creatures"
+    );
+
+    let profile = player_spell_cast_profile(&fear).expect("fear profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+    assert!(matches!(
+        profile.power,
+        SpellPowerCost::Mana { cost } if cost == fear.mana_cost
+    ));
+    assert_eq!(profile.damage, 0);
+    assert!(!profile.requires_melee);
+    assert!(!profile.requires_behind);
+    assert!(!profile.needs_combo_points);
+
+    let plan = SpellInfo::from_template(&fear)
+        .player_spell_plan()
+        .expect("Fear rank 1 should build a generic player spell plan");
+    assert_eq!(plan.target, SpellPlanTarget::HostileUnit);
+
+    let aura = build_active_aura(
+        &fear,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        20,
+        test_spell_effect_value_context(&fear),
+        Instant::now(),
+        None,
+    );
+    assert!(!aura.positive);
+    assert!(aura.stat_modifiers.contains(&AuraStatModifier::Fear));
+    assert!(active_aura_suppresses_hostile_refs(&aura));
 }
 
 #[tokio::test]
@@ -18475,6 +29017,7 @@ async fn rend_applies_harmful_periodic_aura_to_db_creature() {
                 intellect: 0,
                 resistances: [0; MAX_SPELL_SCHOOL],
             },
+            profile: PeriodicDamageProfile::Flat,
             amount: 5,
             tick_millis: 3_000,
             next_tick_at: aura.periodic_damage.unwrap().next_tick_at,
@@ -18533,9 +29076,11 @@ async fn rend_applies_harmful_periodic_aura_to_db_creature() {
         i32::from_le_bytes(periodic_log.1.body[cursor..cursor + 4].try_into().unwrap()),
         0
     );
-    assert!(tick_packets
-        .iter()
-        .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgUpdateObject as u16));
+    assert!(
+        tick_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
     maps.advance_all_db_creature_auras(tick_at + Duration::from_millis(3_000), 1_003)
         .await
         .unwrap();
@@ -18662,15 +29207,21 @@ async fn charge_moves_player_to_target_instead_of_dealing_remote_damage() {
         "Charge should fire its triggered Charge Stun spell"
     );
     let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16));
-    assert!(packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgAttackStart as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16));
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16)
+    );
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgAttackStart as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellNonMeleeDamageLog as u16)
+    );
 }
 
 #[tokio::test]
@@ -18772,12 +29323,16 @@ async fn charge_cast_fails_before_movement_when_navigation_is_blocked() {
         packet.opcode == WorldOpcode::SmsgCastResult as u16
             && packet.body[5] == SPELL_FAILED_LINE_OF_SIGHT
     }));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16));
-    assert!(!packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16));
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellStart as u16)
+    );
+    assert!(
+        !packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16)
+    );
 }
 
 #[tokio::test]
@@ -19300,18 +29855,24 @@ fn applying_hard_control_aura_interrupts_active_player_cast() {
         !map.active_player_spell_casts.contains_key(&7),
         "CMaNGOS interrupts active non-melee spells when hard control lands"
     );
-    assert!(event
-        .direct_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16));
-    assert!(event
-        .direct_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16));
-    assert!(event
-        .direct_packets
-        .iter()
-        .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailedOther as u16));
+    assert!(
+        event
+            .direct_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
+    );
+    assert!(
+        event
+            .direct_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailure as u16)
+    );
+    assert!(
+        event
+            .direct_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgSpellFailedOther as u16)
+    );
 }
 
 #[test]
@@ -19824,10 +30385,11 @@ async fn warrior_stance_casts_apply_and_replace_linked_passives() {
         let mut stream = WorldPacketSink::new(tx);
         let mut header_crypto = HeaderCrypto::new(&[0; 40]);
 
-        let passive_template = wow_db::get_spell_template_query(&world_db_pool, expected_passive_id)
-            .await
-            .unwrap()
-            .expect("linked warrior stance passive should exist in local spell_template");
+        let passive_template =
+            wow_db::get_spell_template_query(&world_db_pool, expected_passive_id)
+                .await
+                .unwrap()
+                .expect("linked warrior stance passive should exist in local spell_template");
         let expected_passive = passive_spell_active_aura(
             &passive_template,
             ObjectGuid::new(HighGuid::Player, 0, 7),
@@ -19896,7 +30458,10 @@ async fn warrior_stance_casts_apply_and_replace_linked_passives() {
             .find(|aura| aura.spell_id == expected_passive_id)
             .expect("stance cast should mirror the linked passive into session state");
         assert!(!session_passive.visible);
-        assert_eq!(session_passive.stat_modifiers, expected_passive.stat_modifiers);
+        assert_eq!(
+            session_passive.stat_modifiers,
+            expected_passive.stat_modifiers
+        );
 
         for passive_id in all_passive_ids {
             let count = snapshot
@@ -19905,9 +30470,15 @@ async fn warrior_stance_casts_apply_and_replace_linked_passives() {
                 .filter(|aura| aura.spell_id == passive_id)
                 .count();
             if passive_id == expected_passive_id {
-                assert_eq!(count, 1, "stance cast should keep exactly one active linked passive");
+                assert_eq!(
+                    count, 1,
+                    "stance cast should keep exactly one active linked passive"
+                );
             } else {
-                assert_eq!(count, 0, "stance cast should replace other warrior stance passives");
+                assert_eq!(
+                    count, 0,
+                    "stance cast should replace other warrior stance passives"
+                );
             }
         }
     }
@@ -20023,7 +30594,9 @@ async fn charge_spell_cast_failure_checks_range_and_facing_before_movement() {
         maps: &maps,
         sessions: &sessions,
     };
-    object_mgr.prime_spell_facing_flag_for_test(100, Some(1)).await;
+    object_mgr
+        .prime_spell_facing_flag_for_test(100, Some(1))
+        .await;
 
     let map_id = 0;
     let character_guid = 7;

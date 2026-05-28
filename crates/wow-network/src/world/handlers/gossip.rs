@@ -24,6 +24,7 @@ pub(in crate::world) struct PreparedGossipMenu {
     pub(in crate::world) npc_flags: u32,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn handle_gossip_hello(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,

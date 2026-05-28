@@ -885,6 +885,16 @@ pub(in crate::world) fn db_creature_unit_flags(
     in_combat: bool,
 ) -> u32 {
     creature.spawn.template.unit_flags
+        | (if creature.charmer_guid.is_some() {
+            UNIT_FLAG_POSSESSED
+        } else {
+            0
+        })
+        | (if creature.player_controlled {
+            UNIT_FLAG_PLAYER_CONTROLLED
+        } else {
+            0
+        })
         | (if in_combat { UNIT_FLAG_IN_COMBAT } else { 0 })
         | (if active_aura_has_stun(&creature.active_auras) {
             UNIT_FLAG_STUNNED
@@ -896,7 +906,7 @@ pub(in crate::world) fn db_creature_unit_flags(
         } else {
             0
         })
-        | (if creature.is_fleeing() {
+        | (if creature.is_fleeing() || active_aura_has_fear(&creature.active_auras) {
             UNIT_FLAG_FLEEING
         } else {
             0

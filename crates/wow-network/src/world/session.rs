@@ -384,6 +384,8 @@ pub(in crate::world) struct MovementSessionState {
     pub(in crate::world) next_position_status_update_at: Option<Instant>,
     pub(in crate::world) db_creature_navigation: DbCreatureNavigationGuardrail,
     pub(in crate::world) active_taxi: Option<TaxiFlightSession>,
+    pub(in crate::world) active_mover: Option<ObjectGuid>,
+    pub(in crate::world) controlled_unit: Option<ObjectGuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -508,6 +510,12 @@ impl ActiveAura {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) enum PeriodicDamageProfile {
+    Flat,
+    AuraScript(AuraScriptId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::world) struct PeriodicDamageAura {
     pub(in crate::world) aura_name: u32,
     pub(in crate::world) school: u32,
@@ -515,6 +523,7 @@ pub(in crate::world) struct PeriodicDamageAura {
     pub(in crate::world) attributes_ex2: u32,
     pub(in crate::world) attributes_ex3: u32,
     pub(in crate::world) caster_snapshot: SpellCombatUnitSnapshot,
+    pub(in crate::world) profile: PeriodicDamageProfile,
     pub(in crate::world) amount: u32,
     pub(in crate::world) tick_millis: u32,
     pub(in crate::world) next_tick_at: Instant,
@@ -545,6 +554,9 @@ pub(in crate::world) struct AuraProcTrigger {
 pub(in crate::world) enum AuraStatModifier {
     AttackPower {
         amount: i32,
+    },
+    DodgePercent {
+        percent: i32,
     },
     BlockPercent {
         percent: i32,
@@ -645,6 +657,10 @@ pub(in crate::world) enum AuraStatModifier {
     ManaRegenInterruptPercent {
         percent: i32,
     },
+    HealthRegenInCombat {
+        amount: i32,
+    },
+    FarSight,
     Stat {
         stat: Option<usize>,
         amount: i32,
@@ -655,6 +671,10 @@ pub(in crate::world) enum AuraStatModifier {
     },
     ReputationGainPercent {
         percent: i32,
+    },
+    Stealth {
+        kind: i32,
+        amount: i32,
     },
     StealthDetect {
         kind: i32,
@@ -672,6 +692,7 @@ pub(in crate::world) enum AuraStatModifier {
     },
     Ghost,
     Hover,
+    WaterBreathing,
     WaterWalk,
     Dummy {
         aura_name: u32,
@@ -809,3 +830,11 @@ pub(in crate::world) fn mirror_session_db_creature(
     _creature: DbCreatureRuntime,
 ) {
 }
+
+#[cfg(test)]
+pub(in crate::world) fn remove_session_db_creature(session: &mut WorldSessionState, guid: u64) {
+    session.visibility.db_creatures.remove(&guid);
+}
+
+#[cfg(not(test))]
+pub(in crate::world) fn remove_session_db_creature(_session: &mut WorldSessionState, _guid: u64) {}

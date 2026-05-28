@@ -82,6 +82,89 @@ impl MapRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(in crate::world) fn start_player_target_aura_channel(
+        &mut self,
+        caster: ObjectGuid,
+        caster_character_guid: u32,
+        spell_id: u32,
+        target: ObjectGuid,
+        duration_millis: u32,
+        max_range: f32,
+        channel_interrupt_flags: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<PlayerChannelEvent>> {
+        if duration_millis == 0 {
+            return Ok(None);
+        }
+        let Some(caster_player) = self.players.get(&caster_character_guid) else {
+            return Ok(None);
+        };
+        let Some(direct_session_id) = caster_player.client_session_id() else {
+            return Ok(None);
+        };
+        if !target.is_creature()
+            || !self
+                .creatures
+                .get(&target.raw())
+                .is_some_and(DbCreatureRuntime::is_alive)
+        {
+            return Ok(None);
+        }
+
+        self.active_player_channels.insert(
+            caster_character_guid,
+            ActivePlayerChannel {
+                caster,
+                caster_character_guid,
+                spell_id,
+                target: Some(target),
+                max_range,
+                expires_at: now + Duration::from_millis(duration_millis as u64),
+                next_tick_at: None,
+                tick_millis: 0,
+                ticks_remaining: 0,
+                channel_interrupt_flags,
+                damage_delay_count: 0,
+                triggered_spell_speed: 0.0,
+                damage_effect: None,
+            },
+        );
+
+        let direct_packets = vec![
+            OutboundWorldPacket {
+                opcode: WorldOpcode::MsgChannelStart as u16,
+                body: build_channel_start_body(caster, spell_id, duration_millis)?,
+            },
+            OutboundWorldPacket {
+                opcode: WorldOpcode::SmsgUpdateObject as u16,
+                body: build_player_channel_update_body(caster, Some(target), spell_id)?,
+            },
+        ];
+        let observer_update = direct_packets[1].clone();
+        let mut observer_packets = Vec::new();
+        for player_guid in self.nearby_player_guids(
+            caster_player.position,
+            CREATURE_SPAWN_RADIUS_YARDS,
+            Some(caster_character_guid),
+        ) {
+            let Some(session_id) = self
+                .players
+                .get(&player_guid)
+                .and_then(PlayerRuntime::client_session_id)
+            else {
+                continue;
+            };
+            observer_packets.push((session_id, observer_update.clone()));
+        }
+
+        Ok(Some(PlayerChannelEvent {
+            direct_session_id,
+            direct_packets,
+            observer_packets,
+        }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::world) fn start_player_periodic_trigger_channel(
         &mut self,
         caster: ObjectGuid,
@@ -175,7 +258,29 @@ impl MapRuntime {
         };
         self.pending_player_channel_impacts
             .retain(|impact| impact.caster_character_guid != caster_character_guid);
-        self.player_channel_clear_event(channel)
+        let mut event = self.player_channel_clear_event(channel.clone())?;
+        if let Some(target) = channel.target.filter(|target| target.is_creature()) {
+            if let Some(aura_event) = self.remove_db_creature_auras_by_spell_ids(
+                target,
+                channel.caster_character_guid,
+                &[channel.spell_id],
+                Instant::now(),
+            )? {
+                if let Some(channel_event) = event.as_mut() {
+                    channel_event.direct_packets.push(OutboundWorldPacket {
+                        opcode: WorldOpcode::SmsgUpdateObject as u16,
+                        body: aura_event.aura_update.update_body,
+                    });
+                    channel_event
+                        .direct_packets
+                        .extend(aura_event.aura_update.direct_packets);
+                    channel_event
+                        .observer_packets
+                        .extend(aura_event.aura_update.observer_packets);
+                }
+            }
+        }
+        Ok(event)
     }
 
     pub(in crate::world) fn clear_player_active_spell_runtime(
@@ -638,15 +743,32 @@ impl MapRuntime {
                 .map(|packet| (caster_session_id, packet)),
         );
         if let Some(death) = event.death_finalization {
-            if let Some(packet) = death.motion_stop_packet {
-                packets.push((caster_session_id, packet));
-            }
-            packets.push((caster_session_id, death.combat_flag_packet));
-            packets.push((caster_session_id, death.attack_stop_packet));
-            packets.extend(death.observer_packets);
+            self.pending_player_channel_death_finalizations.push(
+                PendingPlayerChannelDeathFinalization {
+                    caster_character_guid: impact.caster_character_guid,
+                    death_finalization: death,
+                },
+            );
         }
         packets.extend(event.observer_packets);
         Ok(packets)
+    }
+
+    pub(in crate::world) fn take_player_channel_death_finalizations(
+        &mut self,
+        caster_character_guid: u32,
+    ) -> Vec<DbCreatureDeathFinalizationEvent> {
+        let mut drained = Vec::new();
+        let mut pending = Vec::with_capacity(self.pending_player_channel_death_finalizations.len());
+        for finalization in self.pending_player_channel_death_finalizations.drain(..) {
+            if finalization.caster_character_guid == caster_character_guid {
+                drained.push(finalization.death_finalization);
+            } else {
+                pending.push(finalization);
+            }
+        }
+        self.pending_player_channel_death_finalizations = pending;
+        drained
     }
 
     pub(in crate::world) fn interrupt_player_channel_for_damage(

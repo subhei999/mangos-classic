@@ -2732,6 +2732,136 @@ fn active_db_creature_chase_motion_commits_until_arrival() {
 }
 
 #[test]
+fn active_chase_refreshes_when_moving_target_cuts_inside_old_destination() {
+    let mut creature = test_creature_spawn(6);
+    creature.position_x = 0.0;
+    creature.position_y = 0.0;
+    creature.position_z = 0.0;
+    let attacker = creature_spawn_guid(&creature);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
+                movement_flags: MOVEFLAG_FORWARD,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), DbCreatureRuntime::new(creature));
+
+    let first_motion = start_db_creature_chase_motion(&mut session, attacker, player, now)
+        .expect("out-of-range creature should start chase motion");
+    let first_destination = *first_motion.path.last().unwrap();
+    let moving_recheck_at =
+        now + Duration::from_millis(DB_CREATURE_CHASE_MOVING_TARGET_RECHECK_MILLIS);
+    advance_db_creature_motion(&mut session, attacker, moving_recheck_at);
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&attacker.raw())
+        .expect("creature should still be loaded");
+    assert_eq!(runtime.next_spline_id, 1);
+    assert_eq!(
+        match &runtime.motion {
+            CreatureMotionState::Chase(chase) => chase.recheck_at,
+            _ => panic!("creature should remain in chase motion"),
+        },
+        now + Duration::from_millis(DB_CREATURE_CHASE_MOVING_TARGET_RECHECK_MILLIS)
+    );
+    let desired_stop_distance = db_creature_chase_stop_distance(runtime);
+    session
+        .character
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .x = first_destination.x - desired_stop_distance - 0.5;
+
+    let refreshed =
+        start_db_creature_chase_motion(&mut session, attacker, player, moving_recheck_at)
+            .expect("moving target cutting inside the old destination should refresh active chase");
+    assert_eq!(refreshed.spline_id, 1);
+    assert!(refreshed.path.last().unwrap().x < first_destination.x);
+}
+
+#[test]
+fn active_chase_does_not_refresh_when_moving_target_runs_farther_away() {
+    let mut creature = test_creature_spawn(6);
+    creature.position_x = 0.0;
+    creature.position_y = 0.0;
+    creature.position_z = 0.0;
+    let attacker = creature_spawn_guid(&creature);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 10.0, 0.0, 0.0, 0.0),
+                movement_flags: MOVEFLAG_FORWARD,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+    session
+        .visibility
+        .db_creatures
+        .insert(attacker.raw(), DbCreatureRuntime::new(creature));
+
+    let first_motion = start_db_creature_chase_motion(&mut session, attacker, player, now)
+        .expect("out-of-range creature should start chase motion");
+    session
+        .character
+        .active_character
+        .as_mut()
+        .unwrap()
+        .position
+        .x = 20.0;
+    let moving_recheck_at =
+        now + Duration::from_millis(DB_CREATURE_CHASE_MOVING_TARGET_RECHECK_MILLIS);
+    advance_db_creature_motion(&mut session, attacker, moving_recheck_at);
+
+    assert!(
+        start_db_creature_chase_motion(&mut session, attacker, player, moving_recheck_at).is_none(),
+        "moving farther away should keep the active spline committed until landing"
+    );
+    let runtime = session
+        .visibility
+        .db_creatures
+        .get(&attacker.raw())
+        .expect("creature should still be loaded");
+    let CreatureMotionState::Chase(chase) = &runtime.motion else {
+        panic!("creature should remain in chase motion");
+    };
+    assert_eq!(runtime.next_spline_id, 1);
+    assert_eq!(chase.destination.x, first_motion.path.last().unwrap().x);
+}
+
+#[test]
 fn db_creature_chase_motion_keeps_position_while_target_remains_in_desired_stop_range() {
     let mut creature = test_creature_spawn(6);
     creature.position_x = 0.0;
@@ -2887,24 +3017,14 @@ fn arrived_chase_repaths_once_player_leaves_desired_stop_range() {
         "target is still melee-reachable, but real-WoW chase should correct the landing distance"
     );
 
-    assert!(
-        start_db_creature_chase_motion(&mut session, attacker, player, arrived_at).is_none(),
-        "arrived chase should observe the first stale candidate before launching"
-    );
-    let early_recheck_at = arrived_at + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS);
-    assert!(
-        start_db_creature_chase_motion(&mut session, attacker, player, early_recheck_at).is_none(),
-        "high-frequency recheck should keep waiting until the launch candidate is stable"
-    );
-    let repath_at = arrived_at + Duration::from_millis(DB_CREATURE_CHASE_STABLE_LAUNCH_MILLIS);
-    let repath = start_db_creature_chase_motion(&mut session, attacker, player, repath_at)
-        .expect("stable target outside desired stop range should start a refreshed chase");
+    let repath = start_db_creature_chase_motion(&mut session, attacker, player, arrived_at)
+        .expect("target outside desired stop range should start a refreshed chase");
     assert_eq!(repath.spline_id, 1);
     assert!(repath.path.last().unwrap().x > destination.x);
 }
 
 #[test]
-fn arrived_chase_defers_launch_while_target_keeps_backpedaling_far() {
+fn arrived_chase_repaths_immediately_for_backpedal_correction() {
     let mut creature = test_creature_spawn(6);
     creature.position_x = 0.0;
     creature.position_y = 0.0;
@@ -2948,30 +3068,15 @@ fn arrived_chase_defers_launch_while_target_keeps_backpedaling_far() {
             .get(&attacker.raw())
             .expect("creature should still be loaded"),
     );
-    let stable_launch = Duration::from_millis(DB_CREATURE_CHASE_STABLE_LAUNCH_MILLIS);
 
     let player_runtime = session.character.active_character.as_mut().unwrap();
     player_runtime.position.x = destination.x + desired_stop_distance + 0.1;
     assert!(
-        start_db_creature_chase_motion(&mut session, attacker, player, arrived_at).is_none(),
-        "first out-of-stop-range sample should not launch immediately"
+        db_creature_can_reach_player(&session, attacker),
+        "target is still in melee range; this is a landing correction, not a full route"
     );
-
-    let player_runtime = session.character.active_character.as_mut().unwrap();
-    player_runtime.position.x += desired_stop_distance * 0.5 + 0.1;
-    assert!(
-        start_db_creature_chase_motion(&mut session, attacker, player, arrived_at + stable_launch)
-            .is_none(),
-        "a large target shift over the launch window should roll the chase to the next interval"
-    );
-
-    let repath = start_db_creature_chase_motion(
-        &mut session,
-        attacker,
-        player,
-        arrived_at + stable_launch + stable_launch,
-    )
-    .expect("stable target after the rolled interval should finally launch");
+    let repath = start_db_creature_chase_motion(&mut session, attacker, player, arrived_at)
+        .expect("out-of-stop-range backpedal should refresh the landing correction immediately");
     assert_eq!(repath.spline_id, 1);
     assert!(repath.path.last().unwrap().x > destination.x);
 }

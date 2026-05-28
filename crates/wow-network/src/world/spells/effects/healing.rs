@@ -26,16 +26,137 @@ pub(in crate::world) async fn apply_player_direct_heal_effect(
         return Ok(());
     }
 
+    if spell_info.effects.iter().copied().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::Heal
+            && effect_targets_caster_centered_friendly_area(effect)
+    }) {
+        return apply_player_caster_area_direct_heal_effect(
+            stream,
+            deps,
+            session,
+            caster,
+            map_id,
+            spell_info,
+            base_heal,
+            header_crypto,
+        )
+        .await;
+    }
+
     let Some(target) = targets.unit_target.filter(|target| target.is_player()) else {
         return Ok(());
     };
 
-    let target_active_auras = if target.counter() == caster.counter() {
+    apply_player_direct_heal_to_target(
+        stream,
+        &deps,
+        session,
+        caster,
+        map_id,
+        spell_info,
+        base_heal,
+        target.counter(),
+        header_crypto,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_player_caster_area_direct_heal_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    map_id: u32,
+    spell_info: &SpellInfo<'_>,
+    base_heal: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(character) = session.character.active_character.as_ref() else {
+        return Ok(());
+    };
+    let Some(radius) = spell_info
+        .effects
+        .iter()
+        .copied()
+        .filter(|effect| {
+            effect.dispatch == SpellEffectDispatch::Heal
+                && effect_targets_caster_centered_friendly_area(*effect)
+        })
+        .filter_map(|effect| spell_effect_radius_yards(deps.shared_world.maps, effect))
+        .max_by(f32::total_cmp)
+    else {
+        warn!(
+            spell_id = spell_info.template.id,
+            "Skipping caster-centered friendly direct heal with missing SpellRadius.dbc row"
+        );
+        return Ok(());
+    };
+
+    let caster_guid = character.guid;
+    let caster_position = character.position;
+    let mut target_guids = deps
+        .parties
+        .party_members(caster_guid)
+        .await
+        .into_iter()
+        .map(|member| member.guid)
+        .collect::<Vec<_>>();
+    target_guids.push(caster_guid);
+    target_guids.sort_unstable();
+    target_guids.dedup();
+
+    for target_guid in target_guids {
+        if target_guid != caster_guid {
+            let Some(snapshot) = deps
+                .shared_world
+                .maps
+                .player_runtime_snapshot(map_id, target_guid)
+                .await
+            else {
+                continue;
+            };
+            if snapshot.health == 0 || caster_position.distance_to(&snapshot.position) > radius {
+                continue;
+            }
+        }
+
+        apply_player_direct_heal_to_target(
+            stream,
+            &deps,
+            session,
+            caster,
+            map_id,
+            spell_info,
+            base_heal,
+            target_guid,
+            header_crypto,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_player_direct_heal_to_target(
+    stream: &mut WorldPacketSink,
+    deps: &SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    map_id: u32,
+    spell_info: &SpellInfo<'_>,
+    base_heal: u32,
+    target_character_guid: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let target = ObjectGuid::new(HighGuid::Player, 0, target_character_guid);
+    let target_active_auras = if target_character_guid == caster.counter() {
         session.auras.active_auras.clone()
     } else {
         deps.shared_world
             .maps
-            .player_runtime_snapshot(map_id, target.counter())
+            .player_runtime_snapshot(map_id, target_character_guid)
             .await
             .map(|snapshot| snapshot.active_auras)
             .unwrap_or_default()
@@ -55,7 +176,7 @@ pub(in crate::world) async fn apply_player_direct_heal_effect(
     let Some(event) = deps
         .shared_world
         .maps
-        .apply_player_heal(map_id, target.counter(), heal)
+        .apply_player_heal(map_id, target_character_guid, heal)
         .await?
     else {
         return Ok(());
@@ -83,7 +204,9 @@ pub(in crate::world) async fn apply_player_direct_heal_effect(
     )
     .await?;
 
-    if event.healed_character_guid == caster.counter() {
+    if event.healed_character_guid == target_character_guid
+        && target_character_guid == caster.counter()
+    {
         session.character.player_health = event.health;
 
         for packet in event.direct_packets {

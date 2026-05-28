@@ -403,7 +403,11 @@ pub(in crate::world) fn write_minimal_player_update_values(
     set_update_value(&mut values, PLAYER_AMMO_ID, character.ammo_id)?;
     set_update_value(&mut values, PLAYER_SELF_RES_SPELL, 0)?;
     set_update_value(&mut values, PLAYER_FIELD_PVP_MEDALS, 0)?;
-    set_update_value(&mut values, PLAYER_FIELD_BYTES2, 0)?;
+    set_update_value(
+        &mut values,
+        PLAYER_FIELD_BYTES2,
+        active_aura_player_field_bytes2(active_auras),
+    )?;
     set_update_value(
         &mut values,
         PLAYER_FIELD_WATCHED_FACTION_INDEX,
@@ -548,6 +552,38 @@ pub(in crate::world) fn build_player_target_update_body(
 
     let mut values = vec![None; PLAYER_END_FIELDS];
     set_object_guid_update_values(&mut values, UNIT_FIELD_TARGET, unit_target)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
+}
+
+pub(in crate::world) fn build_player_farsight_update_body(
+    player_guid: u32,
+    farsight_target: Option<ObjectGuid>,
+) -> anyhow::Result<Vec<u8>> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, player_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player_guid)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_object_guid_update_values(&mut values, PLAYER_FARSIGHT, farsight_target)?;
+    write_update_values(&mut block, &values)?;
+
+    Ok(build_update_object_body(&[block]))
+}
+
+pub(in crate::world) fn build_player_charm_update_body(
+    player_guid: u32,
+    charm_guid: Option<ObjectGuid>,
+) -> anyhow::Result<Vec<u8>> {
+    let player_guid = ObjectGuid::new(HighGuid::Player, 0, player_guid);
+    let mut block = Vec::new();
+    block.push(UPDATE_TYPE_VALUES);
+    PackedGuid::write(&mut block, player_guid)?;
+
+    let mut values = vec![None; PLAYER_END_FIELDS];
+    set_object_guid_update_values(&mut values, UNIT_FIELD_CHARM, charm_guid)?;
     write_update_values(&mut block, &values)?;
 
     Ok(build_update_object_body(&[block]))
@@ -1420,6 +1456,14 @@ pub(in crate::world) fn combat_stats_with_active_auras(
             _ => 0,
         })
         .sum::<i32>();
+    let dodge_percent_delta = active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .map(|modifier| match modifier {
+            AuraStatModifier::DodgePercent { percent } => *percent,
+            _ => 0,
+        })
+        .sum::<i32>();
     let block_percent_delta = active_auras
         .iter()
         .flat_map(|aura| aura.stat_modifiers.iter())
@@ -1485,6 +1529,9 @@ pub(in crate::world) fn combat_stats_with_active_auras(
     }
 
     stats = apply_attack_power_delta(stats, attack_power_delta, 0);
+    if dodge_percent_delta != 0 {
+        stats.dodge_percent = (stats.dodge_percent + dodge_percent_delta as f32).clamp(0.0, 100.0);
+    }
     if stats.block_percent > 0.0 && block_percent_delta != 0 {
         stats.block_percent = (stats.block_percent + block_percent_delta as f32).clamp(0.0, 100.0);
     }
@@ -1731,6 +1778,7 @@ pub(in crate::world) fn unit_bytes_0(character: &CharacterEnumEntry) -> u32 {
         | (power_type << 24)
 }
 
+#[cfg(test)]
 pub(in crate::world) fn unit_bytes_1(character: &CharacterEnumEntry) -> u32 {
     unit_bytes_1_for_class(character.class)
 }

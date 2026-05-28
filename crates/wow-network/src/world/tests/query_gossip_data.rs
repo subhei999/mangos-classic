@@ -1342,18 +1342,16 @@ async fn conditional_questgiver_use_opens_single_involved_turnin_offer_reward() 
     let mut sink = WorldPacketSink::new(outbound_tx);
     let mut header_crypto = HeaderCrypto::new(&[0; 40]);
 
-    assert!(
-        handle_gameobject_questgiver_use(
-            &mut sink,
-            &object_mgr,
-            &world_db_pool,
-            &session,
-            guid,
-            &mut header_crypto,
-        )
-        .await
-        .unwrap()
-    );
+    assert!(handle_gameobject_questgiver_use(
+        &mut sink,
+        &object_mgr,
+        &world_db_pool,
+        &session,
+        guid,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap());
 
     let packet = outbound_rx.try_recv().unwrap();
     assert_eq!(packet.opcode, WorldOpcode::SmsgQuestgiverOfferReward as u16);
@@ -1752,6 +1750,104 @@ fn movement_visibility_stages_only_new_db_creature_create_blocks() {
             .windows(known_guid.to_le_bytes().len())
             .any(|window| window == known_guid.to_le_bytes()),
         "already visible creature should not be recreated"
+    );
+}
+
+#[tokio::test]
+async fn movement_visibility_uses_farsight_view_origin() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let maps = Arc::new(MapRuntimeManager::default());
+    let owner_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let eye_position = WorldPosition::new(0, -8780.0, -130.0, 83.5, 0.0);
+    let distant_guid;
+
+    {
+        let map = maps.get_or_create_map(0, 0).await;
+        let mut map = map.lock().await;
+        map.add_player(test_player_runtime(7, SessionId(7), owner_position))
+            .unwrap();
+
+        let mut eye_spawn = test_creature_spawn(4277);
+        eye_spawn.guid = 900_4277;
+        eye_spawn.position_x = eye_position.x;
+        eye_spawn.position_y = eye_position.y;
+        eye_spawn.position_z = eye_position.z;
+        eye_spawn.orientation = eye_position.orientation;
+        let eye_runtime = DbCreatureRuntime::new(eye_spawn);
+        let eye_guid = eye_runtime.guid();
+
+        let mut distant_spawn = test_creature_spawn(197);
+        distant_spawn.guid = 901_0197;
+        distant_spawn.position_x = eye_position.x + 5.0;
+        distant_spawn.position_y = eye_position.y;
+        distant_spawn.position_z = eye_position.z;
+        distant_spawn.orientation = eye_position.orientation;
+        let distant_runtime = DbCreatureRuntime::new(distant_spawn);
+        distant_guid = distant_runtime.guid();
+
+        map.insert_loaded_creature_grid(
+            grid_coord_for_position(eye_position),
+            vec![eye_runtime, distant_runtime],
+        );
+        map.update_player_farsight(7, Some(eye_guid)).unwrap();
+    }
+
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 22,
+                xp: 0,
+                position: owner_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    stream_newly_visible_db_creatures(
+        &mut stream,
+        &character_db_pool,
+        &world_db_pool,
+        &maps,
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let map = maps.get_or_create_map(0, 0).await;
+    assert!(
+        map.lock()
+            .await
+            .players
+            .get(&7)
+            .unwrap()
+            .visible_objects
+            .contains(&distant_guid),
+        "map-owned visibility staging should track creatures near the active farsight origin"
+    );
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        packets.iter().any(|packet| {
+            packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+                && packet
+                    .body
+                    .windows(distant_guid.raw().to_le_bytes().len())
+                    .any(|window| window == distant_guid.raw().to_le_bytes())
+        }),
+        "movement visibility should stream create packets from the farsight viewpoint, not only the body"
     );
 }
 

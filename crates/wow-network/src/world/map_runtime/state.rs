@@ -154,6 +154,7 @@ pub(in crate::world) struct PlayerRuntime {
     pub(in crate::world) bot_runtime: Option<PlayerbotRuntimeState>,
     pub(in crate::world) selected_target: Option<ObjectGuid>,
     pub(in crate::world) unit_target: Option<ObjectGuid>,
+    pub(in crate::world) farsight_target: Option<ObjectGuid>,
     pub(in crate::world) active_combat_target: Option<ObjectGuid>,
     pub(in crate::world) active_combat_attack_kind: PlayerAutoAttackKind,
     pub(in crate::world) active_combat_next_swing_at: Option<Instant>,
@@ -526,12 +527,15 @@ pub(in crate::world) struct MapRuntime {
     pub(in crate::world) active_player_spell_casts: HashMap<u32, ActivePlayerSpellCast>,
     pub(in crate::world) active_player_channels: HashMap<u32, ActivePlayerChannel>,
     pub(in crate::world) pending_player_channel_impacts: Vec<PendingPlayerChannelImpact>,
+    pub(in crate::world) pending_player_channel_death_finalizations:
+        Vec<PendingPlayerChannelDeathFinalization>,
     pub(in crate::world) pending_spell_events: Vec<PendingSpellEvent>,
     pub(in crate::world) next_spell_event_id: u64,
     pub(in crate::world) pending_player_death_presentations:
         HashMap<u32, PlayerDeathPresentationRuntime>,
     pub(in crate::world) tracked_single_target_auras:
         HashMap<u64, Vec<TrackedSingleTargetAuraRuntime>>,
+    pub(in crate::world) heartbeat_resist_auras: HashMap<(u64, u64, u32), HeartbeatResistRuntime>,
     pub(in crate::world) active_diminishing_auras:
         HashMap<(u64, u64, u32), DiminishingGroupRuntime>,
     pub(in crate::world) diminishing_states:
@@ -567,6 +571,13 @@ pub(in crate::world) struct ActivePlayerChannel {
     pub(in crate::world) damage_effect: Option<PlayerDirectDamageEffect>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) struct HeartbeatResistRuntime {
+    pub(in crate::world) chance_basis_points: u32,
+    pub(in crate::world) interval_millis: u32,
+    pub(in crate::world) next_check_at: Instant,
+}
+
 #[derive(Debug, Default)]
 pub(in crate::world) struct PlayerSpellRuntimeCleanupPackets {
     pub(in crate::world) direct_packets: Vec<OutboundWorldPacket>,
@@ -581,6 +592,12 @@ pub(in crate::world) struct PendingPlayerChannelImpact {
     pub(in crate::world) impact_at: Instant,
     pub(in crate::world) damage_effect: PlayerDirectDamageEffect,
     pub(in crate::world) outcome: SpellDamageOutcome,
+}
+
+#[derive(Debug)]
+pub(in crate::world) struct PendingPlayerChannelDeathFinalization {
+    pub(in crate::world) caster_character_guid: u32,
+    pub(in crate::world) death_finalization: DbCreatureDeathFinalizationEvent,
 }
 
 #[derive(Debug, Clone)]
@@ -743,6 +760,13 @@ pub(in crate::world) struct DbCreaturePlayerDamageEvent {
     pub(in crate::world) attacker_state_body: Vec<u8>,
     pub(in crate::world) health_update_body: Vec<u8>,
     pub(in crate::world) observer_packets: Vec<(SessionId, OutboundWorldPacket)>,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::world) struct TriggeredPlayerMeleeAura {
+    pub(in crate::world) aura: ActiveAura,
+    pub(in crate::world) resolution: AuraRankConflictResolution,
+    pub(in crate::world) spell_go_body: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -1017,10 +1041,12 @@ impl MapRuntime {
             active_player_spell_casts: HashMap::new(),
             active_player_channels: HashMap::new(),
             pending_player_channel_impacts: Vec::new(),
+            pending_player_channel_death_finalizations: Vec::new(),
             pending_spell_events: Vec::new(),
             next_spell_event_id: 1,
             pending_player_death_presentations: HashMap::new(),
             tracked_single_target_auras: HashMap::new(),
+            heartbeat_resist_auras: HashMap::new(),
             active_diminishing_auras: HashMap::new(),
             diminishing_states: HashMap::new(),
         }
@@ -1101,6 +1127,17 @@ impl MapRuntime {
         };
     }
 
+    pub(in crate::world) fn register_heartbeat_resist_aura(
+        &mut self,
+        target: ObjectGuid,
+        caster: ObjectGuid,
+        spell_id: u32,
+        runtime: HeartbeatResistRuntime,
+    ) {
+        self.heartbeat_resist_auras
+            .insert((target.raw(), caster.raw(), spell_id), runtime);
+    }
+
     pub(in crate::world) fn reconcile_target_aura_trackers(
         &mut self,
         target: ObjectGuid,
@@ -1119,6 +1156,8 @@ impl MapRuntime {
                 });
                 !entries.is_empty()
             });
+        self.heartbeat_resist_auras
+            .retain(|key, _| key.0 != target.raw() || active_pairs.contains(&(key.1, key.2)));
         let removed = self
             .active_diminishing_auras
             .iter()

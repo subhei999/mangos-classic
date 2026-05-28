@@ -34,6 +34,23 @@ impl MapRuntimeManager {
         creature
     }
 
+    pub(in crate::world) async fn db_creature_in_combat(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+    ) -> bool {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return false;
+        };
+        let in_combat = map
+            .lock()
+            .await
+            .active_creature_combats
+            .contains_key(&creature_guid.raw());
+        in_combat
+    }
+
     pub(in crate::world) async fn validate_player_melee_against_db_creature(
         &self,
         map_id: u32,
@@ -152,5 +169,25 @@ impl MapRuntimeManager {
             packet,
         );
         packets
+    }
+
+    pub(in crate::world) async fn update_controlled_db_creature_position(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+        opcode: u16,
+        movement: &MovementInfo,
+        server_time: u32,
+        exclude_character_guid: Option<u32>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let packets = map.lock().await.update_controlled_db_creature_position(
+            creature_guid,
+            opcode,
+            movement,
+            server_time,
+            exclude_character_guid,
+        )?;
+        Ok(packets)
     }
 }

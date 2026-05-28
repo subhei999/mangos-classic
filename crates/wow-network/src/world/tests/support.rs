@@ -623,6 +623,7 @@ fn test_creature_template(entry: u32) -> CreatureTemplateQuery {
         ranged_attack_power: 0,
         min_loot_gold: 2,
         max_loot_gold: 4,
+        pickpocket_loot_id: 0,
         melee_base_attack_time: 1800,
         ranged_base_attack_time: 2200,
         damage_school: 0,

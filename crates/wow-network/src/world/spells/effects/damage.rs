@@ -93,7 +93,7 @@ pub(in crate::world) async fn spell_combo_points_for_effects(
         .maps
         .player_runtime_snapshot(map_id, character_guid)
         .await
-        .filter(|snapshot| snapshot.combo_target == Some(target) || target == caster)
+        .filter(|snapshot| spell_combo_point_target_matches(snapshot.combo_target, target, caster))
         .map(|snapshot| snapshot.combo_points)
         .unwrap_or(0)
 }

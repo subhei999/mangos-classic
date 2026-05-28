@@ -152,6 +152,40 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 direct_damage_processed = true;
             }
 
+            SpellEffectDispatch::Threat => {
+                apply_player_threat_effect(
+                    stream,
+                    deps,
+                    session,
+                    caster,
+                    character_guid,
+                    map_id,
+                    spell_template,
+                    effect,
+                    effect_value_context,
+                    targets,
+                    target_outcome,
+                    header_crypto,
+                )
+                .await?;
+            }
+
+            SpellEffectDispatch::Distract => {
+                apply_player_distract_effect(
+                    stream,
+                    deps,
+                    session,
+                    character_guid,
+                    map_id,
+                    effect,
+                    effect_value_context,
+                    targets,
+                    now,
+                    header_crypto,
+                )
+                .await?;
+            }
+
             SpellEffectDispatch::WeaponDamage | SpellEffectDispatch::WeaponPercentDamage
                 if spell_profile.kind != SpellCastKind::Charge
                     && spell_profile.kind != SpellCastKind::NextMeleeSwing
@@ -176,7 +210,99 @@ pub(in crate::world) async fn apply_player_spell_effects(
                 weapon_damage_applied = true;
             }
 
-            SpellEffectDispatch::AddComboPoints if landed_damage => {
+            SpellEffectDispatch::PickPocket => {
+                apply_player_pickpocket_effect(
+                    stream,
+                    deps,
+                    session,
+                    character_guid,
+                    character_level,
+                    map_id,
+                    targets,
+                    now,
+                    header_crypto,
+                )
+                .await?;
+            }
+
+            SpellEffectDispatch::SpellScript => {
+                if let Some(script) = spell_script_for_spell_id(spell_template.id) {
+                    let result = spell_script_on_effect_execute(
+                        script,
+                        SpellScriptEffectContext {
+                            cast: SpellScriptCastContext {
+                                spell_template,
+                                spell_profile,
+                                targets,
+                                active_auras: &session.auras.active_auras,
+                                caster,
+                                character_guid,
+                                map_id,
+                                caster_health: session.character.player_health,
+                                caster_mana: session.character.player_mana,
+                                now,
+                            },
+                            effect_index,
+                            effect,
+                        },
+                    );
+                    if let Some(action) = result.action {
+                        apply_player_spell_script_effect_action(
+                            stream,
+                            deps,
+                            session,
+                            caster,
+                            character_guid,
+                            map_id,
+                            action,
+                            header_crypto,
+                        )
+                        .await?;
+                    }
+                    if !result.handled {
+                        warn!(
+                            spell_id = spell_template.id,
+                            effect_index,
+                            ?script,
+                            "Registered spell script effect has no Rust hook implementation yet"
+                        );
+                    }
+                }
+            }
+
+            SpellEffectDispatch::SummonPet => {
+                apply_player_summon_pet_effect(
+                    stream,
+                    deps,
+                    session,
+                    caster,
+                    character_guid,
+                    character_level,
+                    map_id,
+                    spell_template,
+                    effect,
+                    header_crypto,
+                )
+                .await?;
+            }
+
+            SpellEffectDispatch::SummonPossessed => {
+                apply_player_summon_possessed_effect(
+                    stream,
+                    deps,
+                    session,
+                    caster,
+                    character_guid,
+                    character_level,
+                    map_id,
+                    spell_template,
+                    effect,
+                    header_crypto,
+                )
+                .await?;
+            }
+
+            SpellEffectDispatch::AddComboPoints if landed_damage || aura_applied => {
                 apply_player_combo_points_effect(
                     stream,
                     deps.shared_world,
@@ -184,7 +310,9 @@ pub(in crate::world) async fn apply_player_spell_effects(
                     character_guid,
                     map_id,
                     effect,
+                    effect_value_context,
                     targets,
+                    target_outcome,
                     header_crypto,
                 )
                 .await?;
@@ -337,6 +465,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
                     spell_template,
                     spell_profile,
                     targets,
+                    target_outcome,
                     effect_value_context,
                     now,
                     header_crypto,
@@ -468,6 +597,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
             spell_template,
             spell_profile,
             targets,
+            target_outcome,
             effect_value_context,
             now,
             header_crypto,
@@ -475,7 +605,7 @@ pub(in crate::world) async fn apply_player_spell_effects(
         .await?;
     }
 
-    if spell_profile.needs_combo_points && landed_damage {
+    if spell_profile.needs_combo_points && (landed_damage || aura_applied) {
         clear_player_combo_points_after_finisher(
             stream,
             deps.shared_world,
@@ -486,6 +616,128 @@ pub(in crate::world) async fn apply_player_spell_effects(
         )
         .await?;
     }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_player_spell_script_effect_action(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    action: SpellScriptEffectAction,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    match action {
+        SpellScriptEffectAction::LifeTap {
+            health_cost,
+            mana_spell_id,
+            mana_amount,
+        } => {
+            apply_player_life_tap_spell_script_effect(
+                stream,
+                deps,
+                session,
+                caster,
+                character_guid,
+                map_id,
+                health_cost,
+                mana_spell_id,
+                mana_amount,
+                header_crypto,
+            )
+            .await
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_player_life_tap_spell_script_effect(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    health_cost: u32,
+    mana_spell_id: u32,
+    mana_amount: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let snapshot = deps
+        .shared_world
+        .maps
+        .player_runtime_snapshot(map_id, character_guid)
+        .await;
+    let current_health = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.health)
+        .unwrap_or(session.character.player_health);
+    let current_mana = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.power1)
+        .unwrap_or(session.character.player_mana);
+    let max_mana = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.max_power1)
+        .unwrap_or(current_mana.saturating_add(mana_amount));
+
+    let new_health = current_health.saturating_sub(health_cost);
+    let new_mana = current_mana.saturating_add(mana_amount).min(max_mana);
+    let actual_mana = new_mana.saturating_sub(current_mana);
+
+    session.character.player_health = new_health;
+    session.character.player_mana = new_mana;
+
+    let health_observer_packets = deps
+        .shared_world
+        .maps
+        .update_player_health(map_id, character_guid, new_health)
+        .await?;
+    let mana_observer_packets = deps
+        .shared_world
+        .maps
+        .update_player_power1(map_id, character_guid, new_mana)
+        .await?;
+
+    send_packet(
+        stream,
+        WorldOpcode::SmsgUpdateObject as u16,
+        &build_player_health_update_body(caster, new_health)?,
+        Some(&mut *header_crypto),
+    )
+    .await?;
+
+    if actual_mana > 0 {
+        send_packet(
+            stream,
+            WorldOpcode::SmsgSpellEnergizeLog as u16,
+            &build_spell_energize_log_body(
+                caster,
+                caster,
+                mana_spell_id,
+                POWER_TYPE_MANA,
+                actual_mana,
+            )?,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+
+    send_packet(
+        stream,
+        WorldOpcode::SmsgUpdateObject as u16,
+        &build_player_mana_update_body(caster, new_mana)?,
+        Some(header_crypto),
+    )
+    .await?;
+
+    let mut observer_packets = health_observer_packets;
+    observer_packets.extend(mana_observer_packets);
+    deps.shared_world.sessions.dispatch(observer_packets).await;
 
     Ok(())
 }

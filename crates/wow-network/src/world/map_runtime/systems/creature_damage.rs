@@ -8,6 +8,31 @@ type TrackedSingleTargetRemovalPackets = (
     Vec<(SessionId, OutboundWorldPacket)>,
 );
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DbCreatureControlState {
+    None,
+    Fear,
+    Confused,
+}
+
+fn active_aura_has_farsight_modifier(aura: &ActiveAura) -> bool {
+    aura.stat_modifiers.contains(&AuraStatModifier::FarSight)
+}
+
+fn removed_player_farsight_casters(removed_auras: &[ActiveAura]) -> Vec<u32> {
+    let mut casters = Vec::new();
+    for aura in removed_auras {
+        if !aura.caster.is_player() || !active_aura_has_farsight_modifier(aura) {
+            continue;
+        }
+        let caster = aura.caster.counter();
+        if !casters.contains(&caster) {
+            casters.push(caster);
+        }
+    }
+    casters
+}
+
 impl MapRuntime {
     #[allow(dead_code)]
     pub(in crate::world) fn apply_db_creature_aura(
@@ -81,6 +106,11 @@ impl MapRuntime {
             };
         let aura_spell_id = aura.spell_id;
         let aura_caster = aura.caster;
+        let aura_sets_farsight = active_aura_has_farsight_modifier(&aura);
+        let fear_source_position = self
+            .players
+            .get(&caster_character_guid)
+            .map(|player| player.position);
         let (
             old_attack_duration,
             new_attack_duration,
@@ -103,18 +133,18 @@ impl MapRuntime {
             let old_speeds = creature.move_speeds;
             let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
             let was_stunned = active_aura_has_stun(&creature.active_auras);
-            let was_confused = active_aura_has_confuse(&creature.active_auras);
+            let old_control_state = db_creature_control_state(&creature.active_auras);
             let old_display_id = db_creature_effective_display_id(creature);
             apply_active_aura_replacing_conflicts(&mut creature.active_auras, aura, resolution);
             let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
             let is_stunned = active_aura_has_stun(&creature.active_auras);
-            let is_confused = active_aura_has_confuse(&creature.active_auras);
+            let new_control_state = db_creature_control_state(&creature.active_auras);
             refresh_db_creature_aura_display_override(creature);
-            sync_db_creature_confused_motion(creature, was_confused, is_confused, now);
+            sync_db_creature_control_motion(creature, old_control_state, new_control_state, now);
             let previous_speeds = creature.refresh_move_speeds();
             debug_assert_eq!(old_speeds, previous_speeds);
             let stop_packet = if ((!was_movement_blocked && is_movement_blocked)
-                || (!was_confused && is_confused))
+                || old_control_state != new_control_state)
                 && !matches!(creature.motion, CreatureMotionState::Idle)
             {
                 let stop = stop_db_creature_motion_runtime(creature);
@@ -136,25 +166,20 @@ impl MapRuntime {
             if let Some(packet) = stop_packet {
                 direct_packets.push(packet);
             }
-            if is_confused {
-                if let Some(confused_motion) = start_db_creature_confused_motion_runtime(
+            if old_control_state != new_control_state
+                && !is_movement_blocked
+                && matches!(creature.motion, CreatureMotionState::Idle)
+            {
+                if let Some(packet) = start_db_creature_control_motion_runtime(
                     &DbCreatureNavigationGuardrail::default(),
                     Some(&self.geometry),
+                    creature_guid,
                     creature,
+                    new_control_state,
+                    fear_source_position,
                     now,
-                ) {
-                    direct_packets.push(OutboundWorldPacket {
-                        opcode: WorldOpcode::SmsgMonsterMove as u16,
-                        body: build_monster_move_path_body_inner(
-                            creature_guid,
-                            confused_motion.start,
-                            &confused_motion.path,
-                            confused_motion.spline_id,
-                            confused_motion.duration.as_millis().max(1) as u32,
-                            None,
-                            confused_motion.run,
-                        )?,
-                    });
+                )? {
+                    direct_packets.push(packet);
                 }
             }
             let new_display_id = db_creature_effective_display_id(creature);
@@ -164,7 +189,7 @@ impl MapRuntime {
                     body: build_db_creature_display_update_body(creature_guid, new_display_id)?,
                 });
             }
-            if was_stunned != is_stunned || was_confused != is_confused {
+            if was_stunned != is_stunned || old_control_state != new_control_state {
                 direct_packets.push(OutboundWorldPacket {
                     opcode: WorldOpcode::SmsgUpdateObject as u16,
                     body: build_unit_flags_update_body(
@@ -182,7 +207,7 @@ impl MapRuntime {
                 position,
                 direct_packets,
                 update_body,
-                was_confused != is_confused,
+                old_control_state != new_control_state,
             )
         };
         if confused_changed {
@@ -245,6 +270,10 @@ impl MapRuntime {
                 }),
             );
         }
+        if aura_caster.is_player() && aura_sets_farsight {
+            observer_packets
+                .extend(self.update_player_farsight(aura_caster.counter(), Some(creature_guid))?);
+        }
         tracked_direct_packets.extend(direct_packets.clone());
         tracked_observer_packets.extend(observer_packets.clone());
         Ok(Some(DbCreatureAuraUpdateEvent {
@@ -275,16 +304,18 @@ impl MapRuntime {
         let old_speeds = creature.move_speeds;
         let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
         let was_stunned = active_aura_has_stun(&creature.active_auras);
-        let was_confused = active_aura_has_confuse(&creature.active_auras);
+        let old_control_state = db_creature_control_state(&creature.active_auras);
         let old_display_id = db_creature_effective_display_id(creature);
         let remove_count = count.max(1) as usize;
         let mut remaining = remove_count;
         let mut removed_spell_ids = Vec::new();
+        let mut removed_auras = Vec::new();
         creature.active_auras.retain(|aura| {
             if remaining == 0 || !active_aura_matches_dispel_type(aura, dispel_type) {
                 return true;
             }
             removed_spell_ids.push(aura.spell_id);
+            removed_auras.push(aura.clone());
             remaining -= 1;
             false
         });
@@ -293,18 +324,19 @@ impl MapRuntime {
         }
         let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
         let is_stunned = active_aura_has_stun(&creature.active_auras);
-        let is_confused = active_aura_has_confuse(&creature.active_auras);
+        let new_control_state = db_creature_control_state(&creature.active_auras);
         refresh_db_creature_aura_display_override(creature);
-        sync_db_creature_confused_motion(creature, was_confused, is_confused, now);
+        sync_db_creature_control_motion(creature, old_control_state, new_control_state, now);
         let previous_speeds = creature.refresh_move_speeds();
         debug_assert_eq!(old_speeds, previous_speeds);
         let stop_packet = if was_movement_blocked
             && !is_movement_blocked
-            && !was_confused
+            && old_control_state == DbCreatureControlState::None
             && matches!(creature.motion, CreatureMotionState::Idle)
         {
             None
-        } else if ((was_confused && !is_confused) || (!was_movement_blocked && is_movement_blocked))
+        } else if (old_control_state != new_control_state
+            || (!was_movement_blocked && is_movement_blocked))
             && !matches!(creature.motion, CreatureMotionState::Idle)
         {
             let stop = stop_db_creature_motion_runtime(creature);
@@ -329,7 +361,7 @@ impl MapRuntime {
                 body: build_db_creature_display_update_body(creature_guid, new_display_id)?,
             });
         }
-        if was_stunned != is_stunned || was_confused != is_confused {
+        if was_stunned != is_stunned || old_control_state != new_control_state {
             direct_packets.push(OutboundWorldPacket {
                 opcode: WorldOpcode::SmsgUpdateObject as u16,
                 body: build_unit_flags_update_body(
@@ -346,7 +378,7 @@ impl MapRuntime {
             now,
         );
         let update_body = build_db_creature_aura_update_body(creature_guid, &active_auras)?;
-        if was_confused != is_confused {
+        if old_control_state != new_control_state {
             self.invalidate_idle_motion_start_schedule();
             self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
         }
@@ -376,6 +408,11 @@ impl MapRuntime {
                 &removed_spell_ids,
             )?,
         );
+        for character_guid in removed_player_farsight_casters(&removed_auras) {
+            aura_update
+                .observer_packets
+                .extend(self.clear_player_farsight_if_target(character_guid, creature_guid)?);
+        }
         Ok(Some(DbCreatureAuraDispelEvent {
             removed_spell_ids,
             aura_update,
@@ -402,27 +439,41 @@ impl MapRuntime {
         let old_speeds = creature.move_speeds;
         let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
         let was_stunned = active_aura_has_stun(&creature.active_auras);
-        let was_confused = active_aura_has_confuse(&creature.active_auras);
+        let old_control_state = db_creature_control_state(&creature.active_auras);
         let old_display_id = db_creature_effective_display_id(creature);
-        let removed_spell_ids =
-            remove_active_auras_by_spell_ids(&mut creature.active_auras, spell_ids);
+        let mut removed_auras = Vec::new();
+        let mut remaining = spell_ids.to_vec();
+        let mut removed_spell_ids = Vec::new();
+        creature.active_auras.retain(|aura| {
+            let Some(index) = remaining
+                .iter()
+                .position(|spell_id| *spell_id == aura.spell_id)
+            else {
+                return true;
+            };
+            removed_spell_ids.push(aura.spell_id);
+            removed_auras.push(aura.clone());
+            remaining.remove(index);
+            false
+        });
         if removed_spell_ids.is_empty() {
             return Ok(None);
         }
         let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
         let is_stunned = active_aura_has_stun(&creature.active_auras);
-        let is_confused = active_aura_has_confuse(&creature.active_auras);
+        let new_control_state = db_creature_control_state(&creature.active_auras);
         refresh_db_creature_aura_display_override(creature);
-        sync_db_creature_confused_motion(creature, was_confused, is_confused, now);
+        sync_db_creature_control_motion(creature, old_control_state, new_control_state, now);
         let previous_speeds = creature.refresh_move_speeds();
         debug_assert_eq!(old_speeds, previous_speeds);
         let stop_packet = if was_movement_blocked
             && !is_movement_blocked
-            && !was_confused
+            && old_control_state == DbCreatureControlState::None
             && matches!(creature.motion, CreatureMotionState::Idle)
         {
             None
-        } else if ((was_confused && !is_confused) || (!was_movement_blocked && is_movement_blocked))
+        } else if (old_control_state != new_control_state
+            || (!was_movement_blocked && is_movement_blocked))
             && !matches!(creature.motion, CreatureMotionState::Idle)
         {
             let stop = stop_db_creature_motion_runtime(creature);
@@ -447,7 +498,7 @@ impl MapRuntime {
                 body: build_db_creature_display_update_body(creature_guid, new_display_id)?,
             });
         }
-        if was_stunned != is_stunned || was_confused != is_confused {
+        if was_stunned != is_stunned || old_control_state != new_control_state {
             direct_packets.push(OutboundWorldPacket {
                 opcode: WorldOpcode::SmsgUpdateObject as u16,
                 body: build_unit_flags_update_body(
@@ -464,7 +515,7 @@ impl MapRuntime {
             now,
         );
         let update_body = build_db_creature_aura_update_body(creature_guid, &active_auras)?;
-        if was_confused != is_confused {
+        if old_control_state != new_control_state {
             self.invalidate_idle_motion_start_schedule();
             self.sync_db_creature_idle_motion_tracking(creature_guid.raw());
         }
@@ -494,6 +545,11 @@ impl MapRuntime {
                 &removed_spell_ids,
             )?,
         );
+        for character_guid in removed_player_farsight_casters(&removed_auras) {
+            aura_update
+                .observer_packets
+                .extend(self.clear_player_farsight_if_target(character_guid, creature_guid)?);
+        }
         Ok(Some(DbCreatureAuraDispelEvent {
             removed_spell_ids,
             aura_update,
@@ -560,6 +616,7 @@ impl MapRuntime {
             direct_packets,
             update_body,
             confused_changed,
+            removed_farsight,
         ) = {
             let Some(creature) = self.creatures.get_mut(&creature_guid.raw()) else {
                 return Ok(None);
@@ -571,23 +628,28 @@ impl MapRuntime {
             let old_speeds = creature.move_speeds;
             let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
             let was_stunned = active_aura_has_stun(&creature.active_auras);
-            let was_confused = active_aura_has_confuse(&creature.active_auras);
+            let old_control_state = db_creature_control_state(&creature.active_auras);
             let old_display_id = db_creature_effective_display_id(creature);
             let before = creature.active_auras.len();
-            creature
-                .active_auras
-                .retain(|aura| !(aura.spell_id == spell_id && aura.caster == caster));
+            let mut removed_farsight = false;
+            creature.active_auras.retain(|aura| {
+                let removed = aura.spell_id == spell_id && aura.caster == caster;
+                if removed && active_aura_has_farsight_modifier(aura) {
+                    removed_farsight = true;
+                }
+                !removed
+            });
             if creature.active_auras.len() == before {
                 return Ok(None);
             }
             let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
             let is_stunned = active_aura_has_stun(&creature.active_auras);
-            let is_confused = active_aura_has_confuse(&creature.active_auras);
+            let new_control_state = db_creature_control_state(&creature.active_auras);
             refresh_db_creature_aura_display_override(creature);
-            sync_db_creature_confused_motion(creature, was_confused, is_confused, now);
+            sync_db_creature_control_motion(creature, old_control_state, new_control_state, now);
             let previous_speeds = creature.refresh_move_speeds();
             debug_assert_eq!(old_speeds, previous_speeds);
-            let stop_packet = if ((was_confused && !is_confused)
+            let stop_packet = if (old_control_state != new_control_state
                 || (!was_movement_blocked && is_movement_blocked))
                 && !matches!(creature.motion, CreatureMotionState::Idle)
             {
@@ -617,7 +679,7 @@ impl MapRuntime {
                     body: build_db_creature_display_update_body(creature_guid, new_display_id)?,
                 });
             }
-            if was_stunned != is_stunned || was_confused != is_confused {
+            if was_stunned != is_stunned || old_control_state != new_control_state {
                 direct_packets.push(OutboundWorldPacket {
                     opcode: WorldOpcode::SmsgUpdateObject as u16,
                     body: build_unit_flags_update_body(
@@ -635,7 +697,8 @@ impl MapRuntime {
                 position,
                 direct_packets,
                 update_body,
-                was_confused != is_confused,
+                old_control_state != new_control_state,
+                removed_farsight,
             )
         };
         if confused_changed {
@@ -679,6 +742,10 @@ impl MapRuntime {
                         .and_then(|player| player.packet_to_client(packet.clone()))
                 }),
             );
+        }
+        if removed_farsight && caster.is_player() {
+            observer_packets
+                .extend(self.clear_player_farsight_if_target(caster.counter(), creature_guid)?);
         }
         Ok(Some(DbCreatureAuraUpdateEvent {
             update_body,
@@ -771,8 +838,10 @@ impl MapRuntime {
                 observer_update,
                 died_from_aura,
                 invalidated_motion_schedule,
-                expired_auras,
+                removed_auras,
+                expired_farsight_casters,
             ) = {
+                let heartbeat_resist_auras = &mut self.heartbeat_resist_auras;
                 let Some(creature) = self.creatures.get_mut(&raw_guid) else {
                     continue;
                 };
@@ -811,31 +880,45 @@ impl MapRuntime {
                             regen.next_tick_at += Duration::from_millis(regen.tick_millis as u64);
                         }
                     }
-                    let Some(periodic) = aura.periodic_damage.as_mut() else {
-                        continue;
+                    let (due_tick_at, periodic) = {
+                        let Some(periodic) = aura.periodic_damage.as_mut() else {
+                            continue;
+                        };
+                        if aura
+                            .expires_at
+                            .is_some_and(|expires_at| periodic.next_tick_at > expires_at)
+                        {
+                            continue;
+                        }
+                        if now < periodic.next_tick_at {
+                            continue;
+                        }
+                        let mut due_tick_at = periodic.next_tick_at;
+                        while periodic.next_tick_at <= now {
+                            due_tick_at = periodic.next_tick_at;
+                            periodic.next_tick_at +=
+                                Duration::from_millis(periodic.tick_millis as u64);
+                        }
+                        (due_tick_at, *periodic)
                     };
-                    if aura
-                        .expires_at
-                        .is_some_and(|expires_at| periodic.next_tick_at > expires_at)
-                    {
-                        continue;
-                    }
-                    if now < periodic.next_tick_at {
-                        continue;
-                    }
-                    while periodic.next_tick_at <= now {
-                        periodic.next_tick_at += Duration::from_millis(periodic.tick_millis as u64);
-                    }
                     let caster_snapshot =
                         periodic_spell_caster_snapshot(&self.players, aura.caster)
                             .unwrap_or(periodic.caster_snapshot);
-                    let tick = calculate_periodic_damage_tick_with_target_auras(
+                    if let Some(script) = aura_script_for_spell_id(aura.spell_id) {
+                        aura_script_on_periodic_trigger(script, aura);
+                    }
+                    let tick = calculate_active_aura_periodic_damage_tick_with_target_auras(
+                        aura,
                         periodic,
+                        due_tick_at,
                         caster_snapshot,
                         target_snapshot,
                         &active_auras_snapshot,
                         creature.health,
                     );
+                    if let Some(script) = aura_script_for_spell_id(aura.spell_id) {
+                        aura_script_on_periodic_tick_end(script, aura);
+                    }
                     if tick.dealt_damage == 0 {
                         continue;
                     }
@@ -923,22 +1006,47 @@ impl MapRuntime {
                         break;
                     }
                 }
+                let heartbeat_removed = creature
+                    .active_auras
+                    .iter()
+                    .filter_map(|aura| {
+                        let runtime = heartbeat_resist_auras.get_mut(&(
+                            creature_guid.raw(),
+                            aura.caster.raw(),
+                            aura.spell_id,
+                        ))?;
+                        heartbeat_resist_remove_succeeds(runtime, now)
+                            .then_some((aura.caster.raw(), aura.spell_id))
+                    })
+                    .collect::<Vec<_>>();
                 let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
                 let was_stunned = active_aura_has_stun(&creature.active_auras);
-                let was_confused = active_aura_has_confuse(&creature.active_auras);
-                let before_expiration = creature.active_auras.len();
-                creature
-                    .active_auras
-                    .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
-                let expired_auras = creature.active_auras.len() != before_expiration;
-                aura_changed |= expired_auras;
+                let old_control_state = db_creature_control_state(&creature.active_auras);
+                let before_removal = creature.active_auras.len();
+                let mut expired_auras = Vec::new();
+                creature.active_auras.retain(|aura| {
+                    let removed = heartbeat_removed.contains(&(aura.caster.raw(), aura.spell_id))
+                        || aura.expires_at.is_some_and(|expires_at| now >= expires_at);
+                    if removed {
+                        expired_auras.push(aura.clone());
+                    }
+                    !removed
+                });
+                let removed_auras = creature.active_auras.len() != before_removal;
+                let expired_farsight_casters = removed_player_farsight_casters(&expired_auras);
+                aura_changed |= removed_auras;
                 let mut expiration_control_packets = Vec::new();
-                if expired_auras {
+                if removed_auras {
                     let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
                     let is_stunned = active_aura_has_stun(&creature.active_auras);
-                    let is_confused = active_aura_has_confuse(&creature.active_auras);
-                    sync_db_creature_confused_motion(creature, was_confused, is_confused, now);
-                    if ((was_confused && !is_confused)
+                    let new_control_state = db_creature_control_state(&creature.active_auras);
+                    sync_db_creature_control_motion(
+                        creature,
+                        old_control_state,
+                        new_control_state,
+                        now,
+                    );
+                    if (old_control_state != new_control_state
                         || (!was_movement_blocked && is_movement_blocked))
                         && !matches!(creature.motion, CreatureMotionState::Idle)
                     {
@@ -952,7 +1060,23 @@ impl MapRuntime {
                             )?,
                         });
                     }
-                    if was_stunned != is_stunned || was_confused != is_confused {
+                    if old_control_state != new_control_state
+                        && !is_movement_blocked
+                        && matches!(creature.motion, CreatureMotionState::Idle)
+                    {
+                        if let Some(packet) = start_db_creature_control_motion_runtime(
+                            &DbCreatureNavigationGuardrail::default(),
+                            Some(&self.geometry),
+                            creature_guid,
+                            creature,
+                            new_control_state,
+                            None,
+                            now,
+                        )? {
+                            expiration_control_packets.push(packet);
+                        }
+                    }
+                    if was_stunned != is_stunned || old_control_state != new_control_state {
                         expiration_control_packets.push(OutboundWorldPacket {
                             opcode: WorldOpcode::SmsgUpdateObject as u16,
                             body: build_unit_flags_update_body(
@@ -961,7 +1085,9 @@ impl MapRuntime {
                             )?,
                         });
                     }
-                    if was_confused != is_confused || was_movement_blocked != is_movement_blocked {
+                    if old_control_state != new_control_state
+                        || was_movement_blocked != is_movement_blocked
+                    {
                         invalidated_motion_schedule = true;
                     }
                     tracking_active_auras = Some(creature.active_auras.clone());
@@ -1026,7 +1152,8 @@ impl MapRuntime {
                     observer_update,
                     died_from_aura,
                     invalidated_motion_schedule,
-                    expired_auras,
+                    removed_auras,
+                    expired_farsight_casters,
                 )
             };
             if invalidated_motion_schedule {
@@ -1068,6 +1195,10 @@ impl MapRuntime {
                     }
                 }
             }
+            for character_guid in expired_farsight_casters {
+                packets
+                    .extend(self.clear_player_farsight_if_target(character_guid, creature_guid)?);
+            }
             if died_from_aura {
                 packets.extend(self.clear_player_melee_state_for_dead_target(creature_guid, None)?);
                 packets.extend(self.interrupt_player_spell_work_targeting_unit(creature_guid)?);
@@ -1077,7 +1208,7 @@ impl MapRuntime {
             if let Some(active_auras) = tracking_active_auras {
                 self.reconcile_target_aura_trackers(creature_guid, &active_auras, now);
             }
-            if expired_auras && !died_from_aura {
+            if removed_auras && !died_from_aura {
                 threat_switch_guids.push(creature_guid);
             }
         }
@@ -1543,20 +1674,20 @@ fn remove_db_creature_damage_interrupt_auras_from_runtime(
     let old_display_id = db_creature_effective_display_id(creature);
     let was_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
     let was_stunned = active_aura_has_stun(&creature.active_auras);
-    let was_confused = active_aura_has_confuse(&creature.active_auras);
+    let old_control_state = db_creature_control_state(&creature.active_auras);
     creature
         .active_auras
         .retain(|aura| !active_aura_breaks_on_damage(aura));
     refresh_db_creature_aura_display_override(creature);
     let is_movement_blocked = active_aura_blocks_movement(&creature.active_auras);
     let is_stunned = active_aura_has_stun(&creature.active_auras);
-    let is_confused = active_aura_has_confuse(&creature.active_auras);
-    sync_db_creature_confused_motion(creature, was_confused, is_confused, now);
+    let new_control_state = db_creature_control_state(&creature.active_auras);
+    sync_db_creature_control_motion(creature, old_control_state, new_control_state, now);
     let previous_speeds = creature.refresh_move_speeds();
     debug_assert_eq!(old_speeds, previous_speeds);
 
     let mut packets = Vec::new();
-    if ((was_confused && !is_confused) || (!was_movement_blocked && is_movement_blocked))
+    if (old_control_state != new_control_state || (!was_movement_blocked && is_movement_blocked))
         && !matches!(creature.motion, CreatureMotionState::Idle)
     {
         let stop = stop_db_creature_motion_runtime(creature);
@@ -1578,7 +1709,7 @@ fn remove_db_creature_damage_interrupt_auras_from_runtime(
             body: build_db_creature_display_update_body(creature_guid, new_display_id)?,
         });
     }
-    if was_stunned != is_stunned || was_confused != is_confused {
+    if was_stunned != is_stunned || old_control_state != new_control_state {
         packets.push(OutboundWorldPacket {
             opcode: WorldOpcode::SmsgUpdateObject as u16,
             body: build_unit_flags_update_body(
@@ -1613,6 +1744,7 @@ pub(in crate::world) struct PeriodicAuraLog {
     pub(in crate::world) tick: PeriodicDamageTick,
 }
 
+#[cfg(test)]
 pub(in crate::world) fn calculate_periodic_damage_tick(
     periodic: &PeriodicDamageAura,
     caster: SpellCombatUnitSnapshot,
@@ -1644,6 +1776,7 @@ pub(in crate::world) fn calculate_periodic_damage_tick_with_target_auras(
     )
 }
 
+#[cfg(test)]
 pub(in crate::world) fn calculate_periodic_damage_tick_with_rolls(
     periodic: &PeriodicDamageAura,
     caster: SpellCombatUnitSnapshot,
@@ -1673,7 +1806,7 @@ pub(in crate::world) fn calculate_periodic_damage_tick_with_target_auras_and_rol
         periodic.amount.max(1),
         active_aura_spell_damage_taken_bonus(
             target_active_auras,
-            spell_school_mask_from_school(u32::from(periodic.school)),
+            spell_school_mask_from_school(periodic.school),
         ),
     );
     let outcome = calculate_spell_damage_outcome(
@@ -1701,6 +1834,65 @@ pub(in crate::world) fn calculate_periodic_damage_tick_with_target_auras_and_rol
         resist,
         threat,
     }
+}
+
+pub(in crate::world) fn calculate_active_aura_periodic_damage_tick_with_target_auras(
+    aura: &ActiveAura,
+    periodic: PeriodicDamageAura,
+    tick_at: Instant,
+    caster: SpellCombatUnitSnapshot,
+    target: SpellCombatUnitSnapshot,
+    target_active_auras: &[ActiveAura],
+    target_health: u32,
+) -> PeriodicDamageTick {
+    let mut adjusted = periodic;
+    adjusted.amount = active_aura_periodic_damage_amount(aura, periodic, tick_at);
+    calculate_periodic_damage_tick_with_target_auras(
+        &adjusted,
+        caster,
+        target,
+        target_active_auras,
+        target_health,
+    )
+}
+
+fn active_aura_periodic_damage_amount(
+    aura: &ActiveAura,
+    periodic: PeriodicDamageAura,
+    tick_at: Instant,
+) -> u32 {
+    match periodic.profile {
+        PeriodicDamageProfile::Flat => periodic.amount,
+        PeriodicDamageProfile::AuraScript(script) => aura_script_periodic_amount(
+            script,
+            periodic.amount,
+            AuraPeriodicAmountContext {
+                tick_number: aura_periodic_tick_number(aura, periodic, tick_at),
+            },
+        ),
+    }
+}
+
+fn aura_periodic_tick_number(
+    aura: &ActiveAura,
+    periodic: PeriodicDamageAura,
+    tick_at: Instant,
+) -> u32 {
+    let Some(duration_millis) = aura.duration_millis else {
+        return 1;
+    };
+    let Some(expires_at) = aura.expires_at else {
+        return 1;
+    };
+    if periodic.tick_millis == 0 {
+        return 1;
+    }
+    let remaining_millis = expires_at
+        .saturating_duration_since(tick_at)
+        .as_millis()
+        .min(u128::from(u32::MAX)) as u32;
+    let elapsed_millis = duration_millis.saturating_sub(remaining_millis);
+    (elapsed_millis / periodic.tick_millis).max(1)
 }
 
 pub(in crate::world) fn periodic_spell_caster_snapshot(
@@ -1801,16 +1993,109 @@ pub(in crate::world) fn refresh_db_creature_aura_display_override(
     creature.aura_display_id_override = active_aura_transform_display_id(&creature.active_auras);
 }
 
-fn sync_db_creature_confused_motion(
+fn db_creature_control_state(active_auras: &[ActiveAura]) -> DbCreatureControlState {
+    if active_aura_has_confuse(active_auras) {
+        DbCreatureControlState::Confused
+    } else if active_aura_has_fear(active_auras) {
+        DbCreatureControlState::Fear
+    } else {
+        DbCreatureControlState::None
+    }
+}
+
+fn active_aura_fear_motion_context(
+    active_auras: &[ActiveAura],
+    now: Instant,
+) -> Option<(ObjectGuid, Duration)> {
+    active_auras.iter().rev().find_map(|aura| {
+        aura.stat_modifiers
+            .contains(&AuraStatModifier::Fear)
+            .then(|| {
+                (
+                    aura.caster,
+                    aura.expires_at
+                        .map(|expires_at| expires_at.saturating_duration_since(now))
+                        .or_else(|| {
+                            aura.duration_millis.map(|duration_millis| {
+                                Duration::from_millis(duration_millis.into())
+                            })
+                        })
+                        .unwrap_or(Duration::ZERO),
+                )
+            })
+    })
+}
+
+fn build_started_db_creature_motion_packet(
+    creature_guid: ObjectGuid,
+    motion: StartedCreatureMotion,
+) -> anyhow::Result<OutboundWorldPacket> {
+    Ok(OutboundWorldPacket {
+        opcode: WorldOpcode::SmsgMonsterMove as u16,
+        body: build_monster_move_path_body_inner(
+            creature_guid,
+            motion.start,
+            &motion.path,
+            motion.spline_id,
+            motion.duration.as_millis().max(1) as u32,
+            None,
+            motion.run,
+        )?,
+    })
+}
+
+fn start_db_creature_control_motion_runtime(
+    navigation: &DbCreatureNavigationGuardrail,
+    geometry: Option<&WorldGeometry>,
+    creature_guid: ObjectGuid,
     creature: &mut DbCreatureRuntime,
-    was_confused: bool,
-    is_confused: bool,
+    control_state: DbCreatureControlState,
+    fear_source_position: Option<WorldPosition>,
+    now: Instant,
+) -> anyhow::Result<Option<OutboundWorldPacket>> {
+    let started_motion = match control_state {
+        DbCreatureControlState::Confused => {
+            start_db_creature_confused_motion_runtime(navigation, geometry, creature, now)
+        }
+        DbCreatureControlState::Fear => {
+            let Some((source, duration)) =
+                active_aura_fear_motion_context(&creature.active_auras, now)
+            else {
+                return Ok(None);
+            };
+            start_db_creature_flee_motion_runtime(
+                navigation,
+                geometry,
+                creature,
+                source,
+                fear_source_position.unwrap_or(creature.current_position),
+                now,
+                duration,
+            )
+        }
+        DbCreatureControlState::None => None,
+    };
+    started_motion
+        .map(|motion| build_started_db_creature_motion_packet(creature_guid, motion))
+        .transpose()
+}
+
+fn sync_db_creature_control_motion(
+    creature: &mut DbCreatureRuntime,
+    old_control_state: DbCreatureControlState,
+    new_control_state: DbCreatureControlState,
     now: Instant,
 ) {
-    if !was_confused && is_confused {
+    if old_control_state != DbCreatureControlState::Confused
+        && new_control_state == DbCreatureControlState::Confused
+    {
         creature.begin_confused_motion(now);
-    } else if was_confused && !is_confused {
+    } else if old_control_state == DbCreatureControlState::Confused
+        && new_control_state != DbCreatureControlState::Confused
+    {
         creature.clear_confused_motion();
+    }
+    if old_control_state != new_control_state && new_control_state == DbCreatureControlState::None {
         creature.resume_default_motion_now(now);
     }
 }

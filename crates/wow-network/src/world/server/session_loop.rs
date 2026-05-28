@@ -345,6 +345,14 @@ pub(in crate::world) async fn handle_client(
                         crate::observability::WorldSessionLoopPhase::RefreshActivePlayerCache,
                         refresh_started_at.elapsed(),
                     );
+                    reconcile_invalid_controlled_unit_if_needed(
+                        &mut stream,
+                        &runtime_state.maps,
+                        &runtime_state.sessions,
+                        &mut session,
+                        &mut header_crypto,
+                    )
+                    .await?;
                     let finalize_death_started_at = Instant::now();
                     finalize_map_owned_player_death_if_needed(
                         &mut stream,
@@ -364,6 +372,22 @@ pub(in crate::world) async fn handle_client(
                         crate::observability::WorldSessionLoopPhase::FinalizePlayerDeath,
                         finalize_death_started_at.elapsed(),
                     );
+                    finalize_pending_player_channel_deaths(
+                        &mut stream,
+                        CombatRewardDeps {
+                            character_db_pool: &character_db_pool,
+                            world_db_pool: &world_db_pool,
+                            shared_world: SharedWorldDeps {
+                                object_mgr: runtime_state.object_mgr.as_ref(),
+                                maps: &runtime_state.maps,
+                                sessions: &runtime_state.sessions,
+                            },
+                            parties: &runtime_state.parties,
+                        },
+                        &mut session,
+                        &mut header_crypto,
+                    )
+                    .await?;
                     update_online_rest_bonus_if_due(
                         &mut stream,
                         &character_db_pool,
@@ -601,6 +625,22 @@ async fn process_authenticated_world_packet(
             session,
             header_crypto,
             map_player_died,
+        )
+        .await?;
+        finalize_pending_player_channel_deaths(
+            stream,
+            CombatRewardDeps {
+                character_db_pool,
+                world_db_pool,
+                shared_world: SharedWorldDeps {
+                    object_mgr: runtime_state.object_mgr.as_ref(),
+                    maps: &runtime_state.maps,
+                    sessions: &runtime_state.sessions,
+                },
+                parties: &runtime_state.parties,
+            },
+            session,
+            header_crypto,
         )
         .await?;
     }
@@ -1070,6 +1110,38 @@ pub(in crate::world) async fn refresh_active_player_session_cache(
         character.xp = snapshot.xp;
     }
     map_player_died
+}
+
+pub(in crate::world) async fn finalize_pending_player_channel_deaths(
+    stream: &mut WorldPacketSink,
+    deps: CombatRewardDeps<'_>,
+    session: &mut WorldSessionState,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some((map_id, character_guid)) = session
+        .character
+        .active_character
+        .as_ref()
+        .map(|character| (character.position.map_id, character.guid))
+    else {
+        return Ok(());
+    };
+    let pending = deps
+        .shared_world
+        .maps
+        .take_player_channel_death_finalizations(map_id, character_guid)
+        .await;
+    for death_finalization in pending {
+        finalize_db_creature_death(
+            stream,
+            deps,
+            session,
+            Some(death_finalization),
+            header_crypto,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 pub(in crate::world) async fn refresh_active_player_session_tick_cache(

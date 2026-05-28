@@ -14,7 +14,11 @@ pub(in crate::world) async fn apply_player_combo_points_effect(
 
     effect: SpellInfoEffect,
 
+    value_context: SpellEffectValueContext,
+
     targets: &SpellCastTargets,
+
+    target_outcome: Option<PlayerSpellTargetOutcome>,
 
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
@@ -22,7 +26,14 @@ pub(in crate::world) async fn apply_player_combo_points_effect(
         return Ok(());
     };
 
-    let Some(points) = spell_effect_simple_value(effect.base_points) else {
+    if target_outcome
+        .filter(|outcome| outcome.target == target)
+        .is_some_and(|outcome| outcome.miss_info.is_some())
+    {
+        return Ok(());
+    }
+
+    let Some(points) = spell_effect_calculated_u32(effect, value_context) else {
         return Ok(());
     };
 
@@ -87,6 +98,22 @@ pub(in crate::world) async fn clear_player_combo_points_after_finisher(
     .await
 }
 
+fn aura_script_before_apply(aura: &ActiveAura) {
+    let Some(script) = aura_script_for_spell_id(aura.spell_id) else {
+        return;
+    };
+    let context = AuraScriptApplyContext { aura, apply: true };
+    aura_script_on_holder_init(script, context);
+    aura_script_on_apply(script, context);
+}
+
+fn aura_script_after_apply(aura: &ActiveAura) {
+    let Some(script) = aura_script_for_spell_id(aura.spell_id) else {
+        return;
+    };
+    aura_script_on_after_apply(script, AuraScriptApplyContext { aura, apply: true });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn apply_player_spell_aura(
     stream: &mut WorldPacketSink,
@@ -109,6 +136,8 @@ pub(in crate::world) async fn apply_player_spell_aura(
 
     targets: &SpellCastTargets,
 
+    target_outcome: Option<PlayerSpellTargetOutcome>,
+
     value_context: SpellEffectValueContext,
 
     now: Instant,
@@ -122,10 +151,12 @@ pub(in crate::world) async fn apply_player_spell_aura(
         .player_runtime_snapshot(map_id, character_guid)
         .await
         .map(|snapshot| {
-            value_context.with_spell_healing_bonus_done(active_aura_spell_healing_done_bonus(
-                &snapshot.active_auras,
-                spell_school_mask,
-            ))
+            value_context
+                .with_melee_attack_power(snapshot.combat_stats.melee_attack_power)
+                .with_spell_healing_bonus_done(active_aura_spell_healing_done_bonus(
+                    &snapshot.active_auras,
+                    spell_school_mask,
+                ))
         })
         .unwrap_or(value_context);
 
@@ -152,9 +183,49 @@ pub(in crate::world) async fn apply_player_spell_aura(
     )
     .await?;
 
-    let spell_plan = SpellInfo::from_template(spell_template)
+    let spell_info = SpellInfo::from_template(spell_template);
+    let spell_plan = spell_info
         .player_spell_plan()
         .filter(|plan| plan.profile.kind == spell_profile.kind);
+    if spell_info.effects.iter().copied().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::ApplyAura
+            && effect_targets_target_party_friendly_area(effect)
+    }) {
+        return apply_player_target_party_spell_aura(
+            stream,
+            &deps,
+            session,
+            caster,
+            character_guid,
+            character_level,
+            map_id,
+            spell_template,
+            targets,
+            &aura,
+            now,
+            header_crypto,
+        )
+        .await;
+    }
+    if spell_info.effects.iter().copied().any(|effect| {
+        effect.dispatch == SpellEffectDispatch::ApplyAura
+            && effect_targets_caster_centered_friendly_area(effect)
+    }) {
+        return apply_player_caster_area_spell_aura(
+            stream,
+            &deps,
+            session,
+            caster,
+            character_guid,
+            character_level,
+            map_id,
+            spell_template,
+            &aura,
+            now,
+            header_crypto,
+        )
+        .await;
+    }
     let aura_target = spell_plan
         .as_ref()
         .map(|plan| plan.target)
@@ -185,6 +256,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
             )
             .await?;
 
+            aura_script_before_apply(&aura);
             apply_player_aura_replacing_conflicts(session, aura.clone(), &resolution);
 
             if let Some(event) = deps
@@ -244,6 +316,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
                     .await?;
                 }
             }
+            aura_script_after_apply(&aura);
 
             start_player_self_aura_channel_if_needed(
                 stream,
@@ -287,82 +360,17 @@ pub(in crate::world) async fn apply_player_spell_aura(
         SpellPlanTarget::Unit | SpellPlanTarget::HostileUnit | SpellPlanTarget::FriendlyUnit => {
             if let Some(target) = targets.unit_target {
                 if target.is_player() {
-                    let target_character_guid = target.counter();
-
-                    let active_auras = if target_character_guid == character_guid {
-                        session.auras.active_auras.clone()
-                    } else {
-                        let Some(snapshot) = deps
-                            .shared_world
-                            .maps
-                            .player_runtime_snapshot(map_id, target_character_guid)
-                            .await
-                        else {
-                            return Ok(());
-                        };
-
-                        snapshot.active_auras
-                    };
-
-                    let mut resolution = aura_rank_conflict_resolution(
-                        deps.shared_world.object_mgr,
-                        deps.world_db_pool,
-                        spell_template.id,
-                        caster,
-                        &active_auras,
-                    )
-                    .await?;
-
-                    if resolution.failure.is_some() {
-                        return Ok(());
-                    }
-
-                    extend_resolution_with_mechanic_immunity_purges(
-                        deps.shared_world.object_mgr,
-                        deps.world_db_pool,
-                        spell_template,
-                        &active_auras,
-                        &aura,
-                        &mut resolution,
-                    )
-                    .await?;
-
-                    if target_character_guid == character_guid {
-                        apply_player_aura_replacing_conflicts(session, aura.clone(), &resolution);
-                    }
-
-                    if let Some(event) = deps
-                        .shared_world
-                        .maps
-                        .apply_player_aura_replacing_conflicts(
-                            map_id,
-                            target_character_guid,
-                            aura,
-                            &resolution,
-                        )
-                        .await?
-                    {
-                        send_or_dispatch_player_aura_event(
-                            stream,
-                            deps.shared_world,
-                            character_guid,
-                            target_character_guid,
-                            event,
-                            header_crypto,
-                        )
-                        .await?;
-                    }
-
-                    apply_power_word_shield_weakened_soul_if_needed(
+                    apply_player_spell_aura_to_player_target(
                         stream,
-                        deps,
+                        &deps,
                         session,
                         caster,
                         character_guid,
                         character_level,
                         map_id,
                         spell_template,
-                        target_character_guid,
+                        target.counter(),
+                        &aura,
                         now,
                         header_crypto,
                     )
@@ -395,6 +403,18 @@ pub(in crate::world) async fn apply_player_spell_aura(
                     .await?;
 
                     let diminishing_group = db_creature_spell_diminishing_group(spell_template);
+                    let original_duration_millis = aura.duration_millis;
+                    let mut heartbeat_runtime = target_outcome
+                        .filter(|outcome| outcome.target == target)
+                        .and_then(|outcome| outcome.heartbeat_resist_chance_basis_points)
+                        .and_then(|chance_basis_points| {
+                            heartbeat_resist_runtime(
+                                chance_basis_points,
+                                original_duration_millis,
+                                DiminishingLevelRuntime::Level1,
+                                now,
+                            )
+                        });
 
                     if let Some(group) = diminishing_group {
                         let level = deps
@@ -426,6 +446,17 @@ pub(in crate::world) async fn apply_player_spell_aura(
 
                         aura.expires_at =
                             Some(now + Duration::from_millis(adjusted_duration as u64));
+                        heartbeat_runtime = target_outcome
+                            .filter(|outcome| outcome.target == target)
+                            .and_then(|outcome| outcome.heartbeat_resist_chance_basis_points)
+                            .and_then(|chance_basis_points| {
+                                heartbeat_resist_runtime(
+                                    chance_basis_points,
+                                    original_duration_millis,
+                                    level,
+                                    now,
+                                )
+                            });
                     }
 
                     let mut resolution = aura_rank_conflict_resolution(
@@ -462,6 +493,8 @@ pub(in crate::world) async fn apply_player_spell_aura(
                     )
                     .await?;
 
+                    let applied_aura = aura.clone();
+                    aura_script_before_apply(&applied_aura);
                     if let Some(event) = deps
                         .shared_world
                         .maps
@@ -469,7 +502,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
                             map_id,
                             target,
                             character_guid,
-                            aura,
+                            applied_aura.clone(),
                             &resolution,
                             single_target_descriptor,
                             diminishing_group,
@@ -477,6 +510,18 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         )
                         .await?
                     {
+                        if let Some(runtime) = heartbeat_runtime {
+                            deps.shared_world
+                                .maps
+                                .register_heartbeat_resist_aura(
+                                    map_id,
+                                    target,
+                                    caster,
+                                    spell_template.id,
+                                    runtime,
+                                )
+                                .await;
+                        }
                         let target_switch = deps
                             .shared_world
                             .maps
@@ -514,6 +559,20 @@ pub(in crate::world) async fn apply_player_spell_aura(
                             deps.shared_world,
                             session,
                             target_switch,
+                            header_crypto,
+                        )
+                        .await?;
+                        aura_script_after_apply(&applied_aura);
+
+                        start_player_target_aura_channel_if_needed(
+                            stream,
+                            deps.shared_world,
+                            caster,
+                            character_guid,
+                            map_id,
+                            spell_template,
+                            target,
+                            now,
                             header_crypto,
                         )
                         .await?;
@@ -598,6 +657,8 @@ pub(in crate::world) async fn apply_player_spell_aura(
                     continue;
                 }
 
+                let applied_aura = aura.clone();
+                aura_script_before_apply(&applied_aura);
                 if let Some(event) = deps
                     .shared_world
                     .maps
@@ -605,7 +666,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         map_id,
                         target,
                         character_guid,
-                        aura.clone(),
+                        applied_aura.clone(),
                         &resolution,
                         None,
                         None,
@@ -635,6 +696,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         .sessions
                         .dispatch(event.observer_packets)
                         .await;
+                    aura_script_after_apply(&applied_aura);
                 }
 
                 begin_db_creature_retaliation_if_needed(
@@ -713,6 +775,8 @@ pub(in crate::world) async fn apply_player_spell_aura(
                     continue;
                 }
 
+                let applied_aura = aura.clone();
+                aura_script_before_apply(&applied_aura);
                 if let Some(event) = deps
                     .shared_world
                     .maps
@@ -720,7 +784,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         map_id,
                         target,
                         character_guid,
-                        aura.clone(),
+                        applied_aura.clone(),
                         &resolution,
                         None,
                         None,
@@ -750,6 +814,7 @@ pub(in crate::world) async fn apply_player_spell_aura(
                         .sessions
                         .dispatch(event.observer_packets)
                         .await;
+                    aura_script_after_apply(&applied_aura);
                 }
 
                 begin_db_creature_retaliation_if_needed(
@@ -1054,6 +1119,309 @@ async fn extend_resolution_with_mechanic_immunity_purges(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn apply_player_target_party_spell_aura(
+    stream: &mut WorldPacketSink,
+    deps: &SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    targets: &SpellCastTargets,
+    aura: &ActiveAura,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(target_character_guid) = targets
+        .unit_target
+        .filter(|target| target.is_player())
+        .map(|target| target.counter())
+    else {
+        return Ok(());
+    };
+    let target_position = if target_character_guid == character_guid {
+        let Some(character) = session.character.active_character.as_ref() else {
+            return Ok(());
+        };
+        character.position
+    } else {
+        let Some(snapshot) = deps
+            .shared_world
+            .maps
+            .player_runtime_snapshot(map_id, target_character_guid)
+            .await
+        else {
+            return Ok(());
+        };
+        if snapshot.health == 0 {
+            return Ok(());
+        }
+        snapshot.position
+    };
+    let spell_info = SpellInfo::from_template(spell_template);
+    let Some(radius) = spell_info
+        .effects
+        .iter()
+        .copied()
+        .filter(|effect| {
+            effect.dispatch == SpellEffectDispatch::ApplyAura
+                && effect_targets_target_party_friendly_area(*effect)
+        })
+        .filter_map(|effect| spell_effect_radius_yards(deps.shared_world.maps, effect))
+        .max_by(f32::total_cmp)
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            "Skipping target-party friendly aura with missing SpellRadius.dbc row"
+        );
+        return Ok(());
+    };
+
+    let mut party_guids = deps
+        .parties
+        .party_members(target_character_guid)
+        .await
+        .into_iter()
+        .map(|member| member.guid)
+        .collect::<Vec<_>>();
+    party_guids.push(target_character_guid);
+    if deps
+        .parties
+        .same_party(character_guid, target_character_guid)
+        .await
+    {
+        party_guids.push(character_guid);
+    }
+    party_guids.sort_unstable();
+    party_guids.dedup();
+
+    for party_member_guid in party_guids {
+        if party_member_guid != target_character_guid {
+            let Some(snapshot) = deps
+                .shared_world
+                .maps
+                .player_runtime_snapshot(map_id, party_member_guid)
+                .await
+            else {
+                continue;
+            };
+            if snapshot.health == 0 || target_position.distance_to(&snapshot.position) > radius {
+                continue;
+            }
+        }
+
+        apply_player_spell_aura_to_player_target(
+            stream,
+            deps,
+            session,
+            caster,
+            character_guid,
+            character_level,
+            map_id,
+            spell_template,
+            party_member_guid,
+            aura,
+            now,
+            header_crypto,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_player_caster_area_spell_aura(
+    stream: &mut WorldPacketSink,
+    deps: &SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    aura: &ActiveAura,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some((caster_party_guid, caster_position)) = session
+        .character
+        .active_character
+        .as_ref()
+        .map(|character| (character.guid, character.position))
+    else {
+        return Ok(());
+    };
+    let spell_info = SpellInfo::from_template(spell_template);
+    let Some(radius) = spell_info
+        .effects
+        .iter()
+        .copied()
+        .filter(|effect| {
+            effect.dispatch == SpellEffectDispatch::ApplyAura
+                && effect_targets_caster_centered_friendly_area(*effect)
+        })
+        .filter_map(|effect| spell_effect_radius_yards(deps.shared_world.maps, effect))
+        .max_by(f32::total_cmp)
+    else {
+        warn!(
+            spell_id = spell_template.id,
+            "Skipping caster-centered friendly aura with missing SpellRadius.dbc row"
+        );
+        return Ok(());
+    };
+
+    let mut target_guids = deps
+        .parties
+        .party_members(caster_party_guid)
+        .await
+        .into_iter()
+        .map(|member| member.guid)
+        .collect::<Vec<_>>();
+    target_guids.push(character_guid);
+    target_guids.sort_unstable();
+    target_guids.dedup();
+
+    for target_character_guid in target_guids {
+        if target_character_guid != character_guid {
+            let Some(snapshot) = deps
+                .shared_world
+                .maps
+                .player_runtime_snapshot(map_id, target_character_guid)
+                .await
+            else {
+                continue;
+            };
+            if snapshot.health == 0 || caster_position.distance_to(&snapshot.position) > radius {
+                continue;
+            }
+        }
+
+        apply_player_spell_aura_to_player_target(
+            stream,
+            deps,
+            session,
+            caster,
+            character_guid,
+            character_level,
+            map_id,
+            spell_template,
+            target_character_guid,
+            aura,
+            now,
+            header_crypto,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_player_spell_aura_to_player_target(
+    stream: &mut WorldPacketSink,
+    deps: &SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    character_level: u8,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    target_character_guid: u32,
+    aura: &ActiveAura,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let active_auras = if target_character_guid == character_guid {
+        session.auras.active_auras.clone()
+    } else {
+        let Some(snapshot) = deps
+            .shared_world
+            .maps
+            .player_runtime_snapshot(map_id, target_character_guid)
+            .await
+        else {
+            return Ok(());
+        };
+
+        snapshot.active_auras
+    };
+
+    let mut resolution = aura_rank_conflict_resolution(
+        deps.shared_world.object_mgr,
+        deps.world_db_pool,
+        spell_template.id,
+        caster,
+        &active_auras,
+    )
+    .await?;
+
+    if resolution.failure.is_some() {
+        return Ok(());
+    }
+
+    extend_resolution_with_mechanic_immunity_purges(
+        deps.shared_world.object_mgr,
+        deps.world_db_pool,
+        spell_template,
+        &active_auras,
+        aura,
+        &mut resolution,
+    )
+    .await?;
+
+    aura_script_before_apply(aura);
+    if target_character_guid == character_guid {
+        apply_player_aura_replacing_conflicts(session, aura.clone(), &resolution);
+    }
+
+    if let Some(event) = deps
+        .shared_world
+        .maps
+        .apply_player_aura_replacing_conflicts(
+            map_id,
+            target_character_guid,
+            aura.clone(),
+            &resolution,
+        )
+        .await?
+    {
+        send_or_dispatch_player_aura_event(
+            stream,
+            deps.shared_world,
+            character_guid,
+            target_character_guid,
+            event,
+            header_crypto,
+        )
+        .await?;
+    }
+    aura_script_after_apply(aura);
+
+    apply_power_word_shield_weakened_soul_if_needed(
+        stream,
+        SpellCastDeps {
+            character_db_pool: deps.character_db_pool,
+            world_db_pool: deps.world_db_pool,
+            account_id: deps.account_id,
+            shared_world: deps.shared_world,
+            parties: deps.parties,
+        },
+        session,
+        caster,
+        character_guid,
+        character_level,
+        map_id,
+        spell_template,
+        target_character_guid,
+        now,
+        header_crypto,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn start_player_self_aura_channel_if_needed(
     stream: &mut WorldPacketSink,
     shared_world: SharedWorldDeps<'_>,
@@ -1093,6 +1461,80 @@ async fn start_player_self_aura_channel_if_needed(
             character_guid,
             spell_template.id,
             duration.duration_millis as u32,
+            interrupt_flags,
+            now,
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+
+    for packet in event.direct_packets {
+        send_packet(
+            stream,
+            packet.opcode,
+            &packet.body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+    }
+    shared_world.sessions.dispatch(event.observer_packets).await;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_player_target_aura_channel_if_needed(
+    stream: &mut WorldPacketSink,
+    shared_world: SharedWorldDeps<'_>,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    spell_template: &wow_db::SpellTemplateQuery,
+    target: ObjectGuid,
+    now: Instant,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some(SpellPlanChannel::UnitAura {
+        duration_index,
+        interrupt_flags,
+    }) = SpellInfo::from_template(spell_template)
+        .player_spell_plan()
+        .and_then(|plan| plan.channel)
+    else {
+        return Ok(());
+    };
+
+    if !target.is_creature() {
+        return Ok(());
+    }
+
+    let Some(duration) = shared_world.maps.spell_duration(duration_index) else {
+        warn!(
+            spell_id = spell_template.id,
+            duration_index, "Skipping target-channeled aura start with missing spell duration row"
+        );
+        return Ok(());
+    };
+    if duration.duration_millis <= 0 {
+        return Ok(());
+    }
+
+    let max_range = shared_world
+        .maps
+        .spell_range(spell_template.range_index)
+        .map(|range| range.max_range)
+        .unwrap_or(0.0);
+
+    let Some(event) = shared_world
+        .maps
+        .start_player_target_aura_channel(
+            map_id,
+            caster,
+            character_guid,
+            spell_template.id,
+            target,
+            duration.duration_millis as u32,
+            max_range,
             interrupt_flags,
             now,
         )

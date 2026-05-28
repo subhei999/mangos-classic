@@ -33,6 +33,7 @@ pub(in crate::world) struct SpellInfoEffect {
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::world) struct SpellInfoEffectSlot {
+    pub(in crate::world) spell_id: u32,
     pub(in crate::world) effect_id: u32,
     pub(in crate::world) aura_name: u32,
     pub(in crate::world) base_points: i32,
@@ -53,6 +54,7 @@ impl<'a> SpellInfo<'a> {
     pub(in crate::world) fn from_template(template: &'a wow_db::SpellTemplateQuery) -> Self {
         let effects = [
             SpellInfoEffect::from_template_slot(SpellInfoEffectSlot {
+                spell_id: template.id,
                 effect_id: template.effect1,
                 aura_name: template.effect_apply_aura_name1,
                 base_points: template.effect_base_points1,
@@ -76,6 +78,7 @@ impl<'a> SpellInfo<'a> {
                 item_type: template.effect_item_type1,
             }),
             SpellInfoEffect::from_template_slot(SpellInfoEffectSlot {
+                spell_id: template.id,
                 effect_id: template.effect2,
                 aura_name: template.effect_apply_aura_name2,
                 base_points: template.effect_base_points2,
@@ -99,6 +102,7 @@ impl<'a> SpellInfo<'a> {
                 item_type: template.effect_item_type2,
             }),
             SpellInfoEffect::from_template_slot(SpellInfoEffectSlot {
+                spell_id: template.id,
                 effect_id: template.effect3,
                 aura_name: template.effect_apply_aura_name3,
                 base_points: template.effect_base_points3,
@@ -265,6 +269,9 @@ impl<'a> SpellInfo<'a> {
                 SpellEffectDispatch::ApplyAura
                     | SpellEffectDispatch::PersistentAreaAura
                     | SpellEffectDispatch::Dispel
+                    | SpellEffectDispatch::Threat
+                    | SpellEffectDispatch::Distract
+                    | SpellEffectDispatch::PickPocket
             )
         }) {
             if effect_targets_caster_centered_hostile_area(*effect) {
@@ -272,6 +279,9 @@ impl<'a> SpellInfo<'a> {
             }
             if effect_targets_destination_hostile_area(*effect) {
                 return SpellAuraTarget::DestinationAreaEnemy;
+            }
+            if effect_targets_caster_centered_friendly_area(*effect) {
+                return SpellAuraTarget::UnitTarget;
             }
             return match effect.implicit_target_a {
                 TARGET_UNIT_CASTER => SpellAuraTarget::Caster,
@@ -368,6 +378,9 @@ impl<'a> SpellInfo<'a> {
 
     pub(in crate::world) fn requires_behind_target(&self) -> bool {
         (self.template.attributes_serverside & SPELL_ATTR_SS_FACING_BACK) != 0
+            || ((self.template.attributes_ex & SPELL_ATTR_EX_INITIATES_COMBAT_ENABLES_AUTO_ATTACK)
+                != 0
+                && (self.template.attributes_ex2 & SPELL_ATTR_EX2_INITIATE_COMBAT_POST_CAST) != 0)
     }
 
     pub(in crate::world) fn needs_combo_points(&self) -> bool {
@@ -415,7 +428,11 @@ impl SpellInfoEffect {
             mechanic: slot.mechanic,
             trigger_spell: slot.trigger_spell,
             item_type: slot.item_type,
-            dispatch: SpellEffectDispatch::from_effect_id(slot.effect_id),
+            dispatch: if spell_script_handles_effect(slot.spell_id, slot.effect_id) {
+                SpellEffectDispatch::SpellScript
+            } else {
+                SpellEffectDispatch::from_effect_id(slot.effect_id)
+            },
         }
     }
 }
@@ -451,6 +468,18 @@ pub(in crate::world) fn effect_targets_direct_friendly_unit(effect: SpellInfoEff
         || is_direct_friendly_unit_target(effect.implicit_target_b)
 }
 
+pub(in crate::world) fn effect_targets_caster_centered_friendly_area(
+    effect: SpellInfoEffect,
+) -> bool {
+    is_caster_centered_friendly_area_target(effect.implicit_target_a)
+        || is_caster_centered_friendly_area_target(effect.implicit_target_b)
+}
+
+pub(in crate::world) fn effect_targets_target_party_friendly_area(effect: SpellInfoEffect) -> bool {
+    effect.implicit_target_a == TARGET_UNIT_FRIEND_AND_PARTY
+        || effect.implicit_target_b == TARGET_UNIT_FRIEND_AND_PARTY
+}
+
 pub(in crate::world) fn is_direct_unit_target(target: u32) -> bool {
     is_direct_hostile_unit_target(target)
         || is_direct_friendly_unit_target(target)
@@ -469,8 +498,16 @@ pub(in crate::world) fn is_direct_friendly_unit_target(target: u32) -> bool {
             | TARGET_UNIT_FRIEND_AND_PARTY
             | TARGET_UNIT_FRIEND_CHAIN_HEAL
             | TARGET_UNIT_RAID
-            | TARGET_UNIT_RAID_NEAR_CASTER
             | TARGET_UNIT_RAID_AND_CLASS
+    )
+}
+
+pub(in crate::world) fn is_caster_centered_friendly_area_target(target: u32) -> bool {
+    matches!(
+        target,
+        TARGET_ENUM_UNITS_PARTY_WITHIN_CASTER_RANGE
+            | TARGET_ENUM_UNITS_PARTY_AOE_AT_SRC_LOC
+            | TARGET_UNIT_RAID_NEAR_CASTER
     )
 }
 

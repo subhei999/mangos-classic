@@ -20,6 +20,14 @@ pub(in crate::world) enum SpellEffectDispatch {
 
     PowerBurn,
 
+    SummonPet,
+
+    SummonPossessed,
+
+    Threat,
+
+    Distract,
+
     Teleport,
 
     Leap,
@@ -49,6 +57,10 @@ pub(in crate::world) enum SpellEffectDispatch {
     TransportDoor,
 
     AddComboPoints,
+
+    PickPocket,
+
+    SpellScript,
 
     Unsupported(u32),
 }
@@ -123,6 +135,16 @@ impl SpellEffectDispatch {
 
             SPELL_EFFECT_POWER_BURN => Self::PowerBurn,
 
+            SPELL_EFFECT_SUMMON_PET => Self::SummonPet,
+
+            SPELL_EFFECT_SUMMON_POSSESSED => Self::SummonPossessed,
+
+            SPELL_EFFECT_THREAT => Self::Threat,
+
+            SPELL_EFFECT_DISTRACT => Self::Distract,
+
+            SPELL_EFFECT_PICKPOCKET => Self::PickPocket,
+
             SPELL_EFFECT_TELEPORT_UNITS | SPELL_EFFECT_TELEPORT_UNITS_FACE_CASTER => Self::Teleport,
 
             SPELL_EFFECT_LEAP => Self::Leap,
@@ -189,6 +211,7 @@ pub(in crate::world) fn spell_effect_support(effect_id: u32) -> SpellMechanicSup
         | SPELL_EFFECT_DISPEL
         | SPELL_EFFECT_INTERRUPT_CAST
         | SPELL_EFFECT_PERSISTENT_AREA_AURA
+        | SPELL_EFFECT_SUMMON_POSSESSED
         | SPELL_EFFECT_NORMALIZED_WEAPON_DMG => SpellMechanicSupport::Implemented,
 
         4 | 12 | 13 | 14 | 15 | 20 | 21 | 23 | 25 | 26 | 37 | 39 | 48 | 49 | 51 | 52 | 65 | 66
@@ -204,6 +227,12 @@ pub(in crate::world) fn spell_effect_support(effect_id: u32) -> SpellMechanicSup
 
         SPELL_EFFECT_POWER_BURN => SpellMechanicSupport::Implemented,
 
+        SPELL_EFFECT_SUMMON_PET => SpellMechanicSupport::Implemented,
+
+        SPELL_EFFECT_PICKPOCKET => SpellMechanicSupport::Implemented,
+
+        SPELL_EFFECT_DISTRACT => SpellMechanicSupport::Implemented,
+
         9 => SpellMechanicSupport::Pending("health leech"),
 
         11 => SpellMechanicSupport::Pending("bind"),
@@ -218,7 +247,7 @@ pub(in crate::world) fn spell_effect_support(effect_id: u32) -> SpellMechanicSup
 
         35 | 119 | 128 | 129 => SpellMechanicSupport::Pending("area aura"),
 
-        28 | 34 | 41 | 42 | 73 | 76 | 85 | 93 | 97 | 104 | 105 | 106 | 107 | 112 => {
+        28 | 34 | 41 | 42 | 76 | 85 | 93 | 97 | 104 | 105 | 106 | 107 | 112 => {
             SpellMechanicSupport::Pending("summon")
         }
 
@@ -242,19 +271,19 @@ pub(in crate::world) fn spell_effect_support(effect_id: u32) -> SpellMechanicSup
 
         55 => SpellMechanicSupport::Pending("tame creature"),
 
-        56 | 57 | 101 | 102 | 109 => SpellMechanicSupport::Pending("pet"),
+        57 | 101 | 102 | 109 => SpellMechanicSupport::Pending("pet"),
 
         61 => SpellMechanicSupport::Pending("game event"),
 
-        63 | 125 => SpellMechanicSupport::Pending("threat"),
+        SPELL_EFFECT_THREAT => SpellMechanicSupport::Implemented,
+
+        125 => SpellMechanicSupport::Pending("threat"),
 
         67 | 75 => SpellMechanicSupport::Pending("special heal"),
 
-        69 => SpellMechanicSupport::Pending("distract"),
+        72 => SpellMechanicSupport::Pending("bind/farsight"),
 
-        71 => SpellMechanicSupport::Pending("pick pocket"),
-
-        72 | 82 => SpellMechanicSupport::Pending("bind/farsight"),
+        SPELL_EFFECT_BIND_SIGHT => SpellMechanicSupport::Pending("bind/farsight"),
 
         74 | 87 | 88 | 89 | 90 | 110 => SpellMechanicSupport::Pending("totem"),
 
@@ -298,6 +327,7 @@ pub(in crate::world) fn spell_aura_support(aura_type: u32) -> SpellMechanicSuppo
         SPELL_AURA_PERIODIC_DAMAGE
         | SPELL_AURA_PERIODIC_HEAL
         | SPELL_AURA_MOD_STUN
+        | SPELL_AURA_MOD_DODGE_PERCENT
         | SPELL_AURA_MOD_BLOCK_PERCENT
         | SPELL_AURA_MOD_CRIT_PERCENT
         | SPELL_AURA_MOD_THREAT
@@ -323,9 +353,11 @@ pub(in crate::world) fn spell_aura_support(aura_type: u32) -> SpellMechanicSuppo
         | SPELL_AURA_MOD_RESISTANCE_PCT
         | SPELL_AURA_MOD_REGEN
         | SPELL_AURA_MOD_POWER_REGEN
+        | SPELL_AURA_CHANNEL_DEATH_ITEM
         | SPELL_AURA_MOD_POWER_REGEN_PERCENT
         | SPELL_AURA_MOD_HEALING_DONE
         | SPELL_AURA_MOD_HEALING
+        | SPELL_AURA_MOD_HEALTH_REGEN_IN_COMBAT
         | SPELL_AURA_MOD_MANA_REGEN_INTERRUPT
         | SPELL_AURA_MOD_SKILL_TALENT
         | SPELL_AURA_MOD_ATTACK_POWER
@@ -336,6 +368,7 @@ pub(in crate::world) fn spell_aura_support(aura_type: u32) -> SpellMechanicSuppo
         | SPELL_AURA_TRACK_CREATURES
         | SPELL_AURA_TRACK_RESOURCES
         | SPELL_AURA_GHOST
+        | SPELL_AURA_WATER_BREATHING
         | SPELL_AURA_WATER_WALK
         | SPELL_AURA_HOVER
         | SPELL_AURA_MOD_CONFUSE
@@ -348,32 +381,31 @@ pub(in crate::world) fn spell_aura_support(aura_type: u32) -> SpellMechanicSuppo
         | SPELL_AURA_SCHOOL_ABSORB
         | SPELL_AURA_MANA_SHIELD
         | SPELL_AURA_AURAS_VISIBLE
+        | SPELL_AURA_MOD_STEALTH
         | SPELL_AURA_FEATHER_FALL => SpellMechanicSupport::Implemented,
 
         46 | 48 | 164 => SpellMechanicSupport::KnownNoOp,
 
-        1 | 76 | 82 | 144 => SpellMechanicSupport::Pending("movement/visibility state"),
+        SPELL_AURA_BIND_SIGHT | SPELL_AURA_FAR_SIGHT => SpellMechanicSupport::Implemented,
 
-        2 | 6 | 16 | 18 | 66 | 78 | 128 | 176 | 177 => {
-            SpellMechanicSupport::Pending("control state")
-        }
+        144 => SpellMechanicSupport::Pending("movement/visibility state"),
+
+        2 | 6 | 18 | 66 | 78 | 128 | 176 | 177 => SpellMechanicSupport::Pending("control state"),
 
         43 | 107 | 108 | 109 | 111 | 112 => SpellMechanicSupport::Pending("trigger/script aura"),
 
-        9 | 15 | 28 | 32 | 34 | 35 | 47 | 49 | 54 | 55 | 57 | 58 | 59 | 65 | 70 | 71 | 72 | 73
-        | 80 | 83 | 88 | 89 | 90 | 91 | 102 | 113 | 114 | 116 | 117 | 118 | 122 | 123 | 124
-        | 125 | 126 | 127 | 129 | 130 | 131 | 132 | 133 | 136 | 140 | 141 | 142 | 143 | 147
-        | 149 | 150 | 152 | 153 | 154 | 155 | 157 | 158 | 160 | 161 | 163 | 165 | 166 | 167
-        | 168 | 169 | 171 | 172 | 174 | 175 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185
-        | 186 | 187 | 188 | 189 | 190 | 191 => {
-            SpellMechanicSupport::Pending("stat/combat modifier")
-        }
+        9 | 15 | 28 | 32 | 34 | 35 | 47 | 54 | 55 | 57 | 58 | 59 | 65 | 70 | 71 | 72 | 73 | 80
+        | 83 | 88 | 89 | 90 | 91 | 102 | 113 | 114 | 116 | 117 | 118 | 122 | 123 | 124 | 125
+        | 126 | 127 | 129 | 130 | 131 | 132 | 133 | 136 | 140 | 141 | 142 | 143 | 147 | 149
+        | 150 | 152 | 153 | 154 | 155 | 157 | 158 | 160 | 163 | 165 | 166 | 167 | 168 | 169
+        | 171 | 172 | 174 | 175 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187
+        | 188 | 189 | 190 | 191 => SpellMechanicSupport::Pending("stat/combat modifier"),
 
         68 | 75 | 119 | 120 | 121 | 139 | 145 | 146 | 151 | 159 | 170 | 173 => {
             SpellMechanicSupport::Pending("tracking/reaction/client state")
         }
 
-        21 | 53 | 62 | 63 | 64 | 81 | 86 | 96 | 162 => {
+        21 | 53 | 62 | 63 | 64 | 81 | 96 | 162 => {
             SpellMechanicSupport::Pending("resource shield/funnel")
         }
 
@@ -400,7 +432,7 @@ pub(in crate::world) fn spell_template_coverage_issues(
     let mut issues = Vec::new();
 
     for (index, effect) in spell_info.effects.into_iter().enumerate() {
-        if effect.effect_id != 0 {
+        if effect.effect_id != 0 && effect.dispatch != SpellEffectDispatch::SpellScript {
             let support = spell_effect_support(effect.effect_id);
 
             if support.blocks_runtime() {
@@ -518,6 +550,11 @@ pub(in crate::world) fn spell_effect_coverage_name(effect_id: u32) -> &'static s
 
         SPELL_EFFECT_POWER_BURN => "SPELL_EFFECT_POWER_BURN",
 
+        SPELL_EFFECT_SUMMON_PET => "SPELL_EFFECT_SUMMON_PET",
+        SPELL_EFFECT_SUMMON_POSSESSED => "SPELL_EFFECT_SUMMON_POSSESSED",
+
+        SPELL_EFFECT_THREAT => "SPELL_EFFECT_THREAT",
+
         SPELL_EFFECT_INTERRUPT_CAST => "SPELL_EFFECT_INTERRUPT_CAST",
 
         SPELL_EFFECT_PERSISTENT_AREA_AURA => "SPELL_EFFECT_PERSISTENT_AREA_AURA",
@@ -546,6 +583,8 @@ pub(in crate::world) fn spell_aura_coverage_name(aura_type: u32) -> &'static str
         SPELL_AURA_MOD_STUN => "SPELL_AURA_MOD_STUN",
 
         SPELL_AURA_MOD_TAUNT => "SPELL_AURA_MOD_TAUNT",
+
+        SPELL_AURA_MOD_DODGE_PERCENT => "SPELL_AURA_MOD_DODGE_PERCENT",
 
         SPELL_AURA_MOD_BLOCK_PERCENT => "SPELL_AURA_MOD_BLOCK_PERCENT",
 
@@ -607,6 +646,8 @@ pub(in crate::world) fn spell_aura_coverage_name(aura_type: u32) -> &'static str
 
         SPELL_AURA_MOD_HEALING => "SPELL_AURA_MOD_HEALING",
 
+        SPELL_AURA_MOD_HEALTH_REGEN_IN_COMBAT => "SPELL_AURA_MOD_HEALTH_REGEN_IN_COMBAT",
+
         SPELL_AURA_MOD_SKILL_TALENT => "SPELL_AURA_MOD_SKILL_TALENT",
 
         SPELL_AURA_MOD_ATTACK_POWER => "SPELL_AURA_MOD_ATTACK_POWER",
@@ -622,6 +663,8 @@ pub(in crate::world) fn spell_aura_coverage_name(aura_type: u32) -> &'static str
         SPELL_AURA_TRACK_RESOURCES => "SPELL_AURA_TRACK_RESOURCES",
 
         SPELL_AURA_GHOST => "SPELL_AURA_GHOST",
+
+        SPELL_AURA_WATER_BREATHING => "SPELL_AURA_WATER_BREATHING",
 
         SPELL_AURA_WATER_WALK => "SPELL_AURA_WATER_WALK",
 

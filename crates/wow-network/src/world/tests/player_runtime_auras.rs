@@ -42,6 +42,7 @@ fn test_player_runtime_with_controller(
         bot_runtime: None,
         selected_target: None,
         unit_target: None,
+        farsight_target: None,
         active_combat_target: None,
         active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,
@@ -585,6 +586,7 @@ fn polymorph_breaks_on_periodic_aura_damage() {
                 intellect: 0,
                 resistances: [0; MAX_SPELL_SCHOOL],
             },
+            profile: PeriodicDamageProfile::Flat,
             amount: 7,
             tick_millis: 3_000,
             next_tick_at: now,
@@ -1214,6 +1216,7 @@ fn creature_dot_death_clears_auras_before_respawn() {
                 intellect: 0,
                 resistances: [0; MAX_SPELL_SCHOOL],
             },
+            profile: PeriodicDamageProfile::Flat,
             amount: 7,
             tick_millis: 3_000,
             next_tick_at: now,
@@ -1610,6 +1613,64 @@ fn root_aura_template_stops_movement_until_expiration() {
 }
 
 #[test]
+fn movement_speed_aura_forces_owner_run_speed_until_expiration() {
+    let now = Instant::now();
+    let mut map = MapRuntime::new(0, 0);
+    map.add_player(test_player_runtime(
+        7,
+        SessionId(7),
+        WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0),
+    ))
+    .unwrap();
+    let slow = ActiveAura {
+        spell_id: 1604,
+        caster: ObjectGuid::new(HighGuid::Unit, 6, 45),
+        level: 6,
+        interrupt_flags: 0,
+        positive: false,
+        visible: true,
+        duration_millis: Some(4_000),
+        expires_at: Some(now + Duration::from_secs(4)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::MoveSpeedPercent { percent: -50 }],
+        proc_triggers: Vec::new(),
+    };
+
+    let event = map.apply_player_aura(7, slow).unwrap().unwrap();
+    let apply_speed_packet = event
+        .direct_packets
+        .iter()
+        .find(|packet| packet.opcode == WorldOpcode::SmsgForceRunSpeedChange as u16)
+        .expect("speed slow should force the owning client's run speed");
+    assert_eq!(
+        f32::from_le_bytes(
+            apply_speed_packet.body[apply_speed_packet.body.len() - 4..]
+                .try_into()
+                .unwrap()
+        ),
+        PLAYER_AURA_BASE_RUN_SPEED_YARDS_PER_SEC * 0.5
+    );
+
+    let packets = map
+        .advance_player_aura_expirations(now + Duration::from_secs(4))
+        .unwrap();
+    let restore_packet = packets
+        .iter()
+        .map(|(_, packet)| packet)
+        .find(|packet| packet.opcode == WorldOpcode::SmsgForceRunSpeedChange as u16)
+        .expect("speed slow expiration should restore the owning client's run speed");
+    assert_eq!(
+        f32::from_le_bytes(
+            restore_packet.body[restore_packet.body.len() - 4..]
+                .try_into()
+                .unwrap()
+        ),
+        PLAYER_AURA_BASE_RUN_SPEED_YARDS_PER_SEC
+    );
+}
+
+#[test]
 fn utility_visibility_auras_use_generic_template_metadata() {
     let caster = ObjectGuid::new(HighGuid::Unit, 6, 68);
     let now = Instant::now();
@@ -1667,6 +1728,58 @@ fn utility_visibility_auras_use_generic_template_metadata() {
             amount: 50,
         }]
     );
+    assert!(matches!(
+        spell_aura_support(SPELL_AURA_MOD_STEALTH_DETECT),
+        SpellMechanicSupport::Implemented
+    ));
+
+    let mut stealth = test_spell_template(1784);
+    stealth.spell_name = "Stealth".to_string();
+    stealth.effect1 = SPELL_EFFECT_APPLY_AURA;
+    stealth.effect_apply_aura_name1 = SPELL_AURA_MOD_STEALTH;
+    stealth.effect_base_points1 = 4;
+    stealth.effect_misc_value1 = 0;
+    let aura = build_active_aura(
+        &stealth,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        1,
+        test_spell_effect_value_context(&stealth),
+        now,
+        None,
+    );
+    assert_eq!(
+        aura.stat_modifiers,
+        vec![AuraStatModifier::Stealth { kind: 0, amount: 5 }]
+    );
+    assert_eq!(
+        active_aura_unit_vis_flags(std::slice::from_ref(&aura)),
+        UNIT_VIS_FLAG_CREEP
+    );
+    assert_eq!(
+        active_aura_player_field_bytes2(std::slice::from_ref(&aura)),
+        PLAYER_FIELD_BYTE2_STEALTH << 8
+    );
+
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let body = build_player_aura_update_body(
+        player,
+        4,
+        PLAYER_STAND_STATE_STAND,
+        0,
+        std::slice::from_ref(&aura),
+    )
+    .unwrap();
+    let (values, trailing) = decode_values_update_block(&body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(values[UNIT_FIELD_BYTES_1], Some(UNIT_VIS_FLAG_CREEP << 24));
+    assert_eq!(
+        values[PLAYER_FIELD_BYTES2],
+        Some(PLAYER_FIELD_BYTE2_STEALTH << 8)
+    );
+    assert!(matches!(
+        spell_aura_support(SPELL_AURA_MOD_STEALTH),
+        SpellMechanicSupport::Implemented
+    ));
 
     let mut shroud = test_spell_template(10848);
     shroud.spell_name = "Shroud of Death".to_string();
@@ -2338,6 +2451,23 @@ fn ghost_hover_and_water_walk_auras_are_distinct_runtime_modifiers() {
         None,
     );
     assert_eq!(water_walk.stat_modifiers, vec![AuraStatModifier::WaterWalk]);
+
+    let mut water_breathing_template = test_spell_template(5697);
+    water_breathing_template.spell_name = "Unending Breath".to_string();
+    water_breathing_template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    water_breathing_template.effect_apply_aura_name1 = SPELL_AURA_WATER_BREATHING;
+    let water_breathing = build_active_aura(
+        &water_breathing_template,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        16,
+        test_spell_effect_value_context(&water_breathing_template),
+        now,
+        None,
+    );
+    assert_eq!(
+        water_breathing.stat_modifiers,
+        vec![AuraStatModifier::WaterBreathing]
+    );
 }
 
 #[test]
@@ -3655,8 +3785,11 @@ fn confused_creature_cannot_start_chase_motion() {
         &DbCreatureNavigationGuardrail::default(),
         None,
         &mut runtime,
-        player,
-        player_position,
+        DbCreatureChaseTarget {
+            guid: player,
+            position: player_position,
+            movement_flags: 0,
+        },
         None,
         now,
     )
@@ -4527,6 +4660,65 @@ fn map_runtime_underwater_breath_timer_applies_drowning_damage_and_log() {
                 0,
                 1
             ))) == Some(&DAMAGE_DROWNING)));
+}
+
+#[test]
+fn map_runtime_water_breathing_aura_stops_underwater_breath_timer() {
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    map.add_player(test_player_runtime(1, SessionId(1), position))
+        .unwrap();
+    let now = Instant::now();
+    map.refresh_player_environment_flags_for_test(1, now, |_geometry, _position| {
+        ENVIRONMENT_FLAG_LIQUID | ENVIRONMENT_FLAG_UNDERWATER | ENVIRONMENT_FLAG_IN_WATER
+    })
+    .unwrap();
+
+    let start_packets = map
+        .advance_player_environment_tick_with_flags(now, |_geometry, _position| 0)
+        .unwrap();
+    assert!(start_packets
+        .iter()
+        .any(|(session, packet)| *session == SessionId(1)
+            && packet.opcode == WorldOpcode::SmsgStartMirrorTimer as u16));
+
+    let mut water_breathing_template = test_spell_template(5697);
+    water_breathing_template.spell_name = "Unending Breath".to_string();
+    water_breathing_template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    water_breathing_template.effect_apply_aura_name1 = SPELL_AURA_WATER_BREATHING;
+    let water_breathing = build_active_aura(
+        &water_breathing_template,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        16,
+        test_spell_effect_value_context(&water_breathing_template),
+        now,
+        None,
+    );
+    map.players
+        .get_mut(&1)
+        .expect("player should still exist in map runtime")
+        .active_auras
+        .push(water_breathing);
+
+    let packets = map
+        .advance_player_environment_tick_with_flags(
+            now + Duration::from_secs(60),
+            |_geometry, _position| {
+                ENVIRONMENT_FLAG_LIQUID | ENVIRONMENT_FLAG_UNDERWATER | ENVIRONMENT_FLAG_IN_WATER
+            },
+        )
+        .unwrap();
+
+    assert_eq!(map.players.get(&1).unwrap().health, 20);
+    assert!(!map.players.get(&1).unwrap().environment.breath.active);
+    assert!(packets
+        .iter()
+        .any(|(session, packet)| *session == SessionId(1)
+            && packet.opcode == WorldOpcode::SmsgStopMirrorTimer as u16));
+    assert!(!packets
+        .iter()
+        .any(|(session, packet)| *session == SessionId(1)
+            && packet.opcode == WorldOpcode::SmsgEnvironmentalDamageLog as u16));
 }
 
 #[test]
@@ -5720,6 +5912,57 @@ async fn mage_armor_live_rank_one_regens_mana_during_interrupt_and_updates_arcan
 }
 
 #[tokio::test]
+async fn demon_skin_live_rank_one_regens_health_while_in_combat() {
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+    let demon_skin = wow_db::get_spell_template_query(&world_db_pool, 687)
+        .await
+        .unwrap()
+        .expect("Demon Skin rank 1 should exist in the local spell_template");
+
+    let mut map = MapRuntime::new(0, 0);
+    let position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let mut player = test_player_runtime(7, SessionId(7), position);
+    player.class = 9;
+    player.in_combat = true;
+    player.max_health = 40;
+    player.health = 20;
+    let now = Instant::now();
+    player.environment.last_damage_at = Some(now);
+    map.add_player(player).unwrap();
+
+    let aura = build_active_aura(
+        &demon_skin,
+        ObjectGuid::new(HighGuid::Player, 0, 7),
+        demon_skin.spell_level.try_into().unwrap(),
+        test_spell_effect_value_context(&demon_skin),
+        now,
+        None,
+    );
+    let event = map.apply_player_aura(7, aura).unwrap().unwrap();
+    assert!(
+        event
+            .direct_packets
+            .iter()
+            .any(|packet| { packet.opcode == WorldOpcode::SmsgUpdateObject as u16 }),
+        "Demon Skin should still update the player's visible aura/object state"
+    );
+
+    assert!(map.advance_player_regen_tick(now).unwrap().is_empty());
+    let packets = map
+        .advance_player_regen_tick(now + Duration::from_secs(2))
+        .unwrap();
+
+    assert_eq!(packets.len(), 1);
+    assert_eq!(packets[0].1.opcode, WorldOpcode::SmsgUpdateObject as u16);
+    assert_eq!(
+        map.players.get(&7).unwrap().health,
+        26,
+        "Demon Skin should add its flat in-combat health regen through the shared player regen tick"
+    );
+}
+
+#[tokio::test]
 async fn ice_armor_live_rank_one_updates_armor_and_frost_resistance_fields() {
     let world_db_pool =
         MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
@@ -5769,8 +6012,14 @@ async fn ice_armor_live_rank_one_updates_armor_and_frost_resistance_fields() {
 
     let event = map.apply_player_aura(7, aura).unwrap().unwrap();
     let player = map.players.get(&7).unwrap();
-    assert_eq!(player.combat_stats.resistances[0], base.resistances[0] + armor_bonus);
-    assert_eq!(player.combat_stats.resistances[4], base.resistances[4] + frost_bonus);
+    assert_eq!(
+        player.combat_stats.resistances[0],
+        base.resistances[0] + armor_bonus
+    );
+    assert_eq!(
+        player.combat_stats.resistances[4],
+        base.resistances[4] + frost_bonus
+    );
     assert_eq!(player.combat_stats.armor, base.armor + armor_bonus);
     assert_eq!(
         player.combat_stats.resistance_buff_mod_positive[0],
@@ -5950,6 +6199,237 @@ fn player_selection_update_body_clears_unit_target_guid() {
     assert!(trailing.is_empty());
     assert_eq!(values[UNIT_FIELD_TARGET], Some(0));
     assert_eq!(values[UNIT_FIELD_TARGET + 1], Some(0));
+}
+
+#[test]
+fn bind_sight_aura_maps_to_farsight_modifier_and_support() {
+    let mut template = test_spell_template(2585);
+    template.effect1 = SPELL_EFFECT_APPLY_AURA;
+    template.effect_apply_aura_name1 = SPELL_AURA_BIND_SIGHT;
+
+    let modifiers = spell_aura_stat_modifiers(
+        &SpellInfo::from_template(&template),
+        test_spell_effect_value_context(&template),
+    );
+
+    assert_eq!(modifiers, vec![AuraStatModifier::FarSight]);
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_BIND_SIGHT),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_FAR_SIGHT),
+        SpellMechanicSupport::Implemented
+    );
+}
+
+#[test]
+fn player_farsight_update_body_sets_private_target_guid() {
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let farsight_target = ObjectGuid::new(HighGuid::Unit, 0, 99);
+    let body = build_player_farsight_update_body(7, Some(farsight_target)).unwrap();
+    let (values, trailing) = decode_values_update_block(&body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(values[PLAYER_FARSIGHT], Some(farsight_target.raw() as u32));
+    assert_eq!(
+        values[PLAYER_FARSIGHT + 1],
+        Some((farsight_target.raw() >> 32) as u32)
+    );
+}
+
+#[test]
+fn db_creature_bind_sight_aura_sets_and_clears_player_farsight_target() {
+    let now = Instant::now();
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let mut map = MapRuntime::new(0, 0);
+    map.add_player(test_player_runtime(
+        7,
+        SessionId(7),
+        WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+    ))
+    .unwrap();
+    let mut spawn = test_creature_spawn(4277);
+    spawn.guid = 900_4277;
+    let creature_guid = creature_spawn_guid(&spawn);
+    map.creatures
+        .insert(creature_guid.raw(), DbCreatureRuntime::new(spawn));
+    let aura = ActiveAura {
+        spell_id: 2585,
+        caster: player,
+        level: 24,
+        interrupt_flags: 0,
+        positive: true,
+        visible: false,
+        duration_millis: Some(60_000),
+        expires_at: Some(now + Duration::from_secs(60)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::FarSight],
+        proc_triggers: Vec::new(),
+    };
+
+    let applied = map
+        .apply_db_creature_aura_replacing_spell_ids(creature_guid, 7, aura, &[], None, None, now)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        map.players.get(&7).unwrap().farsight_target,
+        Some(creature_guid)
+    );
+    let (_, applied_packet) = applied
+        .observer_packets
+        .iter()
+        .find(|(session_id, packet)| {
+            *session_id == SessionId(7) && packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+        })
+        .cloned()
+        .expect("caster should receive farsight update");
+    let (applied_values, trailing) = decode_values_update_block(&applied_packet.body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(
+        applied_values[PLAYER_FARSIGHT],
+        Some(creature_guid.raw() as u32)
+    );
+
+    let removed = map
+        .remove_db_creature_auras_by_spell_ids(creature_guid, 99, &[2585], now)
+        .unwrap()
+        .unwrap();
+    assert_eq!(map.players.get(&7).unwrap().farsight_target, None);
+    let (_, removed_packet) = removed
+        .aura_update
+        .observer_packets
+        .iter()
+        .find(|(session_id, packet)| {
+            *session_id == SessionId(7) && packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+        })
+        .cloned()
+        .expect("caster should receive farsight clear");
+    let (removed_values, trailing) = decode_values_update_block(&removed_packet.body[5..], player);
+    assert!(trailing.is_empty());
+    assert_eq!(removed_values[PLAYER_FARSIGHT], Some(0));
+    assert_eq!(removed_values[PLAYER_FARSIGHT + 1], Some(0));
+}
+
+#[test]
+fn player_farsight_refresh_only_changes_owner_player_visibility() {
+    let mut map = MapRuntime::new(0, 0);
+    let owner_position = WorldPosition::new(0, -8950.0, -130.0, 83.5, 0.0);
+    let eye_position = WorldPosition::new(0, -8780.0, -130.0, 83.5, 0.0);
+    let body_observer_position = WorldPosition::new(0, -8945.0, -130.0, 83.5, 0.0);
+    let eye_observer_position = WorldPosition::new(0, -8775.0, -130.0, 83.5, 0.0);
+
+    map.add_player(test_player_runtime(1, SessionId(1), owner_position))
+        .unwrap();
+    map.add_player(test_player_runtime(2, SessionId(2), body_observer_position))
+        .unwrap();
+    map.add_player(test_player_runtime(3, SessionId(3), eye_observer_position))
+        .unwrap();
+
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, 1);
+    let body_observer_guid = ObjectGuid::new(HighGuid::Player, 0, 2);
+    let eye_observer_guid = ObjectGuid::new(HighGuid::Player, 0, 3);
+    assert!(map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&body_observer_guid));
+    assert!(!map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&eye_observer_guid));
+    assert!(map
+        .players
+        .get(&2)
+        .unwrap()
+        .visible_objects
+        .contains(&owner_guid));
+    assert!(!map
+        .players
+        .get(&3)
+        .unwrap()
+        .visible_objects
+        .contains(&owner_guid));
+
+    let mut eye_spawn = test_creature_spawn(4277);
+    eye_spawn.guid = 900_4277;
+    eye_spawn.position_x = eye_position.x;
+    eye_spawn.position_y = eye_position.y;
+    eye_spawn.position_z = eye_position.z;
+    eye_spawn.orientation = eye_position.orientation;
+    let eye_runtime = DbCreatureRuntime::new(eye_spawn);
+    let eye_guid = eye_runtime.guid();
+    map.insert_loaded_creature_grid(grid_coord_for_position(eye_position), vec![eye_runtime]);
+
+    let farsight_packets = map.update_player_farsight(1, Some(eye_guid)).unwrap();
+    assert!(farsight_packets
+        .iter()
+        .all(|(session, _)| *session == SessionId(1)));
+    assert!(
+        farsight_packets.iter().any(|(_, packet)| {
+            packet.opcode == WorldOpcode::SmsgDestroyObject as u16
+                && packet.body == body_observer_guid.raw().to_le_bytes()
+        }),
+        "owner should lose nearby body-only players when the camera swaps to the eye"
+    );
+    assert!(
+        farsight_packets.iter().any(|(_, packet)| {
+            packet.opcode == WorldOpcode::SmsgUpdateObject as u16
+                && packet
+                    .body
+                    .windows(eye_observer_guid.raw().to_le_bytes().len())
+                    .any(|window| window == eye_observer_guid.raw().to_le_bytes())
+        }),
+        "owner should gain players near the eye viewpoint"
+    );
+    assert!(!map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&body_observer_guid));
+    assert!(map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&eye_observer_guid));
+    assert!(
+        map.players
+            .get(&2)
+            .unwrap()
+            .visible_objects
+            .contains(&owner_guid),
+        "other players should still see the owner's real body"
+    );
+    assert!(
+        !map.players
+            .get(&3)
+            .unwrap()
+            .visible_objects
+            .contains(&owner_guid),
+        "swapping the camera should not make distant players see the owner body"
+    );
+
+    let clear_packets = map.update_player_farsight(1, None).unwrap();
+    assert!(clear_packets
+        .iter()
+        .all(|(session, _)| *session == SessionId(1)));
+    assert!(map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&body_observer_guid));
+    assert!(!map
+        .players
+        .get(&1)
+        .unwrap()
+        .visible_objects
+        .contains(&eye_observer_guid));
 }
 
 #[test]

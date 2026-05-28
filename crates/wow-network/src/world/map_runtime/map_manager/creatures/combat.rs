@@ -37,6 +37,23 @@ impl MapRuntimeManager {
             .apply_db_creature_taunt_threat(attacker, taunter);
     }
 
+    pub(in crate::world) async fn add_db_creature_threat_with_school_mask(
+        &self,
+        map_id: u32,
+        attacker: ObjectGuid,
+        victim: ObjectGuid,
+        threat: f32,
+        school_mask: u32,
+    ) {
+        let map = self.get_or_create_map(map_id, 0).await;
+        map.lock().await.add_db_creature_threat_with_school_mask(
+            attacker,
+            victim,
+            threat,
+            school_mask,
+        );
+    }
+
     pub(in crate::world) async fn switch_db_creature_threat_victim_if_needed(
         &self,
         map_id: u32,
@@ -710,46 +727,57 @@ impl MapRuntimeManager {
             }
         }
 
-        let chase_refreshed = {
-            let mut map_guard = map.lock().await;
-            if let Some((creature, motion)) = map_guard.start_db_creature_chase_motion(
-                navigation,
-                attacker,
-                victim,
-                player_position,
-                now,
-            ) {
-                let packet = OutboundWorldPacket {
-                    opcode: WorldOpcode::SmsgMonsterMove as u16,
-                    body: build_monster_move_facing_target_path_body_with_run(
-                        attacker,
-                        motion.start,
-                        &motion.path,
-                        motion.spline_id,
-                        motion.duration.as_millis().max(1) as u32,
-                        victim,
-                        motion.run,
-                    )?,
-                };
-                Self::push_creature_broadcast_packet(
-                    &map_guard,
-                    victim,
-                    current_session_id,
-                    creature.current_position,
-                    packet,
-                    tick,
-                );
-                true
-            } else {
-                false
-            }
-        };
-
+        let swing_ready = now >= active.combat.next_swing_at;
+        let creature_waiting_for_swing =
+            !swing_ready && !db_creature_movement_for_melee_leeway(&active.creature).0;
         let can_reach = map
             .lock()
             .await
             .db_creature_can_reach_player_with_navigation(attacker, victim, navigation);
+        let close_correction_reaches_target =
+            db_creature_chase_close_correction_reaches_target(&active.creature, player_position);
+        let chase_refreshed =
+            if swing_ready || (creature_waiting_for_swing && !close_correction_reaches_target) {
+                false
+            } else {
+                let mut map_guard = map.lock().await;
+                if let Some((creature, motion)) = map_guard.start_db_creature_chase_motion(
+                    navigation,
+                    attacker,
+                    victim,
+                    player_position,
+                    now,
+                ) {
+                    let packet = OutboundWorldPacket {
+                        opcode: WorldOpcode::SmsgMonsterMove as u16,
+                        body: build_monster_move_facing_target_path_body_with_run(
+                            attacker,
+                            motion.start,
+                            &motion.path,
+                            motion.spline_id,
+                            motion.duration.as_millis().max(1) as u32,
+                            victim,
+                            motion.run,
+                        )?,
+                    };
+                    Self::push_creature_broadcast_packet(
+                        &map_guard,
+                        victim,
+                        current_session_id,
+                        creature.current_position,
+                        packet,
+                        tick,
+                    );
+                    true
+                } else {
+                    false
+                }
+            };
+
         if !can_reach {
+            if creature_waiting_for_swing {
+                return Ok(false);
+            }
             let mut map_guard = map.lock().await;
             let _ = map_guard.defer_ready_db_creature_swing_retry(attacker, victim, now);
             if !chase_refreshed {
@@ -785,6 +813,10 @@ impl MapRuntimeManager {
             return Ok(false);
         }
 
+        if now < active.combat.next_swing_at {
+            return Ok(false);
+        }
+
         if !map
             .lock()
             .await
@@ -813,17 +845,27 @@ impl MapRuntimeManager {
             return Ok(false);
         }
 
-        if now < active.combat.next_swing_at {
-            return Ok(false);
-        }
-
         let next_swing_delay = active.creature.base_attack_duration();
         let outcome = active.creature.melee_outcome_against_player(defense);
+        let triggered_daze = self
+            .db_creature_triggered_daze_aura(
+                world_db_pool,
+                object_mgr,
+                &active.creature,
+                victim,
+                player_position,
+                player_level,
+                defense,
+                outcome,
+                now,
+            )
+            .await?;
         let mut map_guard = map.lock().await;
-        let Some(event) = map_guard.apply_db_creature_player_melee_outcome(
+        let Some(event) = map_guard.apply_db_creature_player_melee_outcome_with_triggered_aura(
             attacker,
             victim,
             outcome,
+            triggered_daze,
             now,
             now + next_swing_delay,
         )?
@@ -835,7 +877,103 @@ impl MapRuntimeManager {
             map_guard.clear_db_creature_combats_for_victim(victim);
             return Ok(true);
         }
+        if let Some((creature, motion)) = map_guard.start_db_creature_chase_motion(
+            navigation,
+            attacker,
+            victim,
+            player_position,
+            now,
+        ) {
+            let packet = OutboundWorldPacket {
+                opcode: WorldOpcode::SmsgMonsterMove as u16,
+                body: build_monster_move_facing_target_path_body_with_run(
+                    attacker,
+                    motion.start,
+                    &motion.path,
+                    motion.spline_id,
+                    motion.duration.as_millis().max(1) as u32,
+                    victim,
+                    motion.run,
+                )?,
+            };
+            Self::push_creature_broadcast_packet(
+                &map_guard,
+                victim,
+                current_session_id,
+                creature.current_position,
+                packet,
+                tick,
+            );
+        }
         Ok(false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn db_creature_triggered_daze_aura(
+        &self,
+        world_db_pool: &MySqlPool,
+        object_mgr: &ObjectMgr,
+        creature: &DbCreatureRuntime,
+        victim: ObjectGuid,
+        victim_position: WorldPosition,
+        victim_level: u8,
+        defense: PlayerMeleeDefenseInput,
+        outcome: MeleeDamageOutcome,
+        now: Instant,
+    ) -> anyhow::Result<Option<TriggeredPlayerMeleeAura>> {
+        if outcome.total_damage == 0 {
+            return Ok(None);
+        }
+        if !db_creature_can_daze_player_from_behind(creature.current_position, victim_position) {
+            return Ok(None);
+        }
+        let creature_level = db_creature_combat_level(creature);
+        let chance =
+            db_creature_daze_chance_percent(creature_level, victim_level, defense.defense_skill);
+        if !db_creature_daze_roll_succeeds(chance, rand::thread_rng().gen_range(1..=10_000)) {
+            return Ok(None);
+        }
+        let Some(template) = object_mgr
+            .spell_template(world_db_pool, DAZE_SPELL_ID)
+            .await?
+        else {
+            warn!(
+                spell_id = DAZE_SPELL_ID,
+                "Skipping creature melee daze because the backing spell_template row is missing"
+            );
+            return Ok(None);
+        };
+        let caster = creature.guid();
+        let value_context = SpellEffectValueContext::with_spell_rank_level(
+            &template,
+            (creature_level / 5) as i32,
+            0,
+        );
+        let aura = build_active_aura(
+            &template,
+            caster,
+            creature_level,
+            value_context,
+            now,
+            self.spell_duration(template.duration_index),
+        );
+        let targets = SpellCastTargets {
+            target_mask: SPELL_CAST_TARGET_UNIT,
+            unit_target: Some(victim),
+            gameobject_target: None,
+            source_location: None,
+            destination: None,
+        };
+        Ok(Some(TriggeredPlayerMeleeAura {
+            aura,
+            resolution: AuraRankConflictResolution {
+                failure: None,
+                replace_spell_ids: Vec::new(),
+                replace_any_caster_spell_ids: vec![DAZE_SPELL_ID],
+                stack_limit: 1,
+            },
+            spell_go_body: build_spell_go_body(caster, DAZE_SPELL_ID, &targets)?,
+        }))
     }
 
     #[allow(dead_code)]

@@ -123,6 +123,33 @@ impl MapRuntimeManager {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(in crate::world) async fn start_player_target_aura_channel(
+        &self,
+        map_id: u32,
+        caster: ObjectGuid,
+        caster_character_guid: u32,
+        spell_id: u32,
+        target: ObjectGuid,
+        duration_millis: u32,
+        max_range: f32,
+        channel_interrupt_flags: u32,
+        now: Instant,
+    ) -> anyhow::Result<Option<PlayerChannelEvent>> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let event = map.lock().await.start_player_target_aura_channel(
+            caster,
+            caster_character_guid,
+            spell_id,
+            target,
+            duration_millis,
+            max_range,
+            channel_interrupt_flags,
+            now,
+        )?;
+        Ok(event)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::world) async fn start_player_periodic_trigger_channel(
         &self,
         map_id: u32,
@@ -707,6 +734,23 @@ impl MapRuntimeManager {
             .await
             .current_diminishing_level(target, group, now);
         Some(level)
+    }
+
+    pub(in crate::world) async fn register_heartbeat_resist_aura(
+        &self,
+        map_id: u32,
+        target: ObjectGuid,
+        caster: ObjectGuid,
+        spell_id: u32,
+        runtime: HeartbeatResistRuntime,
+    ) {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return;
+        };
+        map.lock()
+            .await
+            .register_heartbeat_resist_aura(target, caster, spell_id, runtime);
     }
 
     pub(in crate::world) async fn remove_db_creature_auras_by_dispel_type(

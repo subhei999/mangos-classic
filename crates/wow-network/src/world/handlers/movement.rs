@@ -7,7 +7,7 @@ pub(in crate::world) async fn dispatch_movement_packet(
     body: &[u8],
 ) -> anyhow::Result<()> {
     if matches!(packet, packets::ParsedWorldClientPacket::SetActiveMover(_)) {
-        return handle_set_active_mover(packet.set_active_mover()?, &*ctx.session);
+        return handle_set_active_mover(packet.set_active_mover()?, &mut *ctx.session);
     }
     if matches!(packet, packets::ParsedWorldClientPacket::MoveTeleportAck(_)) {
         return handle_move_teleport_ack(packet.move_teleport_ack()?, &*ctx.session);

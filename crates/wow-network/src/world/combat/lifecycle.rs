@@ -2205,6 +2205,14 @@ pub(in crate::world) async fn finalize_db_creature_death(
             .db_creature_snapshot(character.position.map_id, killed)
             .await
         {
+            award_channel_death_items_for_db_creature_kill(
+                stream,
+                deps,
+                session,
+                &creature,
+                header_crypto,
+            )
+            .await?;
             if !reward_party_for_db_creature_kill(
                 stream,
                 CombatRewardDeps {
@@ -2285,6 +2293,125 @@ pub(in crate::world) async fn finalize_db_creature_death(
         Some(header_crypto),
     )
     .await
+}
+
+pub(in crate::world) async fn award_channel_death_items_for_db_creature_kill(
+    stream: &mut WorldPacketSink,
+    deps: CombatRewardDeps<'_>,
+    session: &mut WorldSessionState,
+    creature: &DbCreatureRuntime,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let Some((map_id, local_character_guid)) = session
+        .character
+        .active_character
+        .as_ref()
+        .map(|character| (character.position.map_id, character.guid))
+    else {
+        return Ok(());
+    };
+    let mut awards_by_character = HashMap::<u32, Vec<ChannelDeathItemSpellEffect>>::new();
+    let mut seen = HashSet::new();
+    for aura in &creature.active_auras {
+        if !aura.caster.is_player() {
+            continue;
+        }
+        let Some(template) = deps
+            .shared_world
+            .object_mgr
+            .spell_template(deps.world_db_pool, aura.spell_id)
+            .await?
+        else {
+            continue;
+        };
+        let effects = channel_death_item_spell_effects(
+            &SpellInfo::from_template(&template),
+            SpellEffectValueContext::unranked(&template, 0),
+        );
+        if effects.is_empty() {
+            continue;
+        }
+        let caster_character_guid = aura.caster.counter();
+        for effect in effects {
+            if seen.insert((caster_character_guid, effect.item_template)) {
+                awards_by_character
+                    .entry(caster_character_guid)
+                    .or_default()
+                    .push(effect);
+            }
+        }
+    }
+
+    for (caster_character_guid, effects) in awards_by_character {
+        let Some(snapshot) = deps
+            .shared_world
+            .maps
+            .player_runtime_snapshot(map_id, caster_character_guid)
+            .await
+        else {
+            continue;
+        };
+        if !creature_is_honor_or_xp_target(snapshot.level, &creature.spawn.template)
+            || !creature.loot_owner_allows_character(caster_character_guid)
+        {
+            continue;
+        }
+        let mut inventory = if caster_character_guid == local_character_guid {
+            session.inventory.items.clone()
+        } else {
+            snapshot.inventory.clone()
+        };
+        let remote_session_id = if caster_character_guid == local_character_guid {
+            None
+        } else {
+            deps.shared_world
+                .sessions
+                .session_for_character(caster_character_guid)
+                .await
+        };
+
+        for effect in effects {
+            let Some(award) = award_player_inventory_item(
+                deps.character_db_pool,
+                deps.world_db_pool,
+                &session.movement.db_creature_navigation.world_data_files,
+                caster_character_guid,
+                &inventory,
+                effect.item_template,
+                effect.requested_count,
+            )
+            .await?
+            else {
+                continue;
+            };
+            inventory = award.inventory.clone();
+            deps.shared_world
+                .maps
+                .update_player_inventory(map_id, caster_character_guid, award.inventory.clone())
+                .await;
+            if caster_character_guid == local_character_guid {
+                session.inventory.items = award.inventory;
+                for packet in award.packets {
+                    send_packet(
+                        stream,
+                        packet.opcode,
+                        &packet.body,
+                        Some(&mut *header_crypto),
+                    )
+                    .await?;
+                }
+            } else if let Some(session_id) = remote_session_id {
+                for packet in award.packets {
+                    deps.shared_world
+                        .sessions
+                        .send_packet(session_id, packet)
+                        .await;
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2976,6 +3103,43 @@ pub(in crate::world) fn creature_xp_reward(
     }
     xp_gain *= template.experience_multiplier;
     nearbyint_to_u32(xp_gain)
+}
+
+pub(in crate::world) fn creature_is_honor_or_xp_target(
+    player_level: u8,
+    template: &CreatureTemplateQuery,
+) -> bool {
+    if template.civilian != 0 || template.creature_type == CREATURE_TYPE_CRITTER {
+        return false;
+    }
+
+    !cmangos_is_trivial_level_difference(player_level as u32, creature_level_for_target(template))
+}
+
+pub(in crate::world) fn creature_level_for_target(template: &CreatureTemplateQuery) -> u32 {
+    u32::from(template.max_level.max(template.min_level))
+}
+
+pub(in crate::world) fn cmangos_is_trivial_level_difference(
+    unit_level: u32,
+    target_level: u32,
+) -> bool {
+    if unit_level <= target_level {
+        return false;
+    }
+
+    let diff = unit_level - target_level;
+    match unit_level / 5 {
+        0..=1 => diff > 4,
+        2..=3 => diff > 5,
+        4..=5 => diff > 6,
+        6..=7 => diff > 7,
+        8 => diff > 8,
+        9 => diff > 9,
+        10 => diff > 10,
+        11 => diff > 11,
+        _ => diff > 12,
+    }
 }
 
 pub(in crate::world) fn base_creature_xp_gain(player_level: u32, mob_level: u32) -> f32 {

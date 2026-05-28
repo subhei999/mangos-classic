@@ -18,6 +18,7 @@ pub(in crate::world) struct CreatureThreatEntry {
 #[derive(Debug, Clone)]
 pub(in crate::world) struct Creature {
     pub(in crate::world) spawn: CreatureSpawnQuery,
+    pub(in crate::world) guid_override: Option<ObjectGuid>,
     pub(in crate::world) home_position: WorldPosition,
     pub(in crate::world) current_position: WorldPosition,
     pub(in crate::world) motion: CreatureMotionState,
@@ -49,6 +50,8 @@ pub(in crate::world) struct Creature {
     pub(in crate::world) loot_money_available: bool,
     pub(in crate::world) loot_items: Vec<CreatureLoot>,
     pub(in crate::world) loot_items_generated: bool,
+    pub(in crate::world) loot_kind: DbCreatureLootKind,
+    pub(in crate::world) pickpocket_restock_at: Option<Instant>,
     pub(in crate::world) loot_roll_released_slots: HashSet<u8>,
     pub(in crate::world) loot_current_looter_pass_slots: HashSet<u8>,
     pub(in crate::world) loot_owner: Option<CreatureLootOwner>,
@@ -68,14 +71,25 @@ pub(in crate::world) struct Creature {
     pub(in crate::world) native_display: CreatureDisplaySelection,
     pub(in crate::world) display_id_override: Option<u32>,
     pub(in crate::world) aura_display_id_override: Option<u32>,
+    pub(in crate::world) owner_guid: Option<ObjectGuid>,
+    pub(in crate::world) charmer_guid: Option<ObjectGuid>,
+    pub(in crate::world) created_by_spell: Option<u32>,
+    pub(in crate::world) pet_name_timestamp: Option<u32>,
+    pub(in crate::world) pet_number: Option<u32>,
+    pub(in crate::world) player_controlled: bool,
     pub(in crate::world) pending_movement_scripts: Vec<u32>,
-    pub(in crate::world) pending_chase_launch: Option<PendingCreatureChaseLaunch>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::world) enum CreatureLootOwner {
     Player(u32),
     Party(u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::world) enum DbCreatureLootKind {
+    Corpse,
+    Pickpocket,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +138,7 @@ pub(in crate::world) fn build_db_creature_create_block(
     creature: &CreatureSpawnQuery,
 ) -> anyhow::Result<Vec<u8>> {
     build_db_creature_create_block_inner(
+        creature_spawn_guid(creature),
         creature,
         db_creature_spawn_position(creature),
         creature_health(&creature.template),
@@ -134,6 +149,11 @@ pub(in crate::world) fn build_db_creature_create_block(
         creature_native_display(creature),
         None,
         creature_mana(&creature.template),
+        None,
+        None,
+        None,
+        None,
+        None,
     )
 }
 
@@ -148,6 +168,7 @@ pub(in crate::world) fn build_db_creature_runtime_create_block_for_player(
     character_guid: Option<u32>,
 ) -> anyhow::Result<Vec<u8>> {
     build_db_creature_create_block_inner(
+        creature.guid(),
         &creature.spawn,
         creature.current_position,
         creature.health,
@@ -164,11 +185,17 @@ pub(in crate::world) fn build_db_creature_runtime_create_block_for_player(
             .aura_display_id_override
             .or(creature.display_id_override),
         creature.power1,
+        creature.owner_guid,
+        creature.charmer_guid,
+        creature.created_by_spell,
+        creature.pet_name_timestamp,
+        creature.pet_number,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::world) fn build_db_creature_create_block_inner(
+    guid: ObjectGuid,
     creature: &CreatureSpawnQuery,
     position: WorldPosition,
     health: u32,
@@ -179,8 +206,12 @@ pub(in crate::world) fn build_db_creature_create_block_inner(
     native_display: CreatureDisplaySelection,
     display_id_override: Option<u32>,
     power1: u32,
+    owner_guid: Option<ObjectGuid>,
+    charmer_guid: Option<ObjectGuid>,
+    created_by_spell: Option<u32>,
+    pet_name_timestamp: Option<u32>,
+    pet_number: Option<u32>,
 ) -> anyhow::Result<Vec<u8>> {
-    let guid = creature_spawn_guid(creature);
     let mut block = Vec::new();
     block.push(UPDATE_TYPE_CREATE_OBJECT2);
     PackedGuid::write(&mut block, guid)?;
@@ -215,6 +246,11 @@ pub(in crate::world) fn build_db_creature_create_block_inner(
         native_display,
         display_id_override,
         power1,
+        owner_guid,
+        charmer_guid,
+        created_by_spell,
+        pet_name_timestamp,
+        pet_number,
     )?;
     Ok(block)
 }
@@ -232,6 +268,11 @@ pub(in crate::world) fn write_db_creature_update_values(
     native_display: CreatureDisplaySelection,
     display_id_override: Option<u32>,
     power1: u32,
+    owner_guid: Option<ObjectGuid>,
+    charmer_guid: Option<ObjectGuid>,
+    created_by_spell: Option<u32>,
+    pet_name_timestamp: Option<u32>,
+    pet_number: Option<u32>,
 ) -> anyhow::Result<()> {
     let template = &creature.template;
     let max_health = creature_health(template);
@@ -244,6 +285,9 @@ pub(in crate::world) fn write_db_creature_update_values(
     set_update_value(&mut values, 0x002, TYPEMASK_OBJECT_UNIT)?;
     set_update_value(&mut values, 0x003, creature.entry)?;
     set_update_value(&mut values, 0x004, creature_scale(template).to_bits())?;
+    set_object_guid_update_values(&mut values, UNIT_FIELD_SUMMONEDBY, owner_guid)?;
+    set_object_guid_update_values(&mut values, UNIT_FIELD_CREATEDBY, owner_guid)?;
+    set_object_guid_update_values(&mut values, UNIT_FIELD_CHARMEDBY, charmer_guid)?;
     set_update_value(&mut values, UNIT_FIELD_HEALTH, health)?;
     set_update_value(&mut values, UNIT_FIELD_MAXHEALTH, max_health)?;
     let max_mana = creature_mana(template);
@@ -359,9 +403,22 @@ pub(in crate::world) fn write_db_creature_update_values(
         UNIT_FIELD_BYTES_1,
         creature_unit_bytes_1(active_auras),
     )?;
+    if let Some(pet_number) = pet_number {
+        set_update_value(&mut values, UNIT_FIELD_PETNUMBER, pet_number)?;
+    }
+    if let Some(pet_name_timestamp) = pet_name_timestamp {
+        set_update_value(
+            &mut values,
+            UNIT_FIELD_PET_NAME_TIMESTAMP,
+            pet_name_timestamp,
+        )?;
+    }
     set_update_value(&mut values, UNIT_FIELD_BYTES_2, creature_unit_bytes_2())?;
     set_update_value(&mut values, UNIT_DYNAMIC_FLAGS, dynamic_flags)?;
     set_update_value(&mut values, UNIT_MOD_CAST_SPEED, 1.0f32.to_bits())?;
+    if let Some(created_by_spell) = created_by_spell {
+        set_update_value(&mut values, UNIT_CREATED_BY_SPELL, created_by_spell)?;
+    }
     set_update_value(&mut values, UNIT_NPC_EMOTESTATE, creature.addon_emote)?;
     set_update_value(&mut values, UNIT_NPC_FLAGS, npc_flags)?;
     set_unit_aura_update_values(&mut values, active_auras)?;
@@ -458,7 +515,11 @@ pub(in crate::world) fn creature_spawn_guid(creature: &CreatureSpawnQuery) -> Ob
 }
 
 pub(in crate::world) fn db_creature_npc_flags(creature: &DbCreatureRuntime) -> u32 {
-    creature.spawn.template.npc_flags
+    if creature.player_controlled {
+        0
+    } else {
+        creature.spawn.template.npc_flags
+    }
 }
 
 pub(in crate::world) const CREATURE_TYPE_FLAG_VISIBLE_TO_GHOSTS: u32 = 0x0000_0002;

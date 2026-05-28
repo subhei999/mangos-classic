@@ -188,6 +188,8 @@ pub(in crate::world) fn persistent_area_periodic_damage(
 
         caster_snapshot: spell_periodic_damage_fallback_caster_snapshot(caster_level),
 
+        profile: PeriodicDamageProfile::Flat,
+
         amount: damage,
 
         tick_millis: effect.amplitude,

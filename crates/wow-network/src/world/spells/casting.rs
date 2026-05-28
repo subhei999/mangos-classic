@@ -2,6 +2,31 @@ use super::*;
 use wow_proto::world::WorldOpcode;
 use wow_proto::SpellCastTargets;
 
+#[allow(clippy::too_many_arguments)]
+fn player_spell_script_context<'a>(
+    spell_template: &'a wow_db::SpellTemplateQuery,
+    spell_profile: &'a SpellCastProfile,
+    targets: &'a SpellCastTargets,
+    session: &'a WorldSessionState,
+    caster: ObjectGuid,
+    character_guid: u32,
+    map_id: u32,
+    now: Instant,
+) -> SpellScriptCastContext<'a> {
+    SpellScriptCastContext {
+        spell_template,
+        spell_profile,
+        targets,
+        active_auras: &session.auras.active_auras,
+        caster,
+        character_guid,
+        map_id,
+        caster_health: session.character.player_health,
+        caster_mana: session.character.player_mana,
+        now,
+    }
+}
+
 pub(in crate::world) async fn handle_cast_spell(
     stream: &mut WorldPacketSink,
     deps: SpellCastDeps<'_>,
@@ -107,6 +132,25 @@ pub(in crate::world) async fn handle_cast_spell(
     )
     .await;
     let now = Instant::now();
+    if let Some(script) = spell_script_for_spell_id(spell_template.id) {
+        let overrides = spell_script_on_init(
+            script,
+            player_spell_script_context(
+                &spell_template,
+                &spell_profile,
+                &targets,
+                session,
+                caster,
+                character_guid,
+                map_id,
+                now,
+            ),
+        );
+        if let Some(power) = overrides.power {
+            spell_profile.power = power;
+            prepared_spell.profile = spell_profile;
+        }
+    }
     stand_player_for_spell_cast(stream, deps.shared_world, session, header_crypto).await?;
     if let Some(failure) = spell_cast_failure(
         deps.shared_world,
@@ -121,6 +165,31 @@ pub(in crate::world) async fn handle_cast_spell(
     {
         return send_spell_cast_failure(stream, caster, packet.spell_id, failure, header_crypto)
             .await;
+    }
+    if let Some(script) = spell_script_for_spell_id(spell_template.id) {
+        if let Some(failure) = spell_script_on_check_cast(
+            script,
+            player_spell_script_context(
+                &spell_template,
+                &spell_profile,
+                &targets,
+                session,
+                caster,
+                character_guid,
+                map_id,
+                now,
+            ),
+            true,
+        ) {
+            return send_spell_cast_failure(
+                stream,
+                caster,
+                packet.spell_id,
+                failure,
+                header_crypto,
+            )
+            .await;
+        }
     }
     if let Some(failure) = player_aura_rank_cast_failure(
         deps,
@@ -186,6 +255,21 @@ pub(in crate::world) async fn handle_cast_spell(
     } else {
         prepared_spell.spell_start_body(caster, cast_time_ms, &targets)?
     };
+    if let Some(script) = spell_script_for_spell_id(spell_template.id) {
+        spell_script_on_successful_start(
+            script,
+            player_spell_script_context(
+                &spell_template,
+                &spell_profile,
+                &targets,
+                session,
+                caster,
+                character_guid,
+                map_id,
+                now,
+            ),
+        );
+    }
     send_packet(
         stream,
         WorldOpcode::SmsgSpellStart as u16,
@@ -672,6 +756,7 @@ pub(in crate::world) async fn complete_item_use_spell_cast(
     let map_id = character.position.map_id;
     let target_outcome = player_db_creature_spell_target_outcome(
         deps.shared_world,
+        deps.world_db_pool,
         session,
         character_guid,
         map_id,
@@ -1092,6 +1177,31 @@ pub(in crate::world) async fn complete_player_spell_cast(
         )
         .await;
     }
+    if let Some(script) = spell_script_for_spell_id(spell_template.id) {
+        if let Some(failure) = spell_script_on_check_cast(
+            script,
+            player_spell_script_context(
+                &spell_template,
+                &spell_profile,
+                &targets,
+                session,
+                caster,
+                character_guid,
+                map_id,
+                now,
+            ),
+            false,
+        ) {
+            return send_spell_cast_failure(
+                stream,
+                caster,
+                prepared_spell.spell_id,
+                failure,
+                header_crypto,
+            )
+            .await;
+        }
+    }
     if let Some(failure) = player_aura_rank_cast_failure(
         deps,
         session,
@@ -1155,8 +1265,24 @@ pub(in crate::world) async fn complete_player_spell_cast(
     sync_session_player_power_from_map(deps.shared_world.maps, session, map_id, character_guid)
         .await;
     send_player_spell_power_update(stream, caster, &spell_profile, session, header_crypto).await?;
+    if let Some(script) = spell_script_for_spell_id(spell_template.id) {
+        spell_script_on_cast(
+            script,
+            player_spell_script_context(
+                &spell_template,
+                &spell_profile,
+                &targets,
+                session,
+                caster,
+                character_guid,
+                map_id,
+                now,
+            ),
+        );
+    }
     let target_outcome = player_db_creature_spell_target_outcome(
         deps.shared_world,
+        deps.world_db_pool,
         session,
         character_guid,
         map_id,
@@ -1210,6 +1336,22 @@ pub(in crate::world) async fn complete_player_spell_cast(
     )
     .await?;
     if target_outcome.is_some_and(|outcome| outcome.miss_info.is_some()) {
+        if let Some(script) = spell_script_for_spell_id(spell_template.id) {
+            spell_script_on_hit(
+                script,
+                player_spell_script_context(
+                    &spell_template,
+                    &spell_profile,
+                    &targets,
+                    session,
+                    caster,
+                    character_guid,
+                    map_id,
+                    now,
+                ),
+                target_outcome.and_then(|outcome| outcome.miss_info),
+            );
+        }
         begin_failed_hostile_db_creature_spell_retaliation(
             stream,
             deps.shared_world,
@@ -1258,8 +1400,172 @@ pub(in crate::world) async fn complete_player_spell_cast(
         header_crypto,
     )
     .await;
+    if result.is_ok() {
+        if let Some(script) = spell_script_for_spell_id(spell_template.id) {
+            if let Some(action) = spell_script_on_successful_finish(
+                script,
+                player_spell_script_context(
+                    &spell_template,
+                    &spell_profile,
+                    &targets,
+                    session,
+                    caster,
+                    character_guid,
+                    map_id,
+                    now,
+                ),
+            ) {
+                apply_spell_script_finish_action(
+                    stream,
+                    deps,
+                    session,
+                    character_guid,
+                    map_id,
+                    now,
+                    action,
+                    header_crypto,
+                )
+                .await?;
+            }
+        }
+    }
     prepared_spell.finish();
     result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_spell_script_finish_action(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    character_guid: u32,
+    map_id: u32,
+    now: Instant,
+    action: SpellScriptFinishAction,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    match action {
+        SpellScriptFinishAction::ApplyHiddenAuraToOwnedSummonCreatedBySpell {
+            summon_spell_id,
+            aura_spell_id,
+        } => {
+            apply_hidden_aura_to_owned_summon_created_by_spell(
+                stream,
+                deps,
+                session,
+                character_guid,
+                map_id,
+                now,
+                summon_spell_id,
+                aura_spell_id,
+                header_crypto,
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_hidden_aura_to_owned_summon_created_by_spell(
+    stream: &mut WorldPacketSink,
+    deps: SpellCastDeps<'_>,
+    session: &mut WorldSessionState,
+    character_guid: u32,
+    map_id: u32,
+    now: Instant,
+    summon_spell_id: u32,
+    aura_spell_id: u32,
+    header_crypto: &mut HeaderCrypto,
+) -> anyhow::Result<()> {
+    let owner_guid = ObjectGuid::new(HighGuid::Player, 0, character_guid);
+    let Some(aura_template) = deps
+        .shared_world
+        .object_mgr
+        .spell_template(deps.world_db_pool, aura_spell_id)
+        .await?
+    else {
+        warn!(
+            aura_spell_id,
+            summon_spell_id,
+            "Skipping spell script finish aura application with missing spell_template row"
+        );
+        return Ok(());
+    };
+
+    for creature_guid in deps
+        .shared_world
+        .maps
+        .db_creature_guids_for_owner(map_id, owner_guid)
+        .await
+    {
+        let Some(creature) = deps
+            .shared_world
+            .maps
+            .db_creature_snapshot(map_id, creature_guid)
+            .await
+        else {
+            continue;
+        };
+        if creature.created_by_spell != Some(summon_spell_id) {
+            continue;
+        }
+
+        let creature_level = creature
+            .spawn
+            .template
+            .max_level
+            .max(creature.spawn.template.min_level);
+        let mut aura = build_active_aura(
+            &aura_template,
+            owner_guid,
+            creature_level,
+            player_spell_effect_value_context(
+                deps.shared_world.maps,
+                &aura_template,
+                &session.character.character_skills,
+                0,
+            ),
+            now,
+            deps.shared_world
+                .maps
+                .spell_duration(aura_template.duration_index),
+        );
+        aura.visible = false;
+
+        let Some(event) = deps
+            .shared_world
+            .maps
+            .apply_db_creature_aura(map_id, creature_guid, character_guid, aura, now)
+            .await?
+        else {
+            continue;
+        };
+
+        send_packet(
+            stream,
+            WorldOpcode::SmsgUpdateObject as u16,
+            &event.update_body,
+            Some(&mut *header_crypto),
+        )
+        .await?;
+        for packet in event.direct_packets {
+            send_packet(
+                stream,
+                packet.opcode,
+                &packet.body,
+                Some(&mut *header_crypto),
+            )
+            .await?;
+        }
+        deps.shared_world
+            .sessions
+            .dispatch(event.observer_packets)
+            .await;
+    }
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1333,6 +1639,22 @@ pub(in crate::world) async fn apply_player_spell_impact(
     now: Instant,
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
+    if let Some(script) = spell_script_for_spell_id(spell_template.id) {
+        spell_script_on_hit(
+            script,
+            player_spell_script_context(
+                spell_template,
+                spell_profile,
+                targets,
+                session,
+                caster,
+                character_guid,
+                map_id,
+                now,
+            ),
+            target_outcome.and_then(|outcome| outcome.miss_info),
+        );
+    }
     apply_player_spell_effects(
         stream,
         deps,
@@ -1348,7 +1670,23 @@ pub(in crate::world) async fn apply_player_spell_impact(
         now,
         header_crypto,
     )
-    .await
+    .await?;
+    if let Some(script) = spell_script_for_spell_id(spell_template.id) {
+        spell_script_on_after_hit(
+            script,
+            player_spell_script_context(
+                spell_template,
+                spell_profile,
+                targets,
+                session,
+                caster,
+                character_guid,
+                map_id,
+                now,
+            ),
+        );
+    }
+    Ok(())
 }
 
 pub(in crate::world) fn spell_resets_auto_attack_timers_on_cast(

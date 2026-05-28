@@ -3,6 +3,11 @@ use wow_proto::world::WorldOpcode;
 
 // Shared DB-gameobject snapshot and lazy grid visibility helpers.
 
+type TemporaryGameObjectCreatePackets = Option<(
+    Vec<OutboundWorldPacket>,
+    Vec<(SessionId, OutboundWorldPacket)>,
+)>;
+
 impl MapRuntime {
     pub(in crate::world) fn unloaded_gameobject_grids_for_area(
         &self,
@@ -135,12 +140,7 @@ impl MapRuntime {
         spawn: wow_db::GameObjectSpawnQuery,
         created_by: ObjectGuid,
         expires_at: Instant,
-    ) -> anyhow::Result<
-        Option<(
-            Vec<OutboundWorldPacket>,
-            Vec<(SessionId, OutboundWorldPacket)>,
-        )>,
-    > {
+    ) -> anyhow::Result<TemporaryGameObjectCreatePackets> {
         let Some(owner) = self.players.get(&owner_character_guid) else {
             return Ok(None);
         };

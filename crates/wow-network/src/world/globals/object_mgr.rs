@@ -35,6 +35,8 @@ pub(in crate::world) struct ObjectMgr {
         tokio::sync::Mutex<Vec<wow_db::GameEventScheduleQuery>>,
     pub(in crate::world) creature_loot_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
+    pub(in crate::world) pickpocket_loot_templates:
+        tokio::sync::Mutex<std::collections::HashMap<u32, Vec<wow_db::CreatureLootQuery>>>,
     pub(in crate::world) creature_templates:
         tokio::sync::Mutex<std::collections::HashMap<u32, Option<wow_db::CreatureTemplateQuery>>>,
     pub(in crate::world) reference_loot_templates:
@@ -495,6 +497,24 @@ impl ObjectMgr {
         Ok(rows)
     }
 
+    pub(in crate::world) async fn pickpocket_loot_items(
+        &self,
+        world_db_pool: &MySqlPool,
+        loot_entry: u32,
+    ) -> anyhow::Result<Vec<wow_db::CreatureLootQuery>> {
+        let mut cache = self.pickpocket_loot_templates.lock().await;
+        if let Some(rows) = cache.get(&loot_entry) {
+            return Ok(rows.clone());
+        }
+
+        let rows = wow_db::get_pickpocket_loot_items(world_db_pool, loot_entry).await?;
+        self.stats
+            .loot_template_db_loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        cache.insert(loot_entry, rows.clone());
+        Ok(rows)
+    }
+
     pub(in crate::world) async fn creature_template(
         &self,
         world_db_pool: &MySqlPool,
@@ -824,6 +844,18 @@ impl ObjectMgr {
             .lock()
             .await
             .insert(creature_entry, rows);
+    }
+
+    #[cfg(test)]
+    pub(in crate::world) async fn prime_pickpocket_loot_template_for_test(
+        &self,
+        loot_entry: u32,
+        rows: Vec<wow_db::CreatureLootQuery>,
+    ) {
+        self.pickpocket_loot_templates
+            .lock()
+            .await
+            .insert(loot_entry, rows);
     }
 
     #[cfg(test)]

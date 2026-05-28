@@ -204,6 +204,40 @@ impl MapRuntimeManager {
         }
     }
 
+    pub(in crate::world) async fn db_creature_guids_for_owner(
+        &self,
+        map_id: u32,
+        owner_guid: ObjectGuid,
+    ) -> Vec<ObjectGuid> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let map = map.lock().await;
+        map.creatures
+            .values()
+            .filter(|creature| creature.owner_guid == Some(owner_guid))
+            .map(DbCreatureRuntime::guid)
+            .collect()
+    }
+
+    pub(in crate::world) async fn spawn_db_creature_runtime(
+        &self,
+        creature: DbCreatureRuntime,
+        exclude_character_guid: Option<u32>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let body = build_update_object_body(&[build_db_creature_runtime_create_block(&creature)?]);
+        let map = self
+            .get_or_create_map(creature.current_position.map_id, 0)
+            .await;
+        let packets = map.lock().await.spawn_db_creature_and_broadcast(
+            creature,
+            exclude_character_guid,
+            body,
+        );
+        Ok(packets)
+    }
+
     pub(in crate::world) async fn spawn_gm_db_creature(
         &self,
         mut spawn: CreatureSpawnQuery,
@@ -429,6 +463,22 @@ impl MapRuntimeManager {
             .update_player_inventory(character_guid, inventory);
     }
 
+    pub(in crate::world) async fn take_player_channel_death_finalizations(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> Vec<DbCreatureDeathFinalizationEvent> {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return Vec::new();
+        };
+        let drained = map
+            .lock()
+            .await
+            .take_player_channel_death_finalizations(character_guid);
+        drained
+    }
+
     pub(in crate::world) async fn player_visible_db_creature_guids(
         &self,
         map_id: u32,
@@ -524,6 +574,50 @@ impl MapRuntimeManager {
         map.lock()
             .await
             .reset_player_visibility_scan_positions(character_guid);
+    }
+
+    pub(in crate::world) async fn update_player_farsight(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        farsight_target: Option<ObjectGuid>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let packets = map
+            .lock()
+            .await
+            .update_player_farsight(character_guid, farsight_target)?;
+        Ok(packets)
+    }
+
+    pub(in crate::world) async fn player_visibility_origin(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+        fallback_position: WorldPosition,
+    ) -> WorldPosition {
+        let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
+        let Some(map) = map else {
+            return fallback_position;
+        };
+        let origin = map
+            .lock()
+            .await
+            .player_visibility_origin(character_guid, fallback_position);
+        origin
+    }
+
+    pub(in crate::world) async fn refresh_player_camera_visibility(
+        &self,
+        map_id: u32,
+        character_guid: u32,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let packets = map
+            .lock()
+            .await
+            .refresh_player_camera_visibility(character_guid)?;
+        Ok(packets)
     }
 
     pub(in crate::world) async fn update_player_combat_stats(

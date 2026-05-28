@@ -3959,7 +3959,7 @@ fn active_mover_rejects_truncated_payload() {
 #[test]
 fn active_mover_accepts_matching_player_guid() {
     let guid = 77u32;
-    let session = WorldSessionState {
+    let mut session = WorldSessionState {
         character: CharacterSessionState {
             active_character: Some(ActiveCharacter {
                 guid,
@@ -3984,15 +3984,16 @@ fn active_mover_accepts_matching_player_guid() {
         wow_proto::SetActiveMoverRequest {
             raw_guid: mover_guid,
         },
-        &session,
+        &mut session,
     );
 
     assert!(result.is_ok());
+    assert_eq!(session.movement.active_mover, Some(ObjectGuid::from_raw(mover_guid)));
 }
 
 #[test]
 fn active_mover_mismatch_is_non_fatal() {
-    let session = WorldSessionState {
+    let mut session = WorldSessionState {
         character: CharacterSessionState {
             active_character: Some(ActiveCharacter {
                 guid: 77,
@@ -4017,10 +4018,50 @@ fn active_mover_mismatch_is_non_fatal() {
         wow_proto::SetActiveMoverRequest {
             raw_guid: mismatched_mover_guid,
         },
-        &session,
+        &mut session,
     );
 
     assert!(result.is_ok());
+    assert_eq!(session.movement.active_mover, None);
+}
+
+#[test]
+fn active_mover_accepts_controlled_unit_guid() {
+    let guid = 77u32;
+    let controlled = ObjectGuid::new(HighGuid::Unit, 4277, 5);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid,
+                name: "Mover".to_string(),
+                race: 1,
+                class: 1,
+                level: 1,
+                xp: 0,
+                position: WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            ..CharacterSessionState::default()
+        },
+        movement: MovementSessionState {
+            controlled_unit: Some(controlled),
+            ..MovementSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    let result = handle_set_active_mover(
+        wow_proto::SetActiveMoverRequest {
+            raw_guid: controlled.raw(),
+        },
+        &mut session,
+    );
+
+    assert!(result.is_ok());
+    assert_eq!(session.movement.active_mover, Some(controlled));
 }
 
 #[test]

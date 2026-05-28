@@ -34,6 +34,7 @@ pub(in crate::world) const SKILL_FISHING: u16 = 356;
 pub(in crate::world) const SKILL_FIST_WEAPONS: u16 = 473;
 pub(in crate::world) const CREATURE_EXTRA_FLAG_NO_PARRY: u32 = 0x0000_0004;
 pub(in crate::world) const CREATURE_EXTRA_FLAG_NO_BLOCK: u32 = 0x0000_0010;
+pub(in crate::world) const DAZE_SPELL_ID: u32 = 1604;
 const CMANGOS_CREATURE_BASE_DODGE_PERCENT: f32 = 5.0;
 const CMANGOS_CREATURE_BASE_PARRY_PERCENT: f32 = 5.0;
 const CMANGOS_CREATURE_BASE_BLOCK_PERCENT: f32 = 5.0;
@@ -1079,6 +1080,25 @@ pub(in crate::world) fn starter_player_defense_chances(
             0.0
         },
     }
+}
+
+pub(in crate::world) fn db_creature_daze_chance_percent(
+    creature_level: u8,
+    victim_level: u8,
+    victim_defense: u16,
+) -> f32 {
+    let base = if victim_level < 30 {
+        (0.65 * victim_level.max(1) as f32) + 0.5
+    } else {
+        20.0
+    };
+    let creature_skill = i32::from(u16::from(creature_level.max(1)).saturating_mul(5));
+    let defense = i32::from(victim_defense);
+    (base + (creature_skill - defense) as f32 * 0.04 * 4.0).clamp(0.0, 40.0)
+}
+
+pub(in crate::world) fn db_creature_daze_roll_succeeds(chance_percent: f32, roll: u32) -> bool {
+    roll <= chance_to_basis_points(chance_percent)
 }
 
 pub(in crate::world) fn player_melee_defense_input(

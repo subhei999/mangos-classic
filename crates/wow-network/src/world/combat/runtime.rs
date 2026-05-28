@@ -3,6 +3,8 @@ use super::*;
 // CMaNGOS default `CreatureRespawnAggroDelay` from mangosd.conf.dist.in.
 pub(in crate::world) const CMANGOS_CREATURE_RESPAWN_AGGRO_DELAY: Duration =
     Duration::from_millis(5_000);
+pub(in crate::world) const CMANGOS_CREATURE_PICKPOCKET_RESTOCK_DELAY: Duration =
+    Duration::from_secs(600);
 pub(in crate::world) const CREATURE_STATIC_FLAGS2_NO_WOUNDED_SLOWDOWN: u32 = 0x0000_0040;
 pub(in crate::world) const CMANGOS_WOUNDED_SLOWDOWN_HEALTH_PERCENT: f32 = 30.0;
 pub(in crate::world) const CMANGOS_WOUNDED_SLOWDOWN_PER_PERCENT: f32 = 1.67;
@@ -18,6 +20,7 @@ impl DbCreatureRuntime {
         let move_speeds = db_creature_move_speeds(&spawn.template, &[]);
         Self {
             spawn,
+            guid_override: None,
             home_position,
             current_position: home_position,
             motion: CreatureMotionState::Idle,
@@ -49,6 +52,8 @@ impl DbCreatureRuntime {
             loot_money_available: false,
             loot_items: Vec::new(),
             loot_items_generated: false,
+            loot_kind: DbCreatureLootKind::Corpse,
+            pickpocket_restock_at: None,
             loot_roll_released_slots: HashSet::new(),
             loot_current_looter_pass_slots: HashSet::new(),
             loot_owner: None,
@@ -68,13 +73,19 @@ impl DbCreatureRuntime {
             native_display,
             display_id_override: None,
             aura_display_id_override: None,
+            owner_guid: None,
+            charmer_guid: None,
+            created_by_spell: None,
+            pet_name_timestamp: None,
+            pet_number: None,
+            player_controlled: false,
             pending_movement_scripts: Vec::new(),
-            pending_chase_launch: None,
         }
     }
 
     pub(in crate::world) fn guid(&self) -> ObjectGuid {
-        creature_spawn_guid(&self.spawn)
+        self.guid_override
+            .unwrap_or_else(|| creature_spawn_guid(&self.spawn))
     }
 
     pub(in crate::world) fn is_alive(&self) -> bool {
@@ -121,6 +132,8 @@ impl DbCreatureRuntime {
                 creature.loot_money_available = false;
                 creature.loot_items.clear();
                 creature.loot_items_generated = false;
+                creature.loot_kind = DbCreatureLootKind::Corpse;
+                creature.pickpocket_restock_at = None;
                 creature.loot_roll_released_slots.clear();
                 creature.loot_current_looter_pass_slots.clear();
                 creature.loot_owner = None;
@@ -295,6 +308,11 @@ impl DbCreatureRuntime {
         self.loot_money
     }
 
+    pub(in crate::world) fn pickpocket_is_on_cooldown(&self, now: Instant) -> bool {
+        self.pickpocket_restock_at
+            .is_some_and(|restock_at| now < restock_at)
+    }
+
     pub(in crate::world) fn roll_loot_money(&self) -> u32 {
         let min = self.spawn.template.min_loot_gold;
         let max = self.spawn.template.max_loot_gold.max(min);
@@ -421,6 +439,8 @@ impl DbCreatureRuntime {
         self.loot_money_available = self.loot_money > 0;
         self.loot_items.clear();
         self.loot_items_generated = false;
+        self.loot_kind = DbCreatureLootKind::Corpse;
+        self.pickpocket_restock_at = None;
         self.loot_roll_released_slots.clear();
         self.loot_current_looter_pass_slots.clear();
         self.loot_current_looter = None;
@@ -497,6 +517,8 @@ impl DbCreatureRuntime {
         self.loot_money = 0;
         self.loot_items.clear();
         self.loot_items_generated = false;
+        self.loot_kind = DbCreatureLootKind::Corpse;
+        self.pickpocket_restock_at = None;
         self.loot_roll_released_slots.clear();
         self.loot_current_looter_pass_slots.clear();
         self.loot_owner = None;
@@ -552,6 +574,8 @@ impl DbCreatureRuntime {
         self.loot_money = 0;
         self.loot_items.clear();
         self.loot_items_generated = false;
+        self.loot_kind = DbCreatureLootKind::Corpse;
+        self.pickpocket_restock_at = None;
         self.loot_roll_released_slots.clear();
         self.loot_current_looter_pass_slots.clear();
         self.loot_owner = None;

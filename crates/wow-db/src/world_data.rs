@@ -97,6 +97,7 @@ pub struct CreatureTemplateQuery {
     pub ranged_attack_power: u32,
     pub min_loot_gold: u32,
     pub max_loot_gold: u32,
+    pub pickpocket_loot_id: u32,
     pub melee_base_attack_time: u32,
     pub ranged_base_attack_time: u32,
     pub damage_school: i8,
@@ -648,6 +649,7 @@ const CREATURE_SPAWN_SELECT: &str = "SELECT creature.guid, \
                 creature_template.RangedAttackPower AS template_ranged_attack_power, \
                 creature_template.MinLootGold AS template_min_loot_gold, \
                 creature_template.MaxLootGold AS template_max_loot_gold, \
+                CAST(creature_template.PickpocketLootId AS UNSIGNED) AS template_pickpocket_loot_id, \
                 creature_template.MeleeBaseAttackTime AS template_melee_base_attack_time, \
                 creature_template.RangedBaseAttackTime AS template_ranged_base_attack_time, \
                 creature_template.DamageSchool AS template_damage_school, \
@@ -1007,6 +1009,7 @@ pub async fn get_creature_template_query(
                 creature_template.MeleeAttackPower AS melee_attack_power, \
                 creature_template.RangedAttackPower AS ranged_attack_power, \
                 creature_template.MinLootGold AS min_loot_gold, creature_template.MaxLootGold AS max_loot_gold, \
+                CAST(creature_template.PickpocketLootId AS UNSIGNED) AS pickpocket_loot_id, \
                 creature_template.MeleeBaseAttackTime AS melee_base_attack_time, \
                 creature_template.RangedBaseAttackTime AS ranged_base_attack_time, \
                 creature_template.DamageSchool AS damage_school, \
@@ -1148,6 +1151,7 @@ pub async fn get_spell_template_query(
     .await?;
 
     if let Some(template) = row.as_mut() {
+        apply_spell_template_attribute_fixes(template);
         apply_spell_effect_bonus_coefficient_fixes(template);
     }
 
@@ -1176,6 +1180,21 @@ fn apply_spell_effect_bonus_coefficient_fixes(template: &mut SpellTemplateQuery)
     template.effect_bonus_coefficient1 = coefficients[0];
     template.effect_bonus_coefficient2 = coefficients[1];
     template.effect_bonus_coefficient3 = coefficients[2];
+}
+
+fn apply_spell_template_attribute_fixes(template: &mut SpellTemplateQuery) {
+    const SPELL_ATTR_EX_INITIATES_COMBAT_ENABLES_AUTO_ATTACK: u32 = 0x0000_0200;
+    const SPELL_ATTR_EX2_INITIATE_COMBAT_POST_CAST: u32 = 0x0010_0000;
+
+    match template.id {
+        // The local spell_template export drops the standard Rogue opener bits
+        // that packed CMaNGOS Spell.sql keeps for Cheap Shot.
+        1833 | 8621 | 11293 | 11294 => {
+            template.attributes_ex |= SPELL_ATTR_EX_INITIATES_COMBAT_ENABLES_AUTO_ATTACK;
+            template.attributes_ex2 |= SPELL_ATTR_EX2_INITIATE_COMBAT_POST_CAST;
+        }
+        _ => {}
+    }
 }
 
 fn spell_effect_bonus_coefficient_fixes() -> &'static HashMap<u32, [f32; 3]> {
@@ -1539,6 +1558,36 @@ pub async fn get_creature_loot_items(
          ORDER BY creature_loot_template.groupid, creature_loot_template.item",
     )
     .bind(creature_entry)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(CreatureLootRow::into_query).collect())
+}
+
+pub async fn get_pickpocket_loot_items(
+    pool: &MySqlPool,
+    loot_entry: u32,
+) -> Result<Vec<CreatureLootQuery>, DbError> {
+    let _query_timer = crate::observability::DbQueryTimer::start("pickpocket_loot_load");
+    let rows = sqlx::query_as::<_, CreatureLootRow>(
+        "SELECT pickpocketing_loot_template.item, \
+                pickpocketing_loot_template.groupid AS group_id, \
+                CAST(CASE WHEN pickpocketing_loot_template.mincountOrRef < 0 THEN 0 \
+                     ELSE GREATEST(pickpocketing_loot_template.mincountOrRef, 1) END AS UNSIGNED) AS min_count, \
+                CAST(CASE WHEN pickpocketing_loot_template.mincountOrRef < 0 THEN GREATEST(pickpocketing_loot_template.maxcount, 1) \
+                     ELSE GREATEST(pickpocketing_loot_template.maxcount, pickpocketing_loot_template.mincountOrRef, 1) END AS UNSIGNED) AS max_count, \
+                CAST(COALESCE(item_template.displayid, 0) AS UNSIGNED) AS display_id, \
+                pickpocketing_loot_template.ChanceOrQuestChance AS chance_or_quest_chance \
+         FROM pickpocketing_loot_template \
+         LEFT JOIN item_template \
+           ON pickpocketing_loot_template.item = item_template.entry \
+          AND pickpocketing_loot_template.mincountOrRef > 0 \
+         WHERE pickpocketing_loot_template.entry = ? \
+           AND pickpocketing_loot_template.condition_id = 0 \
+           AND (pickpocketing_loot_template.mincountOrRef < 0 OR item_template.entry IS NOT NULL) \
+         ORDER BY pickpocketing_loot_template.groupid, pickpocketing_loot_template.item",
+    )
+    .bind(loot_entry)
     .fetch_all(pool)
     .await?;
 
@@ -2591,6 +2640,7 @@ pub async fn get_nearby_creature_spawns(
                 creature_template.RangedAttackPower AS template_ranged_attack_power, \
                 creature_template.MinLootGold AS template_min_loot_gold, \
                 creature_template.MaxLootGold AS template_max_loot_gold, \
+                CAST(creature_template.PickpocketLootId AS UNSIGNED) AS template_pickpocket_loot_id, \
                 creature_template.MeleeBaseAttackTime AS template_melee_base_attack_time, \
                 creature_template.RangedBaseAttackTime AS template_ranged_base_attack_time, \
                 creature_template.DamageSchool AS template_damage_school, \
@@ -3694,6 +3744,7 @@ mod world_data_tests {
                 ranged_attack_power: 0,
                 min_loot_gold: 0,
                 max_loot_gold: 0,
+                pickpocket_loot_id: 0,
                 melee_base_attack_time: 2000,
                 ranged_base_attack_time: 2000,
                 damage_school: 0,
@@ -4435,6 +4486,7 @@ struct CreatureSpawnRow {
     template_ranged_attack_power: u32,
     template_min_loot_gold: u32,
     template_max_loot_gold: u32,
+    template_pickpocket_loot_id: u32,
     template_melee_base_attack_time: u32,
     template_ranged_base_attack_time: u32,
     template_damage_school: i8,
@@ -4561,6 +4613,7 @@ impl CreatureSpawnRow {
                 ranged_attack_power: self.template_ranged_attack_power,
                 min_loot_gold: self.template_min_loot_gold,
                 max_loot_gold: self.template_max_loot_gold,
+                pickpocket_loot_id: self.template_pickpocket_loot_id,
                 melee_base_attack_time: self.template_melee_base_attack_time,
                 ranged_base_attack_time: self.template_ranged_base_attack_time,
                 damage_school: self.template_damage_school,

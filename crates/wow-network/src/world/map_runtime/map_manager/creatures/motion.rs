@@ -223,6 +223,22 @@ impl MapRuntimeManager {
         result
     }
 
+    pub(in crate::world) async fn apply_db_creature_distract(
+        &self,
+        map_id: u32,
+        creature_guid: ObjectGuid,
+        target_position: WorldPosition,
+        distract_until: Instant,
+    ) -> Option<DbCreatureDistractUpdate> {
+        let map = self.get_or_create_map(map_id, 0).await;
+        let update = map.lock().await.apply_db_creature_distract(
+            creature_guid,
+            target_position,
+            distract_until,
+        );
+        update
+    }
+
     #[allow(dead_code)]
     pub(in crate::world) async fn prepare_db_creature_evade(
         &self,

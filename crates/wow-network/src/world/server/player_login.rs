@@ -470,6 +470,7 @@ pub(in crate::world) async fn handle_player_login(
         bot_runtime: None,
         selected_target: session.character.selected_target,
         unit_target: session.character.selected_target,
+        farsight_target: None,
         active_combat_target: None,
         active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,

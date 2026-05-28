@@ -29,6 +29,34 @@ impl MapRuntimeManager {
         creature
     }
 
+    pub(in crate::world) async fn open_db_creature_pickpocket_loot(
+        &self,
+
+        map_id: u32,
+
+        creature_guid: u64,
+
+        character_guid: u32,
+
+        now: Instant,
+
+        loot_money: u32,
+
+        loot_items: Vec<DbCreatureLootRuntime>,
+    ) -> Option<DbCreatureRuntime> {
+        let map = self.get_or_create_map(map_id, 0).await;
+
+        let creature = map.lock().await.open_db_creature_pickpocket_loot(
+            creature_guid,
+            character_guid,
+            now,
+            loot_money,
+            loot_items,
+        );
+
+        creature
+    }
+
     pub(in crate::world) async fn set_db_creature_loot_owner(
         &self,
 

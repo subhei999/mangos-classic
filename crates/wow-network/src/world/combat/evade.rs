@@ -214,6 +214,9 @@ pub(in crate::world) fn prepare_db_creature_evade(
         creature.loot_money = 0;
         creature.loot_money_available = false;
         creature.loot_items.clear();
+        creature.loot_items_generated = false;
+        creature.loot_kind = DbCreatureLootKind::Corpse;
+        creature.pickpocket_restock_at = None;
         creature.loot_roll_released_slots.clear();
         creature.loot_current_looter_pass_slots.clear();
         creature.loot_owner = None;

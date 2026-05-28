@@ -44,13 +44,6 @@ pub(in crate::world) struct CreatureChaseMotion {
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::world) struct PendingCreatureChaseLaunch {
-    pub(in crate::world) target: ObjectGuid,
-    pub(in crate::world) target_position: WorldPosition,
-    pub(in crate::world) ready_at: Instant,
-}
-
-#[derive(Debug, Clone)]
 pub(in crate::world) struct CreatureFleeMotion {
     pub(in crate::world) source: ObjectGuid,
     pub(in crate::world) start: WorldPosition,

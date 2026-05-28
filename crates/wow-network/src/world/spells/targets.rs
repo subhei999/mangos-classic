@@ -72,8 +72,10 @@ pub(in crate::world) fn normalize_item_use_targets(
         targets.unit_target = Some(caster);
         return targets;
     }
-    if item_spell.kind == SpellCastKind::AuraApplication
-        && plan_target.target_kind() == SpellTargetKind::Caster
+    if matches!(
+        item_spell.kind,
+        SpellCastKind::AuraApplication | SpellCastKind::DirectHeal
+    ) && plan_target.target_kind() == SpellTargetKind::Caster
     {
         targets.target_mask =
             (targets.target_mask | SPELL_CAST_TARGET_UNIT) & !SPELL_CAST_TARGET_UNIT_ENEMY;

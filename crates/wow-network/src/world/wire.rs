@@ -254,16 +254,19 @@ pub(in crate::world) async fn handle_join_channel(
 
 pub(in crate::world) fn handle_set_active_mover(
     request: wow_proto::SetActiveMoverRequest,
-    session: &WorldSessionState,
+    session: &mut WorldSessionState,
 ) -> anyhow::Result<()> {
     let mover = ObjectGuid::from_raw(request.raw_guid);
     if let Some(character) = &session.character.active_character {
-        if mover.counter() != character.guid {
+        let player_guid = ObjectGuid::new(HighGuid::Player, 0, character.guid);
+        if mover != player_guid && session.movement.controlled_unit != Some(mover) {
             warn!(
                 active_guid = character.guid,
-                mover_guid = mover.counter(),
+                mover = format_args!("0x{:016X}", mover.raw()),
                 "Client selected unexpected active mover"
             );
+        } else {
+            session.movement.active_mover = Some(mover);
         }
     }
     Ok(())
@@ -530,13 +533,13 @@ pub(in crate::world) fn write_movement_info(
     }
 }
 
-pub(in crate::world) fn build_player_movement_broadcast_body(
-    player_guid: u32,
+pub(in crate::world) fn build_unit_movement_broadcast_body(
+    mover_guid: ObjectGuid,
     movement: &MovementInfo,
     server_time: u32,
 ) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::with_capacity(9 + 28);
-    PackedGuid::write(&mut body, ObjectGuid::new(HighGuid::Player, 0, player_guid))?;
+    PackedGuid::write(&mut body, mover_guid)?;
     write_movement_info(
         &mut body,
         movement.flags,
@@ -546,6 +549,18 @@ pub(in crate::world) fn build_player_movement_broadcast_body(
         &movement.jump,
     );
     Ok(body)
+}
+
+pub(in crate::world) fn build_player_movement_broadcast_body(
+    player_guid: u32,
+    movement: &MovementInfo,
+    server_time: u32,
+) -> anyhow::Result<Vec<u8>> {
+    build_unit_movement_broadcast_body(
+        ObjectGuid::new(HighGuid::Player, 0, player_guid),
+        movement,
+        server_time,
+    )
 }
 
 pub(in crate::world) fn read_u32(body: &[u8], cursor: &mut usize) -> anyhow::Result<u32> {

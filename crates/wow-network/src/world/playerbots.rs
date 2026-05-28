@@ -129,6 +129,7 @@ pub(in crate::world) fn build_playerbot_runtime(
         }),
         selected_target: None,
         unit_target: None,
+        farsight_target: None,
         active_combat_target: None,
         active_combat_attack_kind: PlayerAutoAttackKind::Melee,
         active_combat_next_swing_at: None,

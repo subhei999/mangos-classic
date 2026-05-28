@@ -3,6 +3,15 @@ use wow_proto::world::WorldOpcode;
 
 // CMaNGOS reference: src/game/Maps/Map.cpp object visibility streaming.
 
+pub(in crate::world) async fn player_visibility_stream_position(
+    maps: &Arc<MapRuntimeManager>,
+    character_guid: u32,
+    fallback_position: WorldPosition,
+) -> WorldPosition {
+    maps.player_visibility_origin(fallback_position.map_id, character_guid, fallback_position)
+        .await
+}
+
 pub(in crate::world) async fn stream_newly_visible_db_creatures(
     stream: &mut WorldPacketSink,
     character_db_pool: &MySqlPool,
@@ -16,7 +25,7 @@ pub(in crate::world) async fn stream_newly_visible_db_creatures(
     };
     let guid = character.guid;
     let name = character.name.clone();
-    let position = character.position;
+    let position = player_visibility_stream_position(maps, guid, character.position).await;
     if !maps
         .should_rescan_player_creature_visibility(position.map_id, guid, position)
         .await
@@ -99,7 +108,8 @@ pub(in crate::world) async fn stream_nearby_player_corpses(
         return Ok(());
     };
     let character_guid = character.guid;
-    let position = character.position;
+    let position =
+        player_visibility_stream_position(maps, character_guid, character.position).await;
     if !maps
         .should_rescan_player_corpse_visibility(position.map_id, character_guid, position)
         .await

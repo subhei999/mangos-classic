@@ -137,6 +137,7 @@ pub(in crate::world) fn build_spell_go_body_with_source_and_ammo(
     .body())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::world) fn build_spell_go_body_for_targets(
     source: ObjectGuid,
     caster: ObjectGuid,

@@ -753,11 +753,40 @@ fn shield_block_aura_adds_block_percent_only_when_player_can_block() {
         proc_triggers: Vec::new(),
     };
 
-    let shielded = combat_stats_with_active_auras(with_shield, &[shield_block.clone()]);
+    let shielded = combat_stats_with_active_auras(with_shield, std::slice::from_ref(&shield_block));
     let unshielded = combat_stats_with_active_auras(without_shield, &[shield_block]);
 
     assert_eq!(shielded.block_percent, 80.0);
     assert_eq!(unshielded.block_percent, 0.0);
+}
+
+#[test]
+fn evasion_aura_adds_dodge_percent_generically() {
+    let world_stats = PlayerWorldStats {
+        base_health: 20,
+        base_mana: 0,
+        stats: [20, 20, 20, 20, 20],
+        next_level_xp: 400,
+    };
+    let base = player_combat_stats_for_values(4, 8, &world_stats, &[]);
+    let evasion = ActiveAura {
+        spell_id: 5277,
+        caster: ObjectGuid::new(HighGuid::Player, 0, 99),
+        level: 8,
+        interrupt_flags: 0,
+        positive: true,
+        visible: true,
+        duration_millis: Some(15_000),
+        expires_at: Some(Instant::now() + Duration::from_secs(15)),
+        periodic_damage: None,
+        periodic_regen: None,
+        stat_modifiers: vec![AuraStatModifier::DodgePercent { percent: 50 }],
+        proc_triggers: Vec::new(),
+    };
+
+    let evasive = combat_stats_with_active_auras(base, &[evasion]);
+
+    assert!((evasive.dodge_percent - (base.dodge_percent + 50.0)).abs() < 0.001);
 }
 
 #[test]
@@ -1097,6 +1126,43 @@ fn creature_melee_outcome_applies_attack_power_debuff_auras() {
 
     assert_eq!(outcome.outcome, MeleeHitOutcome::Normal);
     assert_eq!(outcome.total_damage, 16);
+}
+
+#[test]
+fn db_creature_daze_chance_matches_cmangos_level_and_skill_formula() {
+    assert!((db_creature_daze_chance_percent(1, 1, 5) - 1.15).abs() < 0.001);
+    assert_eq!(db_creature_daze_chance_percent(30, 30, 150), 20.0);
+    assert_eq!(db_creature_daze_chance_percent(63, 60, 300), 22.4);
+    assert_eq!(db_creature_daze_chance_percent(255, 60, 1), 40.0);
+
+    assert!(db_creature_daze_roll_succeeds(20.0, 2_000));
+    assert!(!db_creature_daze_roll_succeeds(20.0, 2_001));
+}
+
+#[test]
+fn db_creature_daze_uses_cmangos_unit_facing_arc() {
+    let player = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);
+    let behind_player = WorldPosition::new(0, -1.0, 0.0, 0.0, 0.0);
+    assert!(db_creature_can_daze_player_from_behind(
+        behind_player,
+        player
+    ));
+
+    let front_but_outside_melee_cone = WorldPosition::new(
+        0,
+        1.0,
+        3.0,
+        0.0,
+        normalize_orientation((-3.0_f32).atan2(-1.0)),
+    );
+    assert!(db_creature_is_facing_targets_back(
+        front_but_outside_melee_cone,
+        player
+    ));
+    assert!(!db_creature_can_daze_player_from_behind(
+        front_but_outside_melee_cone,
+        player
+    ));
 }
 
 #[test]
@@ -1521,6 +1587,7 @@ fn player_health_update_sets_health_field() {
 fn creature_xp_reward_matches_cmangos_base_gain_for_starter_levels() {
     let mut wolf = test_creature_template(6);
     wolf.min_level = 1;
+    wolf.max_level = 1;
     wolf.rank = 0;
     wolf.creature_type = 1;
     wolf.experience_multiplier = 1.0;
@@ -1535,4 +1602,23 @@ fn creature_xp_reward_matches_cmangos_base_gain_for_starter_levels() {
 
     wolf.creature_type = CREATURE_TYPE_CRITTER;
     assert_eq!(creature_xp_reward(1, &wolf), 0);
+}
+
+#[test]
+fn creature_is_honor_or_xp_target_uses_cmangos_trivial_gate_and_effective_level() {
+    let mut wolf = test_creature_template(6);
+    wolf.min_level = 4;
+    wolf.max_level = 10;
+    wolf.creature_type = 1;
+    wolf.civilian = 0;
+
+    assert!(creature_is_honor_or_xp_target(10, &wolf));
+
+    wolf.min_level = 4;
+    wolf.max_level = 4;
+    assert!(!creature_is_honor_or_xp_target(10, &wolf));
+
+    wolf.max_level = 10;
+    wolf.civilian = 1;
+    assert!(!creature_is_honor_or_xp_target(10, &wolf));
 }

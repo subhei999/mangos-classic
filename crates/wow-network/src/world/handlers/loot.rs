@@ -370,6 +370,52 @@ pub(in crate::world) async fn select_db_creature_loot_item_for_character(
     Ok(loot_items)
 }
 
+pub(in crate::world) async fn select_db_pickpocket_loot_item_for_character(
+    object_mgr: &ObjectMgr,
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    loot_entry: u32,
+) -> anyhow::Result<Vec<DbCreatureLootRuntime>> {
+    let loot_rows = object_mgr
+        .pickpocket_loot_items(world_db_pool, loot_entry)
+        .await?;
+    if loot_rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let reference_loot_templates =
+        load_reference_loot_templates(object_mgr, world_db_pool, &loot_rows).await?;
+
+    let active_quest_ids: Vec<u32> = session
+        .quests
+        .quest_statuses
+        .values()
+        .filter(|status| status.rewarded == 0 && status.status == QUEST_STATUS_INCOMPLETE)
+        .map(|status| status.quest)
+        .collect();
+    let mut active_quests = HashMap::new();
+    for quest_id in active_quest_ids {
+        if let Some(quest) = object_mgr.quest_template(world_db_pool, quest_id).await? {
+            active_quests.insert(quest_id, quest);
+        }
+    }
+    let source_item_default_counts =
+        load_quest_source_item_default_counts(world_db_pool, &active_quests).await?;
+
+    let mut loot_items = select_creature_loot_for_active_quests(
+        &loot_rows,
+        &reference_loot_templates,
+        &active_quests,
+        &session.quests.quest_statuses,
+        &session.inventory.items,
+        &source_item_default_counts,
+    )
+    .into_iter()
+    .map(DbCreatureLootRuntime::from)
+    .collect::<Vec<_>>();
+    apply_loot_item_template_metadata(world_db_pool, &mut loot_items).await?;
+    Ok(loot_items)
+}
+
 pub(in crate::world) async fn prepare_db_creature_corpse_loot(
     object_mgr: &ObjectMgr,
     world_db_pool: &MySqlPool,
@@ -558,6 +604,15 @@ pub(in crate::world) async fn start_group_loot_rolls_for_open_creature(
             dispatch_party_member_packets(shared_world.sessions, start.packets).await;
         }
     }
+}
+
+pub(in crate::world) fn cmangos_pickpocket_loot_money(creature_level: u8, player_level: u8) -> u32 {
+    let mut rng = rand::thread_rng();
+    let creature_roll = rng.gen_range(0..=u32::from(creature_level / 2));
+    let player_roll = rng.gen_range(0..=u32::from(player_level / 2));
+    // CMaNGOS multiplies by Rate.Drop.Money; Rust has no world-rate config yet,
+    // so the generic path currently uses the default multiplier of 1.0.
+    10 * (creature_roll + player_roll)
 }
 
 pub(in crate::world) async fn load_reference_loot_templates(

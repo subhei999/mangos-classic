@@ -103,10 +103,10 @@ impl MapRuntime {
         target: ObjectGuid,
         now: Instant,
     ) -> Option<PlayerComboPointsEvent> {
-        if !self
+        if self
             .players
             .get(&character_guid)
-            .is_some_and(|player| player.class == 1)
+            .is_none_or(|player| player.class != 1)
         {
             return None;
         }
@@ -786,6 +786,25 @@ impl MapRuntime {
                 let regen =
                     health_regen_per_second_for_spirit(player.class, player.spirit).max(0.0);
                 let gained = (regen * 2.0).floor() as u32;
+                if gained > 0 {
+                    let new_health = player.health.saturating_add(gained).min(player.max_health);
+                    health_changed = new_health != player.health;
+                    player.health = new_health;
+                }
+            }
+
+            if player.health < player.max_health {
+                let combat_regen_per_second = player
+                    .active_auras
+                    .iter()
+                    .flat_map(|aura| aura.stat_modifiers.iter())
+                    .filter_map(|modifier| match modifier {
+                        AuraStatModifier::HealthRegenInCombat { amount } => Some(*amount),
+                        _ => None,
+                    })
+                    .sum::<i32>()
+                    .max(0);
+                let gained = (combat_regen_per_second as u32).saturating_mul(2);
                 if gained > 0 {
                     let new_health = player.health.saturating_add(gained).min(player.max_health);
                     health_changed = new_health != player.health;
@@ -2210,6 +2229,11 @@ impl MapRuntime {
         {
             aura_update.direct_packets.push(packet);
         }
+        if let Some(packet) =
+            build_player_run_speed_change_packet(character_guid, &previous_auras, &current_auras)?
+        {
+            aura_update.direct_packets.push(packet);
+        }
         Ok(Some(PlayerAuraDispelEvent {
             removed_spell_ids,
             aura_update,
@@ -2245,6 +2269,11 @@ impl MapRuntime {
         let mut aura_update = self.build_player_aura_update_event(character_guid, now)?;
         if let Some(packet) =
             build_player_root_transition_packet(character_guid, was_rooted, is_rooted)?
+        {
+            aura_update.direct_packets.push(packet);
+        }
+        if let Some(packet) =
+            build_player_run_speed_change_packet(character_guid, &previous_auras, &current_auras)?
         {
             aura_update.direct_packets.push(packet);
         }
@@ -2302,6 +2331,11 @@ impl MapRuntime {
         let mut event = self.build_player_aura_update_event(character_guid, Instant::now())?;
         if let Some(packet) =
             build_player_root_transition_packet(character_guid, was_rooted, is_rooted)?
+        {
+            event.direct_packets.push(packet);
+        }
+        if let Some(packet) =
+            build_player_run_speed_change_packet(character_guid, &previous_auras, &current_auras)?
         {
             event.direct_packets.push(packet);
         }
@@ -2485,33 +2519,46 @@ impl MapRuntime {
                 player_spell_snapshot(player.level, player.class, &player.combat_stats);
             let active_auras_snapshot = player.active_auras.clone();
             for aura in &mut player.active_auras {
-                let Some(periodic) = aura.periodic_damage.as_mut() else {
-                    continue;
+                let (due_tick_at, periodic) = {
+                    let Some(periodic) = aura.periodic_damage.as_mut() else {
+                        continue;
+                    };
+                    if aura
+                        .expires_at
+                        .is_some_and(|expires_at| periodic.next_tick_at > expires_at)
+                    {
+                        continue;
+                    }
+                    if now < periodic.next_tick_at {
+                        continue;
+                    }
+                    let mut due_tick_at = periodic.next_tick_at;
+                    while periodic.next_tick_at <= now {
+                        due_tick_at = periodic.next_tick_at;
+                        periodic.next_tick_at += Duration::from_millis(periodic.tick_millis as u64);
+                    }
+                    (due_tick_at, *periodic)
                 };
-                if aura
-                    .expires_at
-                    .is_some_and(|expires_at| periodic.next_tick_at > expires_at)
-                {
-                    continue;
-                }
-                if now < periodic.next_tick_at {
-                    continue;
-                }
-                while periodic.next_tick_at <= now {
-                    periodic.next_tick_at += Duration::from_millis(periodic.tick_millis as u64);
-                }
                 let caster_snapshot = player_snapshots
                     .get(&aura.caster.raw())
                     .or_else(|| creature_snapshots.get(&aura.caster.raw()))
                     .copied()
                     .unwrap_or(periodic.caster_snapshot);
-                let tick = calculate_periodic_damage_tick_with_target_auras(
+                if let Some(script) = aura_script_for_spell_id(aura.spell_id) {
+                    aura_script_on_periodic_trigger(script, aura);
+                }
+                let tick = calculate_active_aura_periodic_damage_tick_with_target_auras(
+                    aura,
                     periodic,
+                    due_tick_at,
                     caster_snapshot,
                     target_snapshot,
                     &active_auras_snapshot,
                     player.health,
                 );
+                if let Some(script) = aura_script_for_spell_id(aura.spell_id) {
+                    aura_script_on_periodic_tick_end(script, aura);
+                }
                 if tick.dealt_damage == 0 {
                     continue;
                 }
@@ -2562,9 +2609,26 @@ impl MapRuntime {
             };
             let previous_auras = player.active_auras.clone();
             let was_rooted = active_aura_has_root(&player.active_auras);
-            player
-                .active_auras
-                .retain(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at));
+            let heartbeat_removed = {
+                let heartbeat_resist_auras = &mut self.heartbeat_resist_auras;
+                player
+                    .active_auras
+                    .iter()
+                    .filter_map(|aura| {
+                        let runtime = heartbeat_resist_auras.get_mut(&(
+                            player_guid.raw(),
+                            aura.caster.raw(),
+                            aura.spell_id,
+                        ))?;
+                        heartbeat_resist_remove_succeeds(runtime, now)
+                            .then_some((aura.caster.raw(), aura.spell_id))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            player.active_auras.retain(|aura| {
+                !heartbeat_removed.contains(&(aura.caster.raw(), aura.spell_id))
+                    && aura.expires_at.is_none_or(|expires_at| now < expires_at)
+            });
             let is_rooted = active_aura_has_root(&player.active_auras);
             let current_auras = player.active_auras.clone();
             if player_died {
@@ -2583,6 +2647,7 @@ impl MapRuntime {
                 &previous_auras,
                 &current_auras,
             );
+            self.reconcile_target_aura_trackers(player_guid, &current_auras, now);
             let Some(player) = self.players.get_mut(&character_guid) else {
                 continue;
             };
@@ -2593,6 +2658,13 @@ impl MapRuntime {
             if let Some(packet) =
                 build_player_root_transition_packet(character_guid, was_rooted, is_rooted)?
             {
+                event.direct_packets.push(packet);
+            }
+            if let Some(packet) = build_player_run_speed_change_packet(
+                character_guid,
+                &previous_auras,
+                &current_auras,
+            )? {
                 event.direct_packets.push(packet);
             }
             let Some(player) = self.players.get(&character_guid) else {
@@ -3438,6 +3510,152 @@ impl MapRuntime {
             .collect())
     }
 
+    pub(in crate::world) fn update_player_farsight(
+        &mut self,
+        character_guid: u32,
+        farsight_target: Option<ObjectGuid>,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let mut packets = {
+            let Some(player) = self.players.get_mut(&character_guid) else {
+                return Ok(Vec::new());
+            };
+            if player.farsight_target == farsight_target {
+                return Ok(Vec::new());
+            }
+            player.farsight_target = farsight_target;
+            player
+                .packet_to_client(OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgUpdateObject as u16,
+                    body: build_player_farsight_update_body(character_guid, farsight_target)?,
+                })
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        self.reset_player_visibility_scan_positions(character_guid);
+        packets.extend(self.refresh_player_camera_visibility(character_guid)?);
+        Ok(packets)
+    }
+
+    pub(in crate::world) fn player_visibility_origin(
+        &self,
+        character_guid: u32,
+        fallback_position: WorldPosition,
+    ) -> WorldPosition {
+        self.players
+            .get(&character_guid)
+            .and_then(|player| player.farsight_target)
+            .and_then(|target| self.visibility_target_position(target))
+            .unwrap_or(fallback_position)
+    }
+
+    pub(in crate::world) fn refresh_player_camera_visibility(
+        &mut self,
+        character_guid: u32,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        let Some(current_player) = self.players.get(&character_guid).cloned() else {
+            return Ok(Vec::new());
+        };
+        if !current_player.is_client_controlled() {
+            return Ok(Vec::new());
+        }
+
+        let current_origin = self.player_visibility_origin(character_guid, current_player.position);
+        let previously_visible = current_player
+            .visible_objects
+            .iter()
+            .filter_map(|guid| guid.is_player().then_some(guid.counter()))
+            .collect::<HashSet<_>>();
+        let now_visible = self
+            .nearby_player_guids(
+                current_origin,
+                PLAYER_VISIBILITY_RADIUS_YARDS,
+                Some(character_guid),
+            )
+            .into_iter()
+            .collect::<HashSet<_>>();
+
+        let mut packets = Vec::new();
+        for other_guid in previously_visible
+            .difference(&now_visible)
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            if let Some(packet) = current_player.packet_to_client(OutboundWorldPacket {
+                opcode: WorldOpcode::SmsgDestroyObject as u16,
+                body: build_destroy_guid_body(ObjectGuid::new(HighGuid::Player, 0, other_guid)),
+            }) {
+                packets.push(packet);
+            }
+        }
+
+        for other_guid in now_visible
+            .difference(&previously_visible)
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            let Some(other) = self.players.get(&other_guid) else {
+                continue;
+            };
+            if let Some(packet) = current_player.packet_to_client(OutboundWorldPacket {
+                opcode: WorldOpcode::SmsgUpdateObject as u16,
+                body: build_update_object_body(&[build_other_player_create_block(other)?]),
+            }) {
+                packets.push(packet);
+            }
+            if let Some(start_packet) = moving_bot_start_packet(other)? {
+                if let Some(packet) = current_player.packet_to_client(start_packet) {
+                    packets.push(packet);
+                }
+            }
+        }
+
+        if let Some(player) = self.players.get_mut(&character_guid) {
+            player.visible_objects.retain(|guid| !guid.is_player());
+            player.visible_objects.extend(
+                now_visible
+                    .iter()
+                    .map(|guid| ObjectGuid::new(HighGuid::Player, 0, *guid)),
+            );
+        }
+
+        Ok(packets)
+    }
+
+    fn visibility_target_position(&self, target: ObjectGuid) -> Option<WorldPosition> {
+        if target.is_player() {
+            return self
+                .players
+                .get(&target.counter())
+                .map(|player| player.position);
+        }
+        if target.is_creature() {
+            return self
+                .db_creature_snapshot(target)
+                .map(|creature| creature.current_position);
+        }
+        if target.is_game_object() {
+            return self
+                .db_gameobject_snapshot(target)
+                .map(|gameobject| gameobject.position());
+        }
+        None
+    }
+
+    pub(in crate::world) fn clear_player_farsight_if_target(
+        &mut self,
+        character_guid: u32,
+        target: ObjectGuid,
+    ) -> anyhow::Result<Vec<(SessionId, OutboundWorldPacket)>> {
+        if self
+            .players
+            .get(&character_guid)
+            .is_none_or(|player| player.farsight_target != Some(target))
+        {
+            return Ok(Vec::new());
+        }
+        self.update_player_farsight(character_guid, None)
+    }
+
     pub(in crate::world) fn remove_player(
         &mut self,
         character_guid: u32,
@@ -3676,6 +3894,32 @@ pub(in crate::world) fn build_player_root_transition_packet(
     Ok(Some(OutboundWorldPacket { opcode, body }))
 }
 
+pub(in crate::world) const PLAYER_AURA_BASE_RUN_SPEED_YARDS_PER_SEC: f32 = 7.0;
+
+pub(in crate::world) fn player_run_speed_from_auras(active_auras: &[ActiveAura]) -> f32 {
+    PLAYER_AURA_BASE_RUN_SPEED_YARDS_PER_SEC * active_aura_speed_percent_multiplier(active_auras)
+}
+
+pub(in crate::world) fn build_player_run_speed_change_packet(
+    character_guid: u32,
+    previous_auras: &[ActiveAura],
+    current_auras: &[ActiveAura],
+) -> anyhow::Result<Option<OutboundWorldPacket>> {
+    let old_speed = player_run_speed_from_auras(previous_auras);
+    let new_speed = player_run_speed_from_auras(current_auras);
+    if (old_speed - new_speed).abs() <= f32::EPSILON {
+        return Ok(None);
+    }
+    Ok(Some(OutboundWorldPacket {
+        opcode: WorldOpcode::SmsgForceRunSpeedChange as u16,
+        body: build_force_run_speed_change_body(
+            ObjectGuid::new(HighGuid::Player, 0, character_guid),
+            0,
+            new_speed,
+        )?,
+    }))
+}
+
 pub(in crate::world) const DAMAGE_FALL: u8 = 2;
 pub(in crate::world) const DAMAGE_EXHAUSTED: u8 = 0;
 pub(in crate::world) const DAMAGE_DROWNING: u8 = 1;
@@ -3849,7 +4093,10 @@ pub(in crate::world) fn player_environment_timer_active(
 ) -> bool {
     match timer_type {
         MIRROR_TIMER_FATIGUE => player.environment.flags & ENVIRONMENT_FLAG_HIGH_SEA != 0,
-        MIRROR_TIMER_BREATH => player.environment.flags & ENVIRONMENT_FLAG_UNDERWATER != 0,
+        MIRROR_TIMER_BREATH => {
+            player.environment.flags & ENVIRONMENT_FLAG_UNDERWATER != 0
+                && !player_has_water_breathing_aura(player)
+        }
         MIRROR_TIMER_ENVIRONMENTAL => {
             player.environment.flags & ENVIRONMENT_MASK_LIQUID_HAZARD != 0
         }
@@ -3869,10 +4116,19 @@ pub(in crate::world) fn player_environment_timer_deactivated(
             player.environment.flags & ENVIRONMENT_FLAG_LIQUID == 0 || player.health == 0
         }
         MIRROR_TIMER_BREATH | MIRROR_TIMER_ENVIRONMENTAL => {
-            player.environment.flags & ENVIRONMENT_FLAG_LIQUID == 0 || player.health == 0
+            player.environment.flags & ENVIRONMENT_FLAG_LIQUID == 0
+                || player.health == 0
+                || (timer_type == MIRROR_TIMER_BREATH && player_has_water_breathing_aura(player))
         }
         _ => true,
     }
+}
+
+fn player_has_water_breathing_aura(player: &PlayerRuntime) -> bool {
+    player.active_auras.iter().any(|aura| {
+        aura.stat_modifiers
+            .contains(&AuraStatModifier::WaterBreathing)
+    })
 }
 
 pub(in crate::world) fn advance_environment_timer(

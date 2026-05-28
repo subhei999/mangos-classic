@@ -76,6 +76,24 @@ pub(in crate::world) fn build_monster_move_facing_target_body(
     )
 }
 
+pub(in crate::world) fn build_monster_move_facing_spot_body(
+    guid: ObjectGuid,
+    start: WorldPosition,
+    destination: WorldPosition,
+    spline_id: u32,
+    duration_ms: u32,
+    facing_spot: WorldPosition,
+) -> anyhow::Result<Vec<u8>> {
+    build_monster_move_facing_spot_path_body(
+        guid,
+        start,
+        &[destination],
+        spline_id,
+        duration_ms,
+        facing_spot,
+    )
+}
+
 pub(in crate::world) fn build_monster_move_stop_body(
     guid: ObjectGuid,
 
@@ -90,6 +108,54 @@ pub(in crate::world) fn build_monster_move_stop_body(
         move_type: MONSTER_MOVE_TYPE_STOP,
     }
     .body())
+}
+
+pub(in crate::world) fn build_monster_move_facing_spot_path_body(
+    guid: ObjectGuid,
+    start: WorldPosition,
+    path: &[WorldPosition],
+    spline_id: u32,
+    duration_ms: u32,
+    facing_spot: WorldPosition,
+) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(!path.is_empty(), "monster movement path must not be empty");
+
+    let mut body = Vec::new();
+    PackedGuid::write(&mut body, guid)?;
+    body.extend_from_slice(&start.x.to_le_bytes());
+    body.extend_from_slice(&start.y.to_le_bytes());
+    body.extend_from_slice(&start.z.to_le_bytes());
+    body.extend_from_slice(&spline_id.to_le_bytes());
+    body.push(MONSTER_MOVE_TYPE_FACING_SPOT);
+    body.extend_from_slice(&facing_spot.x.to_le_bytes());
+    body.extend_from_slice(&facing_spot.y.to_le_bytes());
+    body.extend_from_slice(&facing_spot.z.to_le_bytes());
+    body.extend_from_slice(&MONSTER_MOVE_SPLINE_FLAG_RUNMODE.to_le_bytes());
+    body.extend_from_slice(&duration_ms.to_le_bytes());
+
+    let destination = *path
+        .last()
+        .expect("non-empty path should still have a destination");
+    let mut offsets = Vec::new();
+    for point in &path[..path.len().saturating_sub(1)] {
+        let offset_x = destination.x - point.x;
+        let offset_y = destination.y - point.y;
+        let offset_z = destination.z - point.z;
+        if (offset_x * offset_x) + (offset_y * offset_y) + (offset_z * offset_z) < 0.5 {
+            continue;
+        }
+        offsets.push(wow_proto::pack_monster_move_xyz_offset(
+            offset_x, offset_y, offset_z,
+        ));
+    }
+    body.extend_from_slice(&(1 + offsets.len() as u32).to_le_bytes());
+    body.extend_from_slice(&destination.x.to_le_bytes());
+    body.extend_from_slice(&destination.y.to_le_bytes());
+    body.extend_from_slice(&destination.z.to_le_bytes());
+    for offset in offsets {
+        body.extend_from_slice(&offset.to_le_bytes());
+    }
+    Ok(body)
 }
 
 pub(in crate::world) fn build_spline_set_speed_body(

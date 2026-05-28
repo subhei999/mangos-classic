@@ -219,7 +219,10 @@ pub(in crate::world) fn build_db_creature_loot_response_body_for_player(
 
     SmsgLootResponse {
         target,
-        loot_type: CLIENT_LOOT_CORPSE,
+        loot_type: match creature.loot_kind {
+            DbCreatureLootKind::Corpse => CLIENT_LOOT_CORPSE,
+            DbCreatureLootKind::Pickpocket => CLIENT_LOOT_PICKPOCKETING,
+        },
         money,
         items: creature
             .loot_items

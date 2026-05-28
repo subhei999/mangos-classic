@@ -1,4 +1,5 @@
 use super::*;
+use rand::Rng;
 use wow_proto::world::WorldOpcode;
 use wow_proto::{ServerWorldPacket, SpellCastTargets};
 
@@ -284,6 +285,15 @@ pub(in crate::world) async fn spell_cast_failure(
         {
             return Ok(Some(SPELL_FAILED_CASTER_AURASTATE));
         }
+        if spell_template.attributes & SPELL_ATTR_ONLY_STEALTHED != 0
+            && !player_snapshot.as_ref().is_some_and(|snapshot| {
+                active_aura_has_modifier(&snapshot.active_auras, |modifier| {
+                    matches!(modifier, AuraStatModifier::Stealth { .. })
+                })
+            })
+        {
+            return Ok(Some(SPELL_FAILED_ONLY_STEALTHED));
+        }
     }
     if let Some(failure) =
         spell_equipped_item_cast_failure(world_db_pool, session, spell_template).await?
@@ -419,6 +429,11 @@ pub(in crate::world) async fn spell_target_cast_failure(
     {
         return Some(failure);
     }
+    if let Some(failure) =
+        spell_distract_cast_failure(shared_world, session, spell_template, targets).await
+    {
+        return Some(failure);
+    }
     if spell_template.target_aura_state != 0 {
         let character = session.character.active_character.as_ref()?;
         let target = targets.unit_target?;
@@ -446,6 +461,51 @@ pub(in crate::world) async fn spell_target_cast_failure(
         return Some(failure);
     }
     spell_melee_cast_failure(shared_world, session, spell_profile, targets).await
+}
+
+pub(in crate::world) async fn spell_distract_cast_failure(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    targets: &SpellCastTargets,
+) -> Option<u8> {
+    let character = session.character.active_character.as_ref()?;
+    let spell_info = SpellInfo::from_template(spell_template);
+    let effect = spell_info
+        .effects
+        .into_iter()
+        .find(|effect| effect.dispatch == SpellEffectDispatch::Distract)?;
+    let radius = spell_effect_radius_yards(shared_world.maps, effect)?;
+    let destination = targets.destination?;
+    let position = WorldPosition::new(
+        character.position.map_id,
+        destination.x,
+        destination.y,
+        destination.z,
+        0.0,
+    );
+    let nearby = shared_world
+        .maps
+        .nearby_attackable_db_creature_guids_for_player_spell_at_position(
+            character.position.map_id,
+            character.guid,
+            position,
+            radius,
+        )
+        .await;
+    if nearby.is_empty() {
+        return None;
+    }
+    for target in nearby {
+        if !shared_world
+            .maps
+            .db_creature_in_combat(character.position.map_id, target)
+            .await
+        {
+            return None;
+        }
+    }
+    Some(SPELL_FAILED_TARGET_IN_COMBAT)
 }
 
 pub(in crate::world) async fn spell_single_dispel_cast_failure(
@@ -648,6 +708,7 @@ pub(in crate::world) async fn begin_failed_hostile_db_creature_spell_retaliation
 #[allow(clippy::too_many_arguments)]
 pub(in crate::world) async fn player_db_creature_spell_target_outcome(
     shared_world: SharedWorldDeps<'_>,
+    world_db_pool: &MySqlPool,
     session: &WorldSessionState,
     character_guid: u32,
     map_id: u32,
@@ -674,6 +735,7 @@ pub(in crate::world) async fn player_db_creature_spell_target_outcome(
         return Ok(Some(PlayerSpellTargetOutcome {
             target,
             miss_info: Some(SPELL_MISS_EVADE),
+            heartbeat_resist_chance_basis_points: None,
         }));
     }
     if spell_template_is_reflectable(spell_template)
@@ -685,12 +747,14 @@ pub(in crate::world) async fn player_db_creature_spell_target_outcome(
         return Ok(Some(PlayerSpellTargetOutcome {
             target,
             miss_info: Some(SPELL_MISS_REFLECT),
+            heartbeat_resist_chance_basis_points: None,
         }));
     }
     if active_auras_are_immune_to_spell(&target_creature.active_auras, spell_template) {
         return Ok(Some(PlayerSpellTargetOutcome {
             target,
             miss_info: Some(SPELL_MISS_IMMUNE),
+            heartbeat_resist_chance_basis_points: None,
         }));
     }
     let combat_stats = shared_world
@@ -705,6 +769,19 @@ pub(in crate::world) async fn player_db_creature_spell_target_outcome(
         })?;
     let character = session.character.active_character.as_ref();
     let (school, dmg_class) = spell_target_outcome_school_and_damage_class(spell_template);
+    let heartbeat_resist_chance_basis_points = if spell_has_heartbeat_resist(spell_template) {
+        spell_db_creature_heartbeat_resist_chance_basis_points(
+            world_db_pool,
+            session,
+            spell_template,
+            spell_profile,
+            &combat_stats,
+            &target_creature,
+        )
+        .await?
+    } else {
+        None
+    };
     let outcome = roll_spell_damage_outcome(spell_damage_outcome_input(
         1,
         school,
@@ -721,6 +798,7 @@ pub(in crate::world) async fn player_db_creature_spell_target_outcome(
     Ok(Some(PlayerSpellTargetOutcome {
         target,
         miss_info: outcome.miss_info,
+        heartbeat_resist_chance_basis_points,
     }))
 }
 
@@ -738,11 +816,132 @@ fn spell_target_outcome_school_and_damage_class(
     (school, dmg_class)
 }
 
+fn spell_has_heartbeat_resist(spell_template: &wow_db::SpellTemplateQuery) -> bool {
+    spell_template.attributes & SPELL_ATTR_HEARTBEAT_RESIST != 0
+}
+
+pub(in crate::world) fn heartbeat_resist_runtime(
+    chance_basis_points: u32,
+    original_duration_millis: Option<u32>,
+    diminishing_level: DiminishingLevelRuntime,
+    now: Instant,
+) -> Option<HeartbeatResistRuntime> {
+    let original_duration_millis = original_duration_millis?;
+    if chance_basis_points == 0 || original_duration_millis == 0 {
+        return None;
+    }
+    let dr_level = match diminishing_level {
+        DiminishingLevelRuntime::Level1 => 0,
+        DiminishingLevelRuntime::Level2 => 1,
+        DiminishingLevelRuntime::Level3 => 2,
+        DiminishingLevelRuntime::Immune => 3,
+    };
+    let interval_millis = (original_duration_millis / (2 + dr_level)).max(1_000);
+    Some(HeartbeatResistRuntime {
+        chance_basis_points: chance_basis_points.saturating_mul(1 + dr_level),
+        interval_millis,
+        next_check_at: now + Duration::from_millis(interval_millis as u64),
+    })
+}
+
+pub(in crate::world) fn heartbeat_resist_remove_succeeds(
+    runtime: &mut HeartbeatResistRuntime,
+    now: Instant,
+) -> bool {
+    if runtime.chance_basis_points == 0
+        || runtime.interval_millis == 0
+        || now < runtime.next_check_at
+    {
+        return false;
+    }
+    let mut rng = rand::thread_rng();
+    while runtime.next_check_at <= now {
+        runtime.next_check_at += Duration::from_millis(runtime.interval_millis as u64);
+        if rng.gen_range(1..=10_000) <= runtime.chance_basis_points.min(10_000) {
+            return true;
+        }
+    }
+    false
+}
+
+async fn spell_db_creature_heartbeat_resist_chance_basis_points(
+    world_db_pool: &MySqlPool,
+    session: &WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    spell_profile: &SpellCastProfile,
+    combat_stats: &PlayerCombatStats,
+    target_creature: &DbCreatureRuntime,
+) -> anyhow::Result<Option<u32>> {
+    let character = session.character.active_character.as_ref();
+    let (school, dmg_class) = spell_target_outcome_school_and_damage_class(spell_template);
+    let melee_like = spell_profile.requires_melee
+        || dmg_class == SPELL_DAMAGE_CLASS_MELEE
+        || spell_template.equipped_item_class == ITEM_CLASS_WEAPON as i32
+        || spell_template.equipped_item_subclass_mask != 0;
+    if melee_like {
+        let weapon_skill_id =
+            main_hand_weapon_skill_id(world_db_pool, &session.inventory.items).await?;
+        let attacker_skill = weapon_skill_id
+            .map(|skill_id| {
+                current_skill_value_with_active_auras(
+                    &session.character.character_skills,
+                    &session.auras.active_auras,
+                    skill_id,
+                )
+            })
+            .unwrap_or(0);
+        let creature_level = db_creature_combat_level(target_creature);
+        let creature_defense = u16::from(creature_level).saturating_mul(5);
+        let chances = player_main_hand_chances_against_db_creature(
+            combat_stats,
+            attacker_skill,
+            creature_defense,
+            creature_level,
+            target_creature.spawn.template.extra_flags,
+        );
+        return Ok(Some(chance_to_basis_points(chances.miss)));
+    }
+
+    if spell_template.attributes_ex3 & SPELL_ATTR_EX3_ALWAYS_HIT != 0 {
+        return Ok(Some(0));
+    }
+
+    let input = spell_damage_outcome_input(
+        1,
+        school,
+        dmg_class,
+        spell_template.attributes_ex2,
+        spell_template.attributes_ex3,
+        player_spell_snapshot(
+            character.map(|active| active.level).unwrap_or(1),
+            character.map(|active| active.class).unwrap_or(1),
+            combat_stats,
+        ),
+        db_creature_spell_snapshot(target_creature),
+    );
+    let mut chance = spell_miss_chance_percent(input);
+    if dmg_class == SPELL_DAMAGE_CLASS_MAGIC && is_resistable_spell_school(school) {
+        let resist_percent = effective_magic_resistance_percent(input);
+        if resist_percent > 0.0 {
+            chance += partial_resist_chances(resist_percent)[4] as f32 * 0.01;
+        }
+    }
+    Ok(Some(chance_to_basis_points(chance)))
+}
+
 fn spell_uses_warrior_reactive_combo_target(spell_template: &wow_db::SpellTemplateQuery) -> bool {
     spell_template.power_type == POWER_TYPE_RAGE
         && spell_template.spell_family_name == 4
         && (spell_template.attributes_ex & SPELL_ATTR_EX_FINISHING_MOVE_DAMAGE) != 0
         && (spell_template.spell_family_flags & 1) != 0
+}
+
+pub(in crate::world) fn spell_combo_point_target_matches(
+    combo_target: Option<ObjectGuid>,
+    target: ObjectGuid,
+    caster: ObjectGuid,
+) -> bool {
+    combo_target == Some(target) || (target == caster && combo_target.is_some())
 }
 
 pub(in crate::world) async fn spell_combo_point_cast_failure(
@@ -757,11 +956,14 @@ pub(in crate::world) async fn spell_combo_point_cast_failure(
     }
     let target = targets.unit_target?;
     let character = session.character.active_character.as_ref()?;
+    let caster = ObjectGuid::new(HighGuid::Player, 0, character.guid);
     let snapshot = shared_world
         .maps
         .player_runtime_snapshot(character.position.map_id, character.guid)
         .await?;
-    if snapshot.combo_points == 0 || snapshot.combo_target != Some(target) {
+    if snapshot.combo_points == 0
+        || !spell_combo_point_target_matches(snapshot.combo_target, target, caster)
+    {
         Some(
             if spell_uses_warrior_reactive_combo_target(spell_template) {
                 SPELL_FAILED_CASTER_AURASTATE
@@ -863,6 +1065,13 @@ fn spell_hostile_creature_power_burn_cast_failure(
         })
 }
 
+fn spell_requires_pickpocket_loot(spell_template: &wow_db::SpellTemplateQuery) -> bool {
+    SpellInfo::from_template(spell_template)
+        .effects
+        .into_iter()
+        .any(|effect| effect.dispatch == SpellEffectDispatch::PickPocket)
+}
+
 async fn spell_hostile_creature_target_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     world_db_pool: &MySqlPool,
@@ -870,27 +1079,12 @@ async fn spell_hostile_creature_target_cast_failure(
     spell_template: &wow_db::SpellTemplateQuery,
     target: ObjectGuid,
 ) -> Option<u8> {
-    let character = session.character.active_character.as_ref()?;
-    if !target.is_creature() {
-        return Some(SPELL_FAILED_BAD_TARGETS);
-    }
-    let Some(snapshot) = shared_world
-        .maps
-        .db_creature_snapshot(character.position.map_id, target)
-        .await
-    else {
-        return Some(SPELL_FAILED_OUT_OF_RANGE);
-    };
-    if !creature_type_matches_target_mask(
-        snapshot.spawn.template.creature_type,
-        spell_template.target_creature_type,
-    ) {
-        return Some(SPELL_FAILED_BAD_TARGETS);
-    }
-    if let Some(failure) = spell_hostile_creature_power_burn_cast_failure(spell_template, &snapshot)
+    if let Some(failure) =
+        spell_hostile_creature_pre_cast_failure(shared_world, session, spell_template, target).await
     {
         return Some(failure);
     }
+    let character = session.character.active_character.as_ref()?;
     let range = if spell_template.range_index == 0 {
         None
     } else {
@@ -933,6 +1127,49 @@ async fn spell_hostile_creature_target_cast_failure(
     }
 }
 
+async fn spell_hostile_creature_pre_cast_failure(
+    shared_world: SharedWorldDeps<'_>,
+    session: &WorldSessionState,
+    spell_template: &wow_db::SpellTemplateQuery,
+    target: ObjectGuid,
+) -> Option<u8> {
+    let character = session.character.active_character.as_ref()?;
+    if !target.is_creature() {
+        return Some(SPELL_FAILED_BAD_TARGETS);
+    }
+    let Some(snapshot) = shared_world
+        .maps
+        .db_creature_snapshot(character.position.map_id, target)
+        .await
+    else {
+        return Some(SPELL_FAILED_OUT_OF_RANGE);
+    };
+    if !creature_type_matches_target_mask(
+        snapshot.spawn.template.creature_type,
+        spell_template.target_creature_type,
+    ) {
+        return Some(SPELL_FAILED_BAD_TARGETS);
+    }
+    if spell_requires_pickpocket_loot(spell_template)
+        && snapshot.spawn.template.pickpocket_loot_id == 0
+    {
+        return Some(SPELL_FAILED_TARGET_NO_POCKETS);
+    }
+    if spell_template.attributes_ex & SPELL_ATTR_EX_ONLY_PEACEFUL_TARGETS != 0
+        && shared_world
+            .maps
+            .db_creature_in_combat(character.position.map_id, target)
+            .await
+    {
+        return Some(SPELL_FAILED_TARGET_AFFECTING_COMBAT);
+    }
+    if let Some(failure) = spell_hostile_creature_power_burn_cast_failure(spell_template, &snapshot)
+    {
+        return Some(failure);
+    }
+    None
+}
+
 pub(in crate::world) async fn spell_unit_target_cast_failure(
     shared_world: SharedWorldDeps<'_>,
     world_db_pool: &MySqlPool,
@@ -960,6 +1197,16 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
             return spell_friendly_player_target_cast_failure(shared_world, session, target).await;
         }
         if target.is_creature() {
+            if let Some(failure) = spell_hostile_creature_pre_cast_failure(
+                shared_world,
+                session,
+                spell_template,
+                target,
+            )
+            .await
+            {
+                return Some(failure);
+            }
             if spell_profile.requires_melee
                 || matches!(spell_profile.kind, SpellCastKind::NextMeleeSwing)
             {
@@ -976,10 +1223,16 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
         }
         return Some(SPELL_FAILED_BAD_TARGETS);
     }
-    if target_kind != SpellTargetKind::HostileUnit
-        || spell_profile.requires_melee
-        || matches!(spell_profile.kind, SpellCastKind::NextMeleeSwing)
+    if target_kind != SpellTargetKind::HostileUnit {
+        return None;
+    }
+    let target = target?;
+    if let Some(failure) =
+        spell_hostile_creature_pre_cast_failure(shared_world, session, spell_template, target).await
     {
+        return Some(failure);
+    }
+    if spell_profile.requires_melee || matches!(spell_profile.kind, SpellCastKind::NextMeleeSwing) {
         return None;
     }
     spell_hostile_creature_target_cast_failure(
@@ -987,7 +1240,7 @@ pub(in crate::world) async fn spell_unit_target_cast_failure(
         world_db_pool,
         session,
         spell_template,
-        target?,
+        target,
     )
     .await
 }
@@ -1131,6 +1384,7 @@ mod definitions;
 mod effects;
 mod packets;
 mod plan;
+mod scripts;
 mod skills;
 mod spell;
 mod spell_mgr;
@@ -1144,6 +1398,7 @@ pub(in crate::world) use self::definitions::*;
 pub(in crate::world) use self::effects::*;
 pub(in crate::world) use self::packets::*;
 pub(in crate::world) use self::plan::plan_effect_target;
+pub(in crate::world) use self::scripts::*;
 pub(in crate::world) use self::skills::*;
 pub(in crate::world) use self::spell::*;
 pub(in crate::world) use self::spell_mgr::*;
@@ -1334,20 +1589,24 @@ pub(in crate::world) fn build_active_aura(
     now: Instant,
     duration: Option<SpellDurationEntry>,
 ) -> ActiveAura {
-    let duration_millis = duration
-        .map(|duration| {
-            if duration.duration_millis == -1 {
-                -1
-            } else {
-                duration.duration_millis.abs()
-            }
-        })
+    let mut duration_millis = duration
+        .map(|duration| spell_aura_duration_millis(duration, value_context.combo_points))
         .unwrap_or(0);
+    if let Some(script) = aura_script_for_spell_id(template.id) {
+        duration_millis = aura_script_duration(
+            script,
+            duration_millis,
+            AuraScriptDurationContext { caster, level },
+        );
+    }
     let spell_info = SpellInfo::from_template(template);
     let channel_interrupt_flags = spell_info
         .plan_channel()
         .map_or(0, |channel| match channel {
             SpellPlanChannel::SelfAura {
+                interrupt_flags, ..
+            }
+            | SpellPlanChannel::UnitAura {
                 interrupt_flags, ..
             }
             | SpellPlanChannel::UnitPeriodicTrigger {
@@ -1357,7 +1616,7 @@ pub(in crate::world) fn build_active_aura(
                 interrupt_flags, ..
             } => interrupt_flags,
         });
-    ActiveAura {
+    let aura = ActiveAura {
         spell_id: template.id,
         caster,
         level,
@@ -1371,7 +1630,35 @@ pub(in crate::world) fn build_active_aura(
         periodic_regen: spell_periodic_regen_aura(&spell_info, value_context, now),
         stat_modifiers: spell_aura_stat_modifiers(&spell_info, value_context),
         proc_triggers: spell_aura_proc_triggers(&spell_info),
+    };
+    if let Some(script) = aura_script_for_spell_id(aura.spell_id) {
+        aura_script_on_aura_init(script, &aura);
     }
+    aura
+}
+
+pub(in crate::world) fn spell_aura_duration_millis(
+    duration: SpellDurationEntry,
+    combo_points: u8,
+) -> i32 {
+    if duration.duration_millis == -1 {
+        return -1;
+    }
+
+    let base_duration = duration.duration_millis.abs();
+    let max_duration = if duration.max_duration_millis == -1 {
+        base_duration
+    } else {
+        duration.max_duration_millis.abs()
+    };
+
+    if combo_points == 0 || max_duration <= base_duration {
+        return base_duration;
+    }
+
+    let scaled_duration = i64::from(base_duration)
+        + (i64::from(max_duration - base_duration) * i64::from(combo_points.min(5)) / 5);
+    scaled_duration.clamp(0, i64::from(i32::MAX)) as i32
 }
 
 pub(in crate::world) async fn resolve_active_aura_transform_displays(
@@ -1431,7 +1718,13 @@ pub(in crate::world) fn spell_periodic_damage_aura(
                 && effect.amplitude > 0
         })
         .and_then(|effect| {
-            let damage = spell_effect_calculated_u32(effect, value_context)?;
+            let damage = spell_effect_calculated_u32(effect, value_context)?.saturating_add(
+                spell_periodic_damage_attack_power_bonus(
+                    spell_info.template,
+                    effect,
+                    value_context,
+                ),
+            );
             Some(PeriodicDamageAura {
                 aura_name: effect.aura_name,
                 school: spell_info.template.school,
@@ -1439,11 +1732,49 @@ pub(in crate::world) fn spell_periodic_damage_aura(
                 attributes_ex2: spell_info.template.attributes_ex2,
                 attributes_ex3: spell_info.template.attributes_ex3,
                 caster_snapshot: spell_periodic_damage_fallback_caster_snapshot(caster_level),
+                profile: spell_periodic_damage_profile(spell_info.template, effect),
                 amount: damage,
                 tick_millis: effect.amplitude,
                 next_tick_at: now + Duration::from_millis(effect.amplitude as u64),
             })
         })
+}
+
+fn spell_periodic_damage_profile(
+    template: &wow_db::SpellTemplateQuery,
+    effect: SpellInfoEffect,
+) -> PeriodicDamageProfile {
+    if effect.aura_name != SPELL_AURA_PERIODIC_DAMAGE {
+        return PeriodicDamageProfile::Flat;
+    }
+
+    if let Some(script) = aura_script_for_spell_id(template.id) {
+        return PeriodicDamageProfile::AuraScript(script);
+    }
+
+    PeriodicDamageProfile::Flat
+}
+
+fn spell_periodic_damage_attack_power_bonus(
+    template: &wow_db::SpellTemplateQuery,
+    effect: SpellInfoEffect,
+    context: SpellEffectValueContext,
+) -> u32 {
+    const ROGUE_RUPTURE_FAMILY_FLAG: u64 = 0x0000_0000_0010_0000;
+
+    if effect.aura_name != SPELL_AURA_PERIODIC_DAMAGE {
+        return 0;
+    }
+
+    match template.spell_family_name {
+        SPELL_FAMILY_ROGUE if template.spell_family_flags & ROGUE_RUPTURE_FAMILY_FLAG != 0 => {
+            context
+                .melee_attack_power
+                .saturating_mul(u32::from(context.combo_points.min(3)))
+                / 100
+        }
+        _ => 0,
+    }
 }
 
 pub(in crate::world) fn spell_periodic_damage_fallback_caster_snapshot(
@@ -1588,7 +1919,19 @@ pub(in crate::world) fn single_target_aura_descriptors_match(
 pub(in crate::world) fn spell_diminishing_group(
     template: &wow_db::SpellTemplateQuery,
 ) -> Option<DiminishingGroupRuntime> {
-    (template.mechanic == MECHANIC_POLYMORPH).then_some(DiminishingGroupRuntime::Polymorph)
+    if template.spell_family_name == SPELL_FAMILY_ROGUE
+        && template.spell_family_flags & 0x0020_0000 != 0
+    {
+        Some(DiminishingGroupRuntime::KidneyShot)
+    } else if template.spell_family_name == SPELL_FAMILY_ROGUE
+        && template.spell_family_flags & 0x0100_0000 != 0
+    {
+        Some(DiminishingGroupRuntime::Blind)
+    } else if template.mechanic == MECHANIC_POLYMORPH {
+        Some(DiminishingGroupRuntime::Polymorph)
+    } else {
+        None
+    }
 }
 
 pub(in crate::world) fn db_creature_spell_diminishing_group(
@@ -1682,6 +2025,18 @@ pub(in crate::world) fn active_aura_proc_trigger_spell_ids(
         .iter_mut()
         .filter(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at))
     {
+        if let Some(script) = aura_script_for_spell_id(aura.spell_id) {
+            let context = AuraScriptProcContext {
+                proc_flags: proc_flag,
+                proc_ex: 0,
+            };
+            if !aura_script_on_check_proc(script, aura, context)
+                || aura_script_on_proc(script, aura, context)
+                    == AuraScriptProcResult::PreventDefault
+            {
+                continue;
+            }
+        }
         for trigger in &mut aura.proc_triggers {
             if trigger.proc_flags & proc_flag == 0 {
                 continue;
@@ -1712,6 +2067,18 @@ pub(in crate::world) fn consume_active_aura_proc_charges(
         .iter_mut()
         .filter(|aura| aura.expires_at.is_none_or(|expires_at| now < expires_at))
     {
+        if let Some(script) = aura_script_for_spell_id(aura.spell_id) {
+            let context = AuraScriptProcContext {
+                proc_flags: proc_flag,
+                proc_ex,
+            };
+            if !aura_script_on_check_proc(script, aura, context)
+                || aura_script_on_proc(script, aura, context)
+                    == AuraScriptProcResult::PreventDefault
+            {
+                continue;
+            }
+        }
         for trigger in &mut aura.proc_triggers {
             if trigger.triggered_spell_id != 0
                 || trigger.proc_flags & proc_flag == 0
@@ -1799,6 +2166,9 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
                     permanent: effect.aura_name == SPELL_AURA_MOD_SKILL_TALENT,
                 })
             }
+            SPELL_AURA_MOD_DODGE_PERCENT => Some(AuraStatModifier::DodgePercent {
+                percent: spell_effect_calculated_i32(effect, value_context),
+            }),
             SPELL_AURA_MOD_BLOCK_PERCENT => Some(AuraStatModifier::BlockPercent {
                 percent: spell_effect_calculated_i32(effect, value_context),
             }),
@@ -1878,8 +2248,10 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
             SPELL_AURA_MOD_PACIFY => Some(AuraStatModifier::Pacify),
             SPELL_AURA_MOD_SILENCE => Some(AuraStatModifier::Silence),
             SPELL_AURA_MOD_PACIFY_SILENCE => Some(AuraStatModifier::PacifySilence),
+            SPELL_AURA_BIND_SIGHT | SPELL_AURA_FAR_SIGHT => Some(AuraStatModifier::FarSight),
             SPELL_AURA_FEATHER_FALL => Some(AuraStatModifier::FeatherFall),
             SPELL_AURA_HOVER => Some(AuraStatModifier::Hover),
+            SPELL_AURA_WATER_BREATHING => Some(AuraStatModifier::WaterBreathing),
             SPELL_AURA_SCHOOL_ABSORB => Some(AuraStatModifier::SchoolAbsorb {
                 school_mask: spell_school_mask_from_misc_value(effect.misc_value),
                 amount: spell_effect_calculated_i32(effect, value_context)
@@ -1903,6 +2275,9 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
                     percent: spell_effect_calculated_i32(effect, value_context),
                 })
             }
+            SPELL_AURA_MOD_HEALTH_REGEN_IN_COMBAT => Some(AuraStatModifier::HealthRegenInCombat {
+                amount: spell_effect_calculated_i32(effect, value_context),
+            }),
             SPELL_AURA_MOD_STAT => {
                 let stat = usize::try_from(effect.misc_value).ok();
                 Some(AuraStatModifier::Stat {
@@ -1919,6 +2294,10 @@ pub(in crate::world) fn spell_aura_stat_modifiers(
             }
             SPELL_AURA_MOD_REPUTATION_GAIN => Some(AuraStatModifier::ReputationGainPercent {
                 percent: spell_effect_calculated_i32(effect, value_context),
+            }),
+            SPELL_AURA_MOD_STEALTH => Some(AuraStatModifier::Stealth {
+                kind: effect.misc_value,
+                amount: spell_effect_calculated_i32(effect, value_context),
             }),
             SPELL_AURA_MOD_STEALTH_DETECT => Some(AuraStatModifier::StealthDetect {
                 kind: effect.misc_value,
@@ -2048,8 +2427,7 @@ pub(in crate::world) fn active_aura_taunt_caster(
 ) -> Option<ObjectGuid> {
     active_auras.iter().rev().find_map(|aura| {
         aura.stat_modifiers
-            .iter()
-            .any(|modifier| *modifier == AuraStatModifier::Taunt)
+            .contains(&AuraStatModifier::Taunt)
             .then_some(aura.caster)
     })
 }
@@ -2073,6 +2451,13 @@ pub(in crate::world) fn active_aura_has_confuse(active_auras: &[ActiveAura]) -> 
         .iter()
         .flat_map(|aura| aura.stat_modifiers.iter())
         .any(|modifier| *modifier == AuraStatModifier::Confuse)
+}
+
+pub(in crate::world) fn active_aura_has_fear(active_auras: &[ActiveAura]) -> bool {
+    active_auras
+        .iter()
+        .flat_map(|aura| aura.stat_modifiers.iter())
+        .any(|modifier| *modifier == AuraStatModifier::Fear)
 }
 
 pub(in crate::world) fn aura_mechanic_immunities(aura: &ActiveAura) -> Vec<u32> {
@@ -2523,11 +2908,7 @@ pub(in crate::world) fn active_auras_suppress_hostile_refs(active_auras: &[Activ
     active_auras.iter().any(active_aura_suppresses_hostile_refs)
 }
 
-pub(in crate::world) fn active_aura_movement_speed_multiplier(active_auras: &[ActiveAura]) -> f32 {
-    if active_aura_blocks_movement(active_auras) {
-        return 0.0;
-    }
-
+pub(in crate::world) fn active_aura_speed_percent_multiplier(active_auras: &[ActiveAura]) -> f32 {
     let strongest_slow = active_auras
         .iter()
         .flat_map(|aura| aura.stat_modifiers.iter())
@@ -2549,6 +2930,14 @@ pub(in crate::world) fn active_aura_movement_speed_multiplier(active_auras: &[Ac
 
     ((100 + strongest_slow).max(0) as f32 / 100.0)
         * ((100 + strongest_increase).max(1) as f32 / 100.0)
+}
+
+pub(in crate::world) fn active_aura_movement_speed_multiplier(active_auras: &[ActiveAura]) -> f32 {
+    if active_aura_blocks_movement(active_auras) {
+        return 0.0;
+    }
+
+    active_aura_speed_percent_multiplier(active_auras)
 }
 
 pub(in crate::world) fn active_aura_melee_attack_time_multiplier(
@@ -2757,8 +3146,21 @@ pub(in crate::world) fn active_aura_unit_vis_flags(active_auras: &[ActiveAura]) 
         .flat_map(|aura| aura.stat_modifiers.iter())
         .fold(0, |flags, modifier| match modifier {
             AuraStatModifier::Ghost => flags | UNIT_VIS_FLAG_GHOST,
+            AuraStatModifier::Stealth { .. } => flags | UNIT_VIS_FLAG_CREEP,
             _ => flags,
         })
+}
+
+pub(in crate::world) fn active_aura_player_field_bytes2(active_auras: &[ActiveAura]) -> u32 {
+    if active_auras.iter().any(|aura| {
+        aura.stat_modifiers
+            .iter()
+            .any(|modifier| matches!(modifier, AuraStatModifier::Stealth { .. }))
+    }) {
+        PLAYER_FIELD_BYTE2_STEALTH << 8
+    } else {
+        0
+    }
 }
 
 pub(in crate::world) fn player_world_stats_with_active_auras(
@@ -3174,6 +3576,11 @@ pub(in crate::world) fn set_player_aura_update_values(
         values,
         PLAYER_TRACK_RESOURCES,
         active_aura_track_resources_mask(active_auras),
+    )?;
+    set_update_value(
+        values,
+        PLAYER_FIELD_BYTES2,
+        active_aura_player_field_bytes2(active_auras),
     )?;
     Ok(())
 }

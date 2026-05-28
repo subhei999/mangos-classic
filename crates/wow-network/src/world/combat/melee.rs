@@ -241,7 +241,12 @@ pub(in crate::world) fn has_in_arc(source: WorldPosition, target: WorldPosition,
     if source.map_id != target.map_id {
         return false;
     }
-    let angle = normalize_orientation((target.y - source.y).atan2(target.x - source.x));
+    let dx = target.x - source.x;
+    let dy = target.y - source.y;
+    if dx * dx + dy * dy <= DEFAULT_WORLD_OBJECT_SIZE * DEFAULT_WORLD_OBJECT_SIZE {
+        return true;
+    }
+    let angle = normalize_orientation(dy.atan2(dx));
     let mut delta = normalize_orientation(angle - source.orientation);
     if delta > std::f32::consts::PI {
         delta -= 2.0 * std::f32::consts::PI;

@@ -29,6 +29,14 @@ fn db_creature_retaliation_can_kill_player() {
 }
 
 #[test]
+fn melee_arc_treats_overlapping_positions_as_valid_facing() {
+    let source = WorldPosition::new(0, 0.0, 0.0, 0.0, std::f32::consts::PI);
+    let target = WorldPosition::new(0, DEFAULT_WORLD_OBJECT_SIZE * 0.5, 0.0, 0.0, 0.0);
+
+    assert!(has_in_arc(source, target, PLAYER_MELEE_ARC_RADIANS));
+}
+
+#[test]
 fn player_death_update_sets_health_flags_and_release_timer() {
     let player = ObjectGuid::new(HighGuid::Player, 0, 7);
     let body = build_player_death_update_body(PlayerDeathUpdate {

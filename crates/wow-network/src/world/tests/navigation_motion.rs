@@ -2371,6 +2371,32 @@ fn map_runtime_refuses_in_place_facing_while_creature_is_moving() {
 }
 
 #[test]
+fn map_runtime_skips_in_place_facing_for_overlapping_target() {
+    let mut creature = test_creature_spawn(6);
+    creature.position_x = 0.0;
+    creature.position_y = 0.0;
+    creature.position_z = 0.0;
+    creature.orientation = std::f32::consts::PI;
+    let attacker = creature_spawn_guid(&creature);
+    let mut runtime = DbCreatureRuntime::new(creature);
+    runtime.next_spline_id = 4;
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(vec![runtime]);
+
+    assert!(map
+        .face_db_creature_toward_position(
+            attacker,
+            WorldPosition::new(0, DEFAULT_WORLD_OBJECT_SIZE * 0.5, 0.0, 0.0, 0.0),
+        )
+        .is_none());
+    let snapshot = map
+        .db_creature_snapshot(attacker)
+        .expect("creature should stay loaded");
+    assert_eq!(snapshot.current_position.orientation, std::f32::consts::PI);
+    assert_eq!(snapshot.next_spline_id, 4);
+}
+
+#[test]
 fn map_runtime_chase_destination_fans_out_same_victim_attackers() {
     let target = ObjectGuid::new(HighGuid::Player, 0, 7);
     let target_position = WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0);

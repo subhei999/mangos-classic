@@ -3169,6 +3169,34 @@ impl MapRuntime {
         None
     }
 
+    pub(in crate::world) fn player_spell_cast_failure_with_cleanup(
+        &mut self,
+        character_guid: u32,
+        spell_template: Option<&wow_db::SpellTemplateQuery>,
+        spell_profile: &SpellCastProfile,
+        requires_main_hand_weapon: bool,
+        now: Instant,
+    ) -> Option<u8> {
+        let failure = self.player_spell_cast_failure(
+            character_guid,
+            spell_template,
+            spell_profile,
+            requires_main_hand_weapon,
+            now,
+        );
+        if failure == Some(SPELL_FAILED_NO_POWER)
+            && spell_profile.kind == SpellCastKind::NextMeleeSwing
+            && self
+                .players
+                .get(&character_guid)
+                .and_then(|player| player.queued_next_melee_spell)
+                .is_some_and(|queued| queued.spell_id == spell_profile.spell_id)
+        {
+            self.clear_player_next_melee_spell(character_guid);
+        }
+        failure
+    }
+
     pub(in crate::world) fn apply_player_spell_cooldowns(
         &mut self,
         character_guid: u32,

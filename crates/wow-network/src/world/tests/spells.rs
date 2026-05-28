@@ -29833,6 +29833,42 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
     );
 }
 
+#[test]
+fn player_spell_cast_failure_clears_stale_next_melee_queue_when_power_missing() {
+    let now = Instant::now();
+    let mut map = MapRuntime::new(0, 0);
+    insert_map_runtime_player_for_test(&mut map, 7, WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
+    let target = ObjectGuid::new(HighGuid::Unit, 0, 45);
+    let heroic = heroic_strike_spell_template();
+    let heroic_profile = player_spell_cast_profile(&heroic).unwrap();
+    map.players.get_mut(&7).expect("player").power2 = 0;
+    map.queue_player_next_melee_spell(
+        7,
+        QueuedNextMeleeSpell {
+            spell_id: heroic.id,
+            target,
+            bonus_damage: HEROIC_STRIKE_FIXTURE_DAMAGE,
+            rage_cost: HEROIC_STRIKE_RAGE_COST,
+            mana_cost: 0,
+        },
+    );
+
+    assert_eq!(
+        map.player_spell_cast_failure_with_cleanup(7, Some(&heroic), &heroic_profile, true, now),
+        Some(SPELL_FAILED_NO_POWER)
+    );
+    assert!(
+        map.queued_player_next_melee_spell(7, target).is_none(),
+        "no-rage retries must not leave Heroic Strike wedged in the next-swing slot"
+    );
+
+    map.players.get_mut(&7).expect("player").power2 = HEROIC_STRIKE_RAGE_COST;
+    assert_eq!(
+        map.player_spell_cast_failure_with_cleanup(7, Some(&heroic), &heroic_profile, true, now),
+        None
+    );
+}
+
 #[tokio::test]
 async fn revenge_requires_defense_aura_state_before_generic_melee_validation() {
     let maps = Arc::new(MapRuntimeManager::default());

@@ -395,7 +395,7 @@ impl MapRuntimeManager {
     ) -> Option<u8> {
         let map = { self.maps.lock().await.get(&(map_id, 0)).cloned() };
         let map = map?;
-        let failure = map.lock().await.player_spell_cast_failure(
+        let failure = map.lock().await.player_spell_cast_failure_with_cleanup(
             character_guid,
             spell_template,
             spell_profile,

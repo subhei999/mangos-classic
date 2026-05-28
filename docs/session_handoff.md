@@ -1,87 +1,88 @@
 # Session Handoff
 
 Short operating brief for the next Rust gameplay-parity session. Keep this file
-concise; durable audit state belongs in `docs/spell_class_audit.md`.
+concise; durable audit state belongs in focused roadmap/audit docs.
 
 ## Current Branch And State
 
 - Branch: `codex/rusty-mangos`
 - Workspace: `C:\Users\subhe\Documents\New project`
-- Current state: dirty worktree on top of `dffa155b4` with unrelated creature
-  chase / Heroic Strike edits plus in-flight Warlock `Hellfire` spell-audit
-  work. Do not revert unrelated dirty files.
-- Local branch is ahead of `origin/codex/rusty-mangos` by the launcher hygiene
-  and gameplay audit consolidation commits.
-- Use `target-codex/` for focused cargo runs in this workspace when needed; it
-  is ignored.
+- Current state: dirty worktree with focused combat fixes for Heroic Strike
+  next-swing queue cleanup and DB-creature melee facing/overlap handling.
+- Latest known clean upstream before these edits was synced with
+  `origin/codex/rusty-mangos`.
+- Melee leeway is currently `7.0 / 3.0` in `crates/wow-network/src/world/constants.rs`.
 
 ## Current Goal
 
-Automation spell-audit priority: continue the Warlock non-talent scan and stop
-at the first real generic blocker, which is still `Hellfire`.
+User-directed gameplay fix: remove regressions where Heroic Strike can wedge in
+the next-swing slot after no-rage spam, and where nearby DB creatures can get
+stuck repeatedly facing instead of landing melee swings.
 
-- Gate/subsystem: generic spell planning, channel runtime, and area/trigger
-  ownership for Warlock spells.
-- CMaNGOS reference:
-  `src/game/Spells/Spell.cpp`,
-  `src/game/Spells/SpellAuras.cpp`,
-  `src/game/Spells/Scripts/Scripting/ClassScripts/Warlock.cpp`,
-  plus local live spell rows / `spell_chain` / `spell_bonus_data`.
+- Gate/subsystem: world combat, player spell cast failure, next melee swing
+  queueing, DB-creature chase/facing, melee arc validation.
+- CMaNGOS reference remains the behavior source for melee/chase/facing.
 
 ## What Changed Recently
 
-- Warlock audit is closed through `Unending Breath`; `docs/spell_class_audit.md`
-  remains the durable tracker.
-- `Hellfire` rank 1 was reclassified from a direct persistent-area spell to a
-  self `SPELL_AURA_PERIODIC_TRIGGER_SPELL` wrapper: live row `1949` ticks
-  trigger spell `5857` every 1000 ms.
-- A useful generic fix landed underneath the investigation:
-  caster-centered persistent-area effects can now derive their origin from the
-  caster position instead of requiring a client destination.
-- Focused synthetic proof for that persistent-area origin lane is green, but it
-  does not close live `Hellfire`; the remaining blocker is the wrapper-owned
-  self periodic-trigger hostile-AoE channel path.
+- `MapRuntimeManager::player_spell_cast_failure` now uses a mutable validation
+  path so a same-spell queued next-swing action is cleared when validation
+  fails for `SPELL_FAILED_NO_POWER`.
+- Heroic Strike no-rage retries no longer leave a stale queued
+  `QueuedNextMeleeSpell` that blocks later casts until relog.
+- `has_in_arc` treats overlapping source/target positions as valid facing, and
+  DB-creature in-place facing skips meaningless near-overlap updates instead of
+  emitting a new facing spline.
+- Added focused regression tests for stale Heroic cleanup, overlap arc validity,
+  and suppressed overlap-facing packets.
 
 ## Tests Run
 
-- `cargo test -p wow-network hellfire_uses_caster_centered_persistent_area_profile -- --nocapture`
+- `cargo test -p wow-network player_spell_cast_failure_clears_stale_next_melee_queue_when_power_missing -- --nocapture`
   - passed
-- `cargo test -p wow-network hellfire_creates_caster_centered_channel_dynamic_object_and_ticks_area_damage -- --nocapture`
+- `cargo test -p wow-network map_runtime_skips_in_place_facing_for_overlapping_target -- --nocapture`
   - passed
-- `cargo test -p wow-network blizzard_creates_channel_dynamic_object_and_ticks_area_damage -- --nocapture`
+- `cargo test -p wow-network melee_arc_treats_overlapping_positions_as_valid_facing -- --nocapture`
   - passed
-- `cargo test -p wow-network arcane_missiles_live_rank_one_rows_use_generic_periodic_trigger_channel_and_hostile_missile -- --nocapture`
+- `cargo test -p wow-network spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue -- --nocapture`
   - passed
-- `cargo test -p wow-network arcane_missiles_without_selected_target_fails_before_spending_mana -- --nocapture`
+- `cargo test -p wow-network map_runtime_refuses_in_place_facing_while_creature_is_moving -- --nocapture`
   - passed
+- `cargo test -p wow-network map_runtime_manager_does_not_snap_face_before_pending_swing -- --nocapture`
+  - passed
+- `cargo check -p wow-network --lib`
+  - passed
+- `.\scripts\test-rust.cmd`
+  - failed in the existing broad `cargo test --workspace` suite. The run still
+    showed the workspace compiles, but 26 `wow-network` tests failed, including
+    local MySQL access failures for `root@localhost` and pre-existing gameplay
+    expectation failures such as Battle Shout rage cost.
 
 ## Known Blockers / Unproven Areas
 
-- Fresh `cargo test` rebuilds are currently blocked by unrelated dirty-tree
-  compile errors outside the spell audit, including missing chase symbol
-  renames and one stale `DbCreatureChaseTarget` field use in tests.
-- Live `Hellfire` is still not closed: the missing generic lane is the self
-  periodic-trigger hostile-AoE channel path used by wrapper row `1949`.
-- `.\scripts\test-rust.cmd` was not rerun after the latest dirty changes.
-- The branch has not been pushed.
+- The full Rust gate is not green in this local environment. Before treating
+  this as release-ready, either fix/triage the existing red tests or rerun with
+  the expected local DB/vmap setup.
+- These fixes have focused synthetic coverage, but still need live client
+  verification against the reported Heroic Strike no-rage spam and close-range
+  creature facing scenarios.
 
 ## Recommended Next Task
 
-- Keep Warlock as the active class and resume at `Hellfire`.
-- Implement the smallest generic runtime path for self-targeted
-  `SPELL_AURA_PERIODIC_TRIGGER_SPELL` wrappers that tick hostile caster-area
-  trigger spells, then rerun the smallest focused spell tests.
-- After that lane is green, continue to the next Warlock family in order.
+- Playtest on `codex/rusty-mangos`: spam Heroic Strike at zero rage, gain rage,
+  and confirm it can be queued without relogging; then stand inside/near a
+  hostile creature and verify it stops turning every frame and can melee.
+- If live creature behavior still jitters outside true overlap, compare against
+  CMaNGOS `TargetedMovementGenerator` final facing and adjust the arrived-chase
+  swing retry path rather than adding client-facing movement heuristics.
 
 ## Key Files
 
-- `crates/wow-network/src/world/spells/effects/areas.rs`
+- `crates/wow-network/src/world/map_runtime/systems/players.rs`
 - `crates/wow-network/src/world/map_runtime/map_manager/spells.rs`
-- `crates/wow-network/src/world/map_runtime/systems/player_channels.rs`
-- `crates/wow-network/src/world/spells/plan.rs`
-- `crates/wow-network/src/world/spells/spell_mgr.rs`
+- `crates/wow-network/src/world/combat/melee.rs`
+- `crates/wow-network/src/world/map_runtime/systems/creature_motion.rs`
+- `crates/wow-network/src/world/map_runtime/map_manager/creatures/combat.rs`
 - `crates/wow-network/src/world/tests/spells.rs`
-- `sql/base/dbc/original_data/Spell.sql`
-- `src/game/Spells/Spell.cpp`
-- `src/game/Spells/SpellAuras.cpp`
-- `src/game/Spells/Scripts/Scripting/ClassScripts/Warlock.cpp`
+- `crates/wow-network/src/world/tests/navigation_motion.rs`
+- `crates/wow-network/src/world/tests/death_aggro.rs`

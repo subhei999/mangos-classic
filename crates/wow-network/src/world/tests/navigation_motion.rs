@@ -2386,7 +2386,7 @@ fn map_runtime_skips_in_place_facing_for_overlapping_target() {
     assert!(map
         .face_db_creature_toward_position(
             attacker,
-            WorldPosition::new(0, DEFAULT_WORLD_OBJECT_SIZE * 0.5, 0.0, 0.0, 0.0),
+            WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0),
         )
         .is_none());
     let snapshot = map
@@ -2394,6 +2394,50 @@ fn map_runtime_skips_in_place_facing_for_overlapping_target() {
         .expect("creature should stay loaded");
     assert_eq!(snapshot.current_position.orientation, std::f32::consts::PI);
     assert_eq!(snapshot.next_spline_id, 4);
+}
+
+#[test]
+fn map_runtime_arrived_chase_facing_survives_motion_advance() {
+    let mut creature = test_creature_spawn(6);
+    creature.position_x = 0.0;
+    creature.position_y = 0.0;
+    creature.position_z = 0.0;
+    creature.orientation = 0.0;
+    let attacker = creature_spawn_guid(&creature);
+    let player = ObjectGuid::new(HighGuid::Player, 0, 7);
+    let now = Instant::now();
+    let mut runtime = DbCreatureRuntime::new(creature);
+    runtime.next_spline_id = 4;
+    runtime.motion = CreatureMotionState::Chase(CreatureChaseMotion {
+        target: player,
+        start: WorldPosition::new(0, -5.0, 0.0, 0.0, 0.0),
+        destination: runtime.current_position,
+        path: vec![runtime.current_position],
+        started_at: now - Duration::from_secs(2),
+        duration: Duration::from_secs(1),
+        recheck_at: now + Duration::from_secs(1),
+        run: true,
+    });
+    let mut map = MapRuntime::new(0, 0);
+    map.share_db_creature_snapshots(vec![runtime]);
+
+    let (_, position, _) = map
+        .face_db_creature_toward_position(
+            attacker,
+            WorldPosition::new(0, 0.0, -10.0, 0.0, 0.0),
+        )
+        .expect("arrived chase should allow a final facing update");
+    let expected_orientation = position.orientation;
+    map.advance_db_creature_motion(attacker, now + Duration::from_millis(1));
+    let snapshot = map
+        .db_creature_snapshot(attacker)
+        .expect("creature should stay loaded");
+
+    assert_eq!(snapshot.current_position.orientation, expected_orientation);
+    let CreatureMotionState::Chase(chase) = snapshot.motion else {
+        panic!("arrived chase should keep its chase generator");
+    };
+    assert_eq!(chase.destination.orientation, expected_orientation);
 }
 
 #[test]

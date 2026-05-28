@@ -243,7 +243,7 @@ pub(in crate::world) fn has_in_arc(source: WorldPosition, target: WorldPosition,
     }
     let dx = target.x - source.x;
     let dy = target.y - source.y;
-    if dx * dx + dy * dy <= DEFAULT_WORLD_OBJECT_SIZE * DEFAULT_WORLD_OBJECT_SIZE {
+    if dx * dx + dy * dy <= f32::EPSILON {
         return true;
     }
     let angle = normalize_orientation(dy.atan2(dx));

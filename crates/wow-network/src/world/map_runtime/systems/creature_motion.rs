@@ -923,15 +923,18 @@ impl MapRuntime {
         // CMaNGOS Unit::SetFacingToObject refuses in-place facing while a
         // movement spline is active. An arrived chase keeps its movement
         // generator for repath timing, but its spline has completed.
-        match &creature.motion {
-            CreatureMotionState::Idle => {}
+        let arrived_chase = match &creature.motion {
+            CreatureMotionState::Idle => false,
             CreatureMotionState::Chase(chase)
-                if db_creature_chase_motion_arrived(creature, chase) => {}
+                if db_creature_chase_motion_arrived(creature, chase) =>
+            {
+                true
+            }
             _ => return None,
-        }
+        };
         let dx = target_position.x - creature.current_position.x;
         let dy = target_position.y - creature.current_position.y;
-        if dx * dx + dy * dy <= DEFAULT_WORLD_OBJECT_SIZE * DEFAULT_WORLD_OBJECT_SIZE {
+        if dx * dx + dy * dy <= f32::EPSILON {
             return None;
         }
         let orientation = normalize_orientation(dy.atan2(dx));
@@ -942,6 +945,11 @@ impl MapRuntime {
             return None;
         }
         creature.current_position.orientation = orientation;
+        if arrived_chase {
+            if let CreatureMotionState::Chase(chase) = &mut creature.motion {
+                chase.destination.orientation = orientation;
+            }
+        }
         let spline_id = creature.next_spline_id;
         creature.next_spline_id = creature.next_spline_id.wrapping_add(1);
         Some((creature.clone(), creature.current_position, spline_id))

@@ -7,17 +7,18 @@ concise; durable audit state belongs in focused roadmap/audit docs.
 
 - Branch: `codex/rusty-mangos`
 - Workspace: `C:\Users\subhe\Documents\New project`
-- Current state: dirty worktree with focused combat fixes for Heroic Strike
-  next-swing queue cleanup and DB-creature melee facing/overlap handling.
-- Latest known clean upstream before these edits was synced with
-  `origin/codex/rusty-mangos`.
+- Current state: latest HEAD contains the arrived-chase orientation follow-up
+  for the DB-creature facing regression.
+- Previous pushed baseline before this follow-up was `e42c3fd71`
+  (`Fix next-swing and creature facing stalls`).
 - Melee leeway is currently `7.0 / 3.0` in `crates/wow-network/src/world/constants.rs`.
 
 ## Current Goal
 
-User-directed gameplay fix: remove regressions where Heroic Strike can wedge in
-the next-swing slot after no-rage spam, and where nearby DB creatures can get
-stuck repeatedly facing instead of landing melee swings.
+User-directed gameplay fix: finish the DB-creature facing/motion regression
+that can make an enemy turn back and forth every tick and stop landing melee
+swings. Heroic Strike stale next-swing cleanup is already committed in
+`e42c3fd71`.
 
 - Gate/subsystem: world combat, player spell cast failure, next melee swing
   queueing, DB-creature chase/facing, melee arc validation.
@@ -30,11 +31,17 @@ stuck repeatedly facing instead of landing melee swings.
   fails for `SPELL_FAILED_NO_POWER`.
 - Heroic Strike no-rage retries no longer leave a stale queued
   `QueuedNextMeleeSpell` that blocks later casts until relog.
-- `has_in_arc` treats overlapping source/target positions as valid facing, and
-  DB-creature in-place facing skips meaningless near-overlap updates instead of
-  emitting a new facing spline.
-- Added focused regression tests for stale Heroic cleanup, overlap arc validity,
-  and suppressed overlap-facing packets.
+- Commit-history investigation points at `7da5b04b4` as the likely regression:
+  chase completion stopped converting `CreatureMotionState::Chase` back to
+  `Idle`, while `face_db_creature_toward_position` began allowing facing on an
+  arrived chase. Since `advance_db_creature_motion_runtime` keeps copying
+  `chase.destination` into `current_position` after arrival, a face update that
+  only changed `current_position.orientation` was overwritten on the next tick.
+- The arrived-chase follow-up persists facing into
+  `chase.destination.orientation`, and narrows the previous overlap heuristic
+  from object-radius distance to exact coordinate overlap only.
+- Added focused regression coverage proving an arrived chase face update
+  survives a later motion advance.
 
 ## Tests Run
 
@@ -50,6 +57,12 @@ stuck repeatedly facing instead of landing melee swings.
   - passed
 - `cargo test -p wow-network map_runtime_manager_does_not_snap_face_before_pending_swing -- --nocapture`
   - passed
+- `cargo test -p wow-network map_runtime_arrived_chase_facing_survives_motion_advance -- --nocapture`
+  - passed
+- `cargo test -p wow-network starter_melee_spell_failure_uses_melee_validity_before_damage -- --nocapture`
+  - failed with existing assertion mismatch: left `None`, right
+    `Some(SPELL_FAILED_OUT_OF_RANGE)`. This appears unrelated to the narrowed
+    facing fix and also showed up during the broad gate failure.
 - `cargo check -p wow-network --lib`
   - passed
 - `.\scripts\test-rust.cmd`
@@ -63,18 +76,17 @@ stuck repeatedly facing instead of landing melee swings.
 - The full Rust gate is not green in this local environment. Before treating
   this as release-ready, either fix/triage the existing red tests or rerun with
   the expected local DB/vmap setup.
-- These fixes have focused synthetic coverage, but still need live client
-  verification against the reported Heroic Strike no-rage spam and close-range
-  creature facing scenarios.
+- The arrived-chase orientation fix has focused synthetic coverage, but still
+  needs live client verification against the reported close-range creature
+  turn-loop scenario.
 
 ## Recommended Next Task
 
-- Playtest on `codex/rusty-mangos`: spam Heroic Strike at zero rage, gain rage,
-  and confirm it can be queued without relogging; then stand inside/near a
-  hostile creature and verify it stops turning every frame and can melee.
-- If live creature behavior still jitters outside true overlap, compare against
-  CMaNGOS `TargetedMovementGenerator` final facing and adjust the arrived-chase
-  swing retry path rather than adding client-facing movement heuristics.
+- Playtest on `codex/rusty-mangos`: stand inside/near a hostile creature and
+  verify it stops turning every frame and can melee.
+- If live creature behavior still jitters, compare against CMaNGOS
+  `TargetedMovementGenerator` final facing and the Rust arrived-chase retry path
+  before adding any client-facing movement heuristics.
 
 ## Key Files
 

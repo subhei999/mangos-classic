@@ -14,7 +14,6 @@ pub(in crate::world) struct StartedCreatureMotion {
 pub(in crate::world) struct DbCreatureChaseTarget {
     pub(in crate::world) guid: ObjectGuid,
     pub(in crate::world) position: WorldPosition,
-    pub(in crate::world) movement_flags: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -542,7 +541,6 @@ pub(in crate::world) fn start_db_creature_chase_motion(
     now: Instant,
 ) -> Option<StartedCreatureMotion> {
     let target_position = session.character.active_character.as_ref()?.position;
-    let target_movement_flags = session.character.active_character.as_ref()?.movement_flags;
     let creature = session
         .visibility
         .db_creatures
@@ -554,7 +552,6 @@ pub(in crate::world) fn start_db_creature_chase_motion(
         DbCreatureChaseTarget {
             guid: target,
             position: target_position,
-            movement_flags: target_movement_flags,
         },
         None,
         now,
@@ -581,26 +578,18 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
     }
     if let CreatureMotionState::Chase(chase) = &creature.motion {
         if chase.target == target.guid {
-            let moving_recheck = unit_movement_flags_count_as_chase_reactive(target.movement_flags);
-            let recheck_at = db_creature_chase_effective_recheck_at(chase, moving_recheck);
-            if now < recheck_at {
-                return None;
-            }
-            let arrived = db_creature_chase_motion_arrived(creature, chase);
-            if !arrived
-                && (!moving_recheck
-                    || !db_creature_active_chase_should_refresh_for_moving_target(
-                        creature,
-                        chase,
-                        target.position,
-                    ))
-            {
+            if now < chase.recheck_at {
                 return None;
             }
             if !db_creature_chase_requires_new_position(creature, chase, target.position) {
                 return None;
             }
         }
+    }
+    if chase_destination.is_none()
+        && db_creature_chase_endpoint_reaches_target(creature, start, target.position)
+    {
+        return None;
     }
     let path_result = if let Some(chase_destination) = chase_destination {
         db_creature_path_to_destination(
@@ -643,7 +632,7 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
         path: path.clone(),
         started_at: now,
         duration,
-        recheck_at: now + db_creature_chase_recheck_delay(target.movement_flags),
+        recheck_at: now + Duration::from_millis(DB_CREATURE_CHASE_RECHECK_MILLIS),
         run,
     });
     Some(StartedCreatureMotion {
@@ -653,58 +642,6 @@ pub(in crate::world) fn start_db_creature_chase_motion_runtime(
         duration,
         run,
     })
-}
-
-fn unit_movement_flags_count_as_chase_reactive(flags: u32) -> bool {
-    unit_movement_flags_count_as_moving(flags) && !unit_movement_flags_count_as_walking(flags)
-}
-
-fn db_creature_chase_recheck_delay(target_movement_flags: u32) -> Duration {
-    let millis = if unit_movement_flags_count_as_chase_reactive(target_movement_flags) {
-        DB_CREATURE_CHASE_MOVING_TARGET_RECHECK_MILLIS
-    } else {
-        DB_CREATURE_CHASE_RECHECK_MILLIS
-    };
-    Duration::from_millis(millis)
-}
-
-fn db_creature_chase_effective_recheck_at(
-    chase: &CreatureChaseMotion,
-    moving_recheck: bool,
-) -> Instant {
-    if moving_recheck {
-        chase.started_at + Duration::from_millis(DB_CREATURE_CHASE_MOVING_TARGET_RECHECK_MILLIS)
-    } else {
-        chase.recheck_at
-    }
-}
-
-fn db_creature_active_chase_should_refresh_for_moving_target(
-    creature: &DbCreatureRuntime,
-    chase: &CreatureChaseMotion,
-    target_position: WorldPosition,
-) -> bool {
-    if chase.destination.map_id != target_position.map_id
-        || creature.current_position.map_id != target_position.map_id
-    {
-        return true;
-    }
-    if !db_creature_chase_requires_new_position(creature, chase, target_position) {
-        return false;
-    }
-    let remaining_to_old_destination = distance_2d(
-        creature.current_position.x,
-        creature.current_position.y,
-        chase.destination.x,
-        chase.destination.y,
-    );
-    let current_distance_to_target = distance_2d(
-        creature.current_position.x,
-        creature.current_position.y,
-        target_position.x,
-        target_position.y,
-    );
-    current_distance_to_target < remaining_to_old_destination
 }
 
 pub(in crate::world) fn db_creature_chase_motion_arrived(
@@ -729,11 +666,7 @@ pub(in crate::world) fn db_creature_chase_requires_new_position(
     if chase.destination.map_id != target_position.map_id {
         return true;
     }
-    // Real WoW appears to refresh melee chase toward the preferred landing
-    // distance, not merely when the old destination falls outside max swing
-    // range. This intentionally diverges from CMaNGOS' wider
-    // combined-reach-based RequiresNewPosition check.
-    let range = db_creature_chase_stop_distance(creature);
+    let range = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
     let dx = chase.destination.x - target_position.x;
     let dy = chase.destination.y - target_position.y;
     let dz = chase.destination.z - target_position.z;
@@ -750,23 +683,6 @@ pub(in crate::world) fn db_creature_chase_endpoint_reaches_target(
     }
     let reach = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
     distance_2d(endpoint.x, endpoint.y, target_position.x, target_position.y) <= reach
-}
-
-pub(in crate::world) fn db_creature_chase_close_correction_reaches_target(
-    creature: &DbCreatureRuntime,
-    target_position: WorldPosition,
-) -> bool {
-    if creature.current_position.map_id != target_position.map_id {
-        return false;
-    }
-    let reach = combined_melee_reach(creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS)
-        + MELEE_LEEWAY_YARDS;
-    distance_2d(
-        creature.current_position.x,
-        creature.current_position.y,
-        target_position.x,
-        target_position.y,
-    ) <= reach
 }
 
 #[cfg(test)]

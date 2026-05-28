@@ -613,6 +613,15 @@ run log.
   `SpellAuras.cpp` / `Player.cpp`; the Rust runtime now maps aura `82` into an
   explicit water-breathing modifier, marks the aura implemented in coverage,
   and stops the drowning mirror timer while the aura is active.
+  `Hellfire` uses the live rank chain `1949 -> 11683 -> 11684`, and rank 1 is
+  not a direct persistent-area row in this dump: `1949` is a self
+  `SPELL_AURA_PERIODIC_TRIGGER_SPELL` wrapper that ticks trigger spell `5857`
+  every 1000 ms. A separate generic fix now lets caster-centered
+  persistent-area effects derive their origin from the caster position instead
+  of requiring a client destination, and focused synthetic proof for that lane
+  is green. Live `Hellfire` remains the first in-scope blocker because the
+  missing generic lane is still the self periodic-trigger hostile-AoE channel
+  path owned by the wrapper row, not the persistent-area origin path.
 - Deferred:
   `Life Tap` (`1454 -> 1455 -> 1456 -> 11687 -> 11688 -> 11689`) remains
   script-owned for this audit pass because the live family entry point still

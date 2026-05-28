@@ -1027,6 +1027,32 @@ fn blizzard_spell_template() -> wow_db::SpellTemplateQuery {
     template
 }
 
+fn hellfire_spell_template() -> wow_db::SpellTemplateQuery {
+    let mut template = test_spell_template(1949);
+    template.spell_name = "Hellfire".to_string();
+    template.rank = Some("Rank 1".to_string());
+    template.school = 4;
+    template.attributes_ex = SPELL_ATTR_EX_IS_CHANNELED;
+    template.attributes_ex2 = TEST_SPELL_ATTR_EX2_CANT_CRIT;
+    template.attributes_ex3 = TEST_SPELL_ATTR_EX3_ALWAYS_HIT;
+    template.channel_interrupt_flags = AURA_INTERRUPT_FLAG_DAMAGE_CHANNEL_DURATION;
+    template.power_type = POWER_TYPE_MANA;
+    template.mana_cost = 210;
+    template.start_recovery_category = 133;
+    template.start_recovery_time = 1_500;
+    template.duration_index = 30;
+    template.effect1 = SPELL_EFFECT_PERSISTENT_AREA_AURA;
+    template.effect_base_points1 = 9;
+    template.effect_die_sides1 = 1;
+    template.effect_base_dice1 = 1;
+    template.effect_apply_aura_name1 = SPELL_AURA_PERIODIC_DAMAGE;
+    template.effect_implicit_target_a1 = TARGET_ENUM_UNITS_ENEMY_AOE_AT_SRC_LOC;
+    template.effect_radius_index1 = 11;
+    template.effect_amplitude1 = 1_000;
+    template.dmg_class = SPELL_DAMAGE_CLASS_MAGIC;
+    template
+}
+
 fn arcane_missiles_spell_template() -> wow_db::SpellTemplateQuery {
     let mut template = test_spell_template(5143);
     template.spell_name = "Arcane Missiles".to_string();
@@ -3749,6 +3775,93 @@ async fn blizzard_live_rank_one_row_uses_generic_destination_persistent_area_cha
 }
 
 #[tokio::test]
+async fn hellfire_live_rank_one_row_uses_generic_caster_centered_persistent_area_channel() {
+    let world_db_pool =
+        MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
+
+    let hellfire = wow_db::get_spell_template_query(&world_db_pool, 1949)
+        .await
+        .unwrap()
+        .expect("Hellfire rank 1 should exist in the local spell_template");
+    let chain = wow_db::get_spell_chain_query(&world_db_pool, 1949)
+        .await
+        .unwrap()
+        .expect("Hellfire rank 1 should exist in spell_chain");
+    let rank_three = wow_db::get_spell_chain_query(&world_db_pool, 11684)
+        .await
+        .unwrap()
+        .expect("Hellfire rank 3 should exist in spell_chain");
+    let hellfire_effect = wow_db::get_spell_template_query(&world_db_pool, 5857)
+        .await
+        .unwrap()
+        .expect("Hellfire rank 1 trigger spell should exist in the local spell_template");
+
+    assert_eq!(chain.spell_id, 1949);
+    assert_eq!(chain.prev_spell, 0);
+    assert_eq!(chain.first_spell, 1949);
+    assert_eq!(chain.rank, 1);
+    assert_eq!(rank_three.first_spell, 1949);
+    assert_eq!(rank_three.rank, 3);
+    assert_eq!(hellfire.spell_name, "Hellfire");
+    assert_eq!(hellfire.rank.as_deref(), Some("Rank 1"));
+    assert_eq!(hellfire.spell_level, 30);
+    assert_eq!(hellfire.effect1, SPELL_EFFECT_APPLY_AURA);
+    assert_eq!(
+        hellfire.effect_apply_aura_name1,
+        SPELL_AURA_PERIODIC_TRIGGER_SPELL
+    );
+    assert_eq!(hellfire.effect_trigger_spell1, 5857);
+    assert_eq!(hellfire.effect_implicit_target_a1, TARGET_UNIT_CASTER);
+    assert_eq!(hellfire.effect_amplitude1, 1_000);
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_PERIODIC_DAMAGE),
+        SpellMechanicSupport::Implemented
+    );
+    assert_eq!(
+        spell_aura_support(SPELL_AURA_PERIODIC_TRIGGER_SPELL),
+        SpellMechanicSupport::Implemented
+    );
+
+    let profile = player_spell_cast_profile(&hellfire).expect("hellfire profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+
+    let info = SpellInfo::from_template(&hellfire);
+    let plan = info
+        .player_spell_plan()
+        .expect("Hellfire rank 1 should build a generic player spell plan");
+    assert_eq!(plan.profile.kind, SpellCastKind::AuraApplication);
+    assert!(matches!(
+        plan.channel,
+        Some(SpellPlanChannel::UnitPeriodicTrigger {
+            trigger_spell: 5857,
+            tick_millis: 1_000,
+            ..
+        })
+    ));
+    assert_eq!(hellfire_effect.spell_name, "Hellfire Effect");
+    assert_eq!(
+        player_spell_cast_profile(&hellfire_effect)
+            .expect("hellfire trigger profile")
+            .kind,
+        SpellCastKind::InstantDamage
+    );
+    let effect_plan = SpellInfo::from_template(&hellfire_effect)
+        .player_spell_plan()
+        .expect("Hellfire trigger spell should build a generic player spell plan");
+    assert!(
+        effect_plan.effects.iter().any(|effect| {
+            effect.dispatch == SpellEffectDispatch::SchoolDamage
+                && effect.target == SpellPlanEffectTarget::CasterAreaEnemy { cone: false }
+        }),
+        "Hellfire trigger plan: target={:?} effects={:?}",
+        effect_plan.target,
+        effect_plan.effects
+    );
+    assert!(spell_template_coverage_issues(&hellfire).is_empty());
+    assert!(spell_template_coverage_issues(&hellfire_effect).is_empty());
+}
+
+#[tokio::test]
 async fn flamestrike_live_rank_one_row_uses_generic_destination_burst_and_persistent_area_dot() {
     let world_db_pool =
         MySqlPool::connect_lazy("mysql://mangos:mangos@127.0.0.1:3307/mangos").unwrap();
@@ -6054,6 +6167,38 @@ fn blizzard_uses_destination_persistent_area_profile() {
         SpellTargetKind::Destination
     );
     assert!(effect_targets_destination_hostile_area(
+        spell_info.effects[0]
+    ));
+}
+
+#[test]
+fn hellfire_uses_caster_centered_persistent_area_profile() {
+    let hellfire = hellfire_spell_template();
+    let profile = player_spell_cast_profile(&hellfire).expect("hellfire profile");
+    assert_eq!(profile.kind, SpellCastKind::AuraApplication);
+
+    let spell_info = SpellInfo::from_template(&hellfire);
+    let plan = spell_info.player_spell_plan().expect("hellfire plan");
+    assert_eq!(
+        plan.target,
+        SpellPlanTarget::CasterAreaEnemy { cone: false }
+    );
+    assert_eq!(
+        plan.channel,
+        Some(SpellPlanChannel::PersistentArea {
+            duration_index: 30,
+            interrupt_flags: AURA_INTERRUPT_FLAG_DAMAGE_CHANNEL_DURATION,
+        })
+    );
+    assert!(
+        plan.effects.iter().any(|effect| {
+            effect.dispatch == SpellEffectDispatch::PersistentAreaAura
+                && effect.aura_name == SPELL_AURA_PERIODIC_DAMAGE
+                && effect.target == SpellPlanEffectTarget::CasterAreaEnemy { cone: false }
+        }),
+        "Hellfire should stay on the generic caster-centered persistent-area lane"
+    );
+    assert!(effect_targets_caster_centered_hostile_area(
         spell_info.effects[0]
     ));
 }
@@ -23909,6 +24054,167 @@ async fn blizzard_creates_channel_dynamic_object_and_ticks_area_damage() {
 }
 
 #[tokio::test]
+async fn hellfire_creates_caster_centered_channel_dynamic_object_and_ticks_area_damage() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut stream = WorldPacketSink::new(tx);
+    let mut header_crypto = HeaderCrypto::new(&[0; 40]);
+    let character_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/characters").unwrap();
+    let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
+    let mut world_data = WorldDataFiles::fallback();
+    world_data.spell_radii.insert(
+        11,
+        SpellRadiusEntry {
+            radius: 8.0,
+            radius_per_level: 0.0,
+            max_radius: 8.0,
+        },
+    );
+    world_data.spell_durations.insert(
+        30,
+        SpellDurationEntry {
+            duration_millis: 4_000,
+            duration_per_level_millis: 0,
+            max_duration_millis: 4_000,
+        },
+    );
+    let maps = Arc::new(MapRuntimeManager::with_world_data_files(&world_data));
+    let sessions = Arc::new(SessionRegistry::default());
+    let object_mgr = ObjectMgr::default();
+    object_mgr
+        .prime_spell_template_for_test(1949, Some(hellfire_spell_template()))
+        .await;
+    object_mgr
+        .prime_creature_ai_scripts_for_test(6, Vec::new())
+        .await;
+    let shared_world = SharedWorldDeps {
+        object_mgr: &object_mgr,
+        maps: &maps,
+        sessions: &sessions,
+    };
+    let player_position = WorldPosition::new(0, -8958.0, -132.0, 83.5312, 0.0);
+    let mut player = test_player_runtime(7, SessionId::next(), player_position);
+    player.power1 = 500;
+    maps.add_player(player).await.unwrap();
+
+    let mut hostile = test_creature_spawn(6);
+    hostile.guid = 59;
+    hostile.position_x = player_position.x + 1.0;
+    hostile.position_y = player_position.y;
+    hostile.position_z = player_position.z;
+    hostile.template.faction = 17;
+    let hostile_target = creature_spawn_guid(&hostile);
+
+    let mut out_of_radius = test_creature_spawn(6);
+    out_of_radius.guid = 60;
+    out_of_radius.position_x = player_position.x + 20.0;
+    out_of_radius.position_y = player_position.y;
+    out_of_radius.position_z = player_position.z;
+    out_of_radius.template.faction = 17;
+    let out_of_radius_target = creature_spawn_guid(&out_of_radius);
+
+    maps.share_db_creature_snapshots(
+        0,
+        vec![
+            DbCreatureRuntime::new(hostile),
+            DbCreatureRuntime::new(out_of_radius),
+        ],
+    )
+    .await;
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&1949u32.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    let mut active_spells = HashSet::new();
+    active_spells.insert(1949);
+    let mut session = WorldSessionState {
+        character: CharacterSessionState {
+            active_character: Some(ActiveCharacter {
+                guid: 7,
+                name: "Ada".to_string(),
+                race: 1,
+                class: 9,
+                level: 20,
+                xp: 0,
+                position: player_position,
+                movement_flags: 0,
+                client_time: 0,
+                fall_time: 0,
+                jump: JumpInfo::default(),
+            }),
+            player_mana: 500,
+            active_spells,
+            ..CharacterSessionState::default()
+        },
+        ..WorldSessionState::default()
+    };
+
+    handle_cast_spell(
+        &mut stream,
+        SpellCastDeps {
+            character_db_pool: &character_db_pool,
+            world_db_pool: &world_db_pool,
+            account_id: 1,
+            shared_world,
+            parties: &PartyManager::default(),
+        },
+        read_cast_spell_request(&body),
+        &mut session,
+        &mut header_crypto,
+    )
+    .await
+    .unwrap();
+
+    let packets = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    if !packets
+        .iter()
+        .any(|packet| packet.opcode == WorldOpcode::MsgChannelStart as u16)
+    {
+        panic!(
+            "opcodes={:?} cast_result={:?}",
+            packets.iter().map(|packet| packet.opcode).collect::<Vec<_>>(),
+            packets
+                .iter()
+                .find(|packet| packet.opcode == WorldOpcode::SmsgCastResult as u16)
+                .map(|packet| packet.body.clone())
+        );
+    }
+    assert!(
+        packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgUpdateObject as u16)
+    );
+    assert_eq!(session.character.player_mana, 290);
+
+    let hostile_before_tick = maps.db_creature_snapshot(0, hostile_target).await.unwrap();
+    let tick_packets = maps
+        .advance_all_dynamic_objects(Instant::now() + Duration::from_millis(1_500), 1_000)
+        .await
+        .unwrap();
+    let hostile_after_tick = maps.db_creature_snapshot(0, hostile_target).await.unwrap();
+    let out_of_radius = maps
+        .db_creature_snapshot(0, out_of_radius_target)
+        .await
+        .unwrap();
+    assert!(hostile_after_tick.health < hostile_before_tick.health);
+    assert_eq!(out_of_radius.health, 120);
+    assert!(
+        maps.active_db_creature_combat_snapshot(
+            0,
+            hostile_target,
+            ObjectGuid::new(HighGuid::Player, 0, 7)
+        )
+        .await
+        .is_some(),
+        "Hellfire periodic damage should aggro targets it damages"
+    );
+    assert!(
+        tick_packets
+            .iter()
+            .any(|(_, packet)| packet.opcode == WorldOpcode::SmsgPeriodicAuraLog as u16)
+    );
+}
+
+#[tokio::test]
 async fn cancel_cast_clears_blizzard_dynamic_object_channel() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut stream = WorldPacketSink::new(tx);
@@ -27387,11 +27693,10 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
+    let mut heroic = heroic_strike_spell_template();
+    heroic.attributes_ex3 &= !SPELL_ATTR_EX3_REQUIRES_MAIN_HAND_WEAPON;
     object_mgr
-        .prime_spell_template_for_test(
-            WARRIOR_HEROIC_STRIKE_RANK_1,
-            Some(heroic_strike_spell_template()),
-        )
+        .prime_spell_template_for_test(WARRIOR_HEROIC_STRIKE_RANK_1, Some(heroic))
         .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
@@ -27402,7 +27707,16 @@ async fn heroic_strike_cast_sends_spell_start_until_next_swing() {
     let mut player = test_player_runtime(7, SessionId::next(), player_position);
     player.power2 = POWER_RAGE_DEFAULT;
     maps.add_player(player).await.unwrap();
-    let target = ObjectGuid::new(HighGuid::Unit, 6, 45);
+    let mut kobold = test_creature_spawn(6);
+    kobold.template.faction = 17;
+    kobold.guid = 45;
+    kobold.position_x = player_position.x + 1.0;
+    kobold.position_y = player_position.y;
+    kobold.position_z = player_position.z;
+    kobold.template.npc_flags = 0;
+    let target = creature_spawn_guid(&kobold);
+    maps.share_db_creature_snapshots(0, vec![DbCreatureRuntime::new(kobold)])
+        .await;
     let mut body = Vec::new();
     body.extend_from_slice(&WARRIOR_HEROIC_STRIKE_RANK_1.to_le_bytes());
     body.extend_from_slice(&SPELL_CAST_TARGET_UNIT.to_le_bytes());
@@ -27630,11 +27944,10 @@ async fn heroic_strike_can_queue_before_target_is_in_melee_range() {
     let maps = Arc::new(MapRuntimeManager::default());
     let sessions = Arc::new(SessionRegistry::default());
     let object_mgr = ObjectMgr::default();
+    let mut heroic = heroic_strike_spell_template();
+    heroic.attributes_ex3 &= !SPELL_ATTR_EX3_REQUIRES_MAIN_HAND_WEAPON;
     object_mgr
-        .prime_spell_template_for_test(
-            WARRIOR_HEROIC_STRIKE_RANK_1,
-            Some(heroic_strike_spell_template()),
-        )
+        .prime_spell_template_for_test(WARRIOR_HEROIC_STRIKE_RANK_1, Some(heroic))
         .await;
     let shared_world = SharedWorldDeps {
         object_mgr: &object_mgr,
@@ -29418,15 +29731,17 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
         Some(SPELL_FAILED_NO_POWER)
     );
 
+    let fireball_template = fireball_spell_template();
+    let fireball_profile = player_spell_cast_profile(&fireball_template).unwrap();
     maps.set_player_power2(map_id, character_guid, HEROIC_STRIKE_RAGE_COST)
         .await;
     maps.set_active_player_spell_cast(
         map_id,
         character_guid,
         ActivePlayerSpellCast {
-            spell_id: WARRIOR_HEROIC_STRIKE_RANK_1,
+            spell_id: fireball_template.id,
             source: ActivePlayerSpellCastSource::Player,
-            profile,
+            profile: fireball_profile,
             targets: PendingSpellCastTargets {
                 target_mask: targets.target_mask,
                 unit_target: targets.unit_target,
@@ -29446,8 +29761,8 @@ async fn spell_cast_failure_rejects_missing_power_gcd_and_duplicate_queue() {
             shared_world,
             &world_db_pool,
             &mut session,
-            &heroic_template,
-            &profile,
+            &fireball_template,
+            &fireball_profile,
             &targets,
             Instant::now()
         )
@@ -29787,6 +30102,48 @@ fn player_spell_cast_failure_allows_recklessness_and_berserker_rage_while_feared
     assert_eq!(
         map.player_spell_cast_failure(7, Some(&fireball), &fireball_profile, false, now),
         Some(SPELL_FAILED_FLEEING)
+    );
+}
+
+#[test]
+fn player_spell_cast_failure_allows_next_melee_queue_during_active_generic_cast() {
+    let now = Instant::now();
+    let mut map = MapRuntime::new(0, 0);
+    insert_map_runtime_player_for_test(&mut map, 7, WorldPosition::new(0, 0.0, 0.0, 0.0, 0.0));
+    map.players.get_mut(&7).expect("player").power2 = POWER_RAGE_DEFAULT;
+
+    let heroic = heroic_strike_spell_template();
+    let heroic_profile = player_spell_cast_profile(&heroic).unwrap();
+    let fireball = fireball_spell_template();
+    let fireball_profile = player_spell_cast_profile(&fireball).unwrap();
+    map.active_player_spell_casts.insert(
+        7,
+        ActivePlayerSpellCast {
+            spell_id: fireball.id,
+            source: ActivePlayerSpellCastSource::Player,
+            profile: fireball_profile,
+            targets: PendingSpellCastTargets {
+                target_mask: 0,
+                unit_target: None,
+                gameobject_target: None,
+                source_location: None,
+                destination: None,
+            },
+            due_at: now + Duration::from_millis(1_500),
+            cast_time_millis: 1_500,
+            interrupt_flags: 0,
+            damage_pushback_count: 0,
+        },
+    );
+
+    assert_eq!(
+        map.player_spell_cast_failure(7, Some(&fireball), &fireball_profile, false, now),
+        Some(SPELL_FAILED_SPELL_IN_PROGRESS)
+    );
+    assert_eq!(
+        map.player_spell_cast_failure(7, Some(&heroic), &heroic_profile, false, now),
+        None,
+        "CMaNGOS tracks next-swing spells in CURRENT_MELEE_SPELL, separate from active generic casts"
     );
 }
 

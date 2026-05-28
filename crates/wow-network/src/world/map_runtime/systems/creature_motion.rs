@@ -828,13 +828,6 @@ impl MapRuntime {
             target,
             target_position,
         );
-        let target_movement_flags = if target.is_player() {
-            self.players
-                .get(&target.counter())
-                .map_or(0, |player| player.movement_flags)
-        } else {
-            0
-        };
         let creature = self.creatures.get_mut(&creature_guid.raw())?;
         if !creature.is_alive() {
             return None;
@@ -846,7 +839,6 @@ impl MapRuntime {
             DbCreatureChaseTarget {
                 guid: target,
                 position: target_position,
-                movement_flags: target_movement_flags,
             },
             chase_destination,
             now,

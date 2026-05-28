@@ -3112,7 +3112,9 @@ impl MapRuntime {
         now: Instant,
     ) -> Option<u8> {
         let player = self.players.get(&character_guid)?;
-        if self.active_player_spell_casts.contains_key(&character_guid) {
+        if spell_profile.kind != SpellCastKind::NextMeleeSwing
+            && self.active_player_spell_casts.contains_key(&character_guid)
+        {
             return Some(SPELL_FAILED_SPELL_IN_PROGRESS);
         }
         if let Some(failure) = active_aura_player_spell_cast_failure(

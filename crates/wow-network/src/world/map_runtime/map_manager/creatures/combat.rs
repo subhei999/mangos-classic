@@ -727,57 +727,46 @@ impl MapRuntimeManager {
             }
         }
 
-        let swing_ready = now >= active.combat.next_swing_at;
-        let creature_waiting_for_swing =
-            !swing_ready && !db_creature_movement_for_melee_leeway(&active.creature).0;
+        let chase_refreshed = {
+            let mut map_guard = map.lock().await;
+            if let Some((creature, motion)) = map_guard.start_db_creature_chase_motion(
+                navigation,
+                attacker,
+                victim,
+                player_position,
+                now,
+            ) {
+                let packet = OutboundWorldPacket {
+                    opcode: WorldOpcode::SmsgMonsterMove as u16,
+                    body: build_monster_move_facing_target_path_body_with_run(
+                        attacker,
+                        motion.start,
+                        &motion.path,
+                        motion.spline_id,
+                        motion.duration.as_millis().max(1) as u32,
+                        victim,
+                        motion.run,
+                    )?,
+                };
+                Self::push_creature_broadcast_packet(
+                    &map_guard,
+                    victim,
+                    current_session_id,
+                    creature.current_position,
+                    packet,
+                    tick,
+                );
+                true
+            } else {
+                false
+            }
+        };
+
         let can_reach = map
             .lock()
             .await
             .db_creature_can_reach_player_with_navigation(attacker, victim, navigation);
-        let close_correction_reaches_target =
-            db_creature_chase_close_correction_reaches_target(&active.creature, player_position);
-        let chase_refreshed =
-            if swing_ready || (creature_waiting_for_swing && !close_correction_reaches_target) {
-                false
-            } else {
-                let mut map_guard = map.lock().await;
-                if let Some((creature, motion)) = map_guard.start_db_creature_chase_motion(
-                    navigation,
-                    attacker,
-                    victim,
-                    player_position,
-                    now,
-                ) {
-                    let packet = OutboundWorldPacket {
-                        opcode: WorldOpcode::SmsgMonsterMove as u16,
-                        body: build_monster_move_facing_target_path_body_with_run(
-                            attacker,
-                            motion.start,
-                            &motion.path,
-                            motion.spline_id,
-                            motion.duration.as_millis().max(1) as u32,
-                            victim,
-                            motion.run,
-                        )?,
-                    };
-                    Self::push_creature_broadcast_packet(
-                        &map_guard,
-                        victim,
-                        current_session_id,
-                        creature.current_position,
-                        packet,
-                        tick,
-                    );
-                    true
-                } else {
-                    false
-                }
-            };
-
         if !can_reach {
-            if creature_waiting_for_swing {
-                return Ok(false);
-            }
             let mut map_guard = map.lock().await;
             let _ = map_guard.defer_ready_db_creature_swing_retry(attacker, victim, now);
             if !chase_refreshed {

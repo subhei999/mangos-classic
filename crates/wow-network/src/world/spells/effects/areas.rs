@@ -66,10 +66,22 @@ pub(in crate::world) async fn apply_player_persistent_area_aura_effect(
 
     header_crypto: &mut HeaderCrypto,
 ) -> anyhow::Result<()> {
-    let Some(destination) = spell_target_destination_position(map_id, targets) else {
+    let Some(origin) = (match plan_effect_target(effect) {
+        SpellPlanEffectTarget::CasterAreaEnemy { .. } => deps
+            .shared_world
+            .maps
+            .player_runtime_snapshot(map_id, character_guid)
+            .await
+            .map(|snapshot| snapshot.position),
+        SpellPlanEffectTarget::DestinationAreaEnemy => {
+            spell_target_destination_position(map_id, targets)
+        }
+        _ => spell_target_destination_position(map_id, targets),
+    }) else {
         warn!(
             spell_id = spell_template.id,
-            "Skipping persistent area aura with missing target destination"
+            effect_target = ?plan_effect_target(effect),
+            "Skipping persistent area aura with missing origin position"
         );
 
         return Ok(());
@@ -127,7 +139,7 @@ pub(in crate::world) async fn apply_player_persistent_area_aura_effect(
             character_guid,
             spell_template.id,
             effect_index,
-            destination,
+            origin,
             radius,
             duration as u32,
             periodic_damage,

@@ -3788,7 +3788,6 @@ fn confused_creature_cannot_start_chase_motion() {
         DbCreatureChaseTarget {
             guid: player,
             position: player_position,
-            movement_flags: 0,
         },
         None,
         now,

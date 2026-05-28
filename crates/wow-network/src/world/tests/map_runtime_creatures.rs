@@ -1178,7 +1178,7 @@ async fn map_runtime_manager_advances_db_creature_combats_for_victim_without_ses
 }
 
 #[tokio::test]
-async fn map_runtime_manager_refreshes_chase_while_creature_can_still_melee() {
+async fn map_runtime_manager_does_not_correct_chase_while_creature_can_still_melee() {
     let maps = Arc::new(MapRuntimeManager::default());
     let object_mgr = ObjectMgr::default();
     let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
@@ -1228,25 +1228,24 @@ async fn map_runtime_manager_refreshes_chase_while_creature_can_still_melee() {
         .await
         .unwrap();
 
+    assert!(
+        !tick
+            .direct_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16),
+        "CMaNGOS melee chase should not launch a correction while already in melee reach"
+    );
     let attack_packet_index = tick
         .direct_packets
         .iter()
         .position(|packet| packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16)
         .expect("due swing should resolve before movement correction");
-    let move_packet_index = tick
-        .direct_packets
-        .iter()
-        .position(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16)
-        .expect("a melee-reachable target beyond the desired stop distance should still trigger chase correction");
-    assert!(
-        attack_packet_index < move_packet_index,
-        "movement correction must be queued after the due swing resolves"
-    );
+    assert_eq!(attack_packet_index, 0);
     let active = maps
         .active_db_creature_combat_snapshot(0, attacker, victim)
         .await
         .expect("active creature attack should remain tracked");
-    assert!(matches!(
+    assert!(!matches!(
         active.creature.motion,
         CreatureMotionState::Chase(_)
     ));
@@ -1386,13 +1385,14 @@ async fn map_runtime_manager_allows_small_correction_while_swing_pending() {
         panic!("creature should hold the arrived chase generator");
     };
     let first_destination = chase.destination;
-    let desired_stop_distance = db_creature_chase_stop_distance(&active.creature);
+    let melee_reach =
+        combined_melee_reach(active.creature.combat_reach(), PLAYER_COMBAT_REACH_YARDS);
     maps.set_player_position(
         0,
         7,
         WorldPosition::new(
             0,
-            first_destination.x + desired_stop_distance + 1.0,
+            first_destination.x + melee_reach - 0.25,
             0.0,
             0.0,
             0.0,
@@ -1424,10 +1424,11 @@ async fn map_runtime_manager_allows_small_correction_while_swing_pending() {
         .unwrap();
 
     assert!(
-        tick.direct_packets
+        !tick
+            .direct_packets
             .iter()
             .any(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16),
-        "a still-melee-reachable step should queue a landing correction before the pending swing"
+        "CMaNGOS chase should not correct an endpoint that still reaches melee"
     );
     assert!(
         !tick
@@ -1445,13 +1446,13 @@ async fn map_runtime_manager_allows_small_correction_while_swing_pending() {
         arrived_at + Duration::from_secs(2)
     );
     let CreatureMotionState::Chase(chase) = active.creature.motion else {
-        panic!("creature should have started a refreshed chase correction");
+        panic!("creature should keep the arrived chase generator");
     };
-    assert!(chase.destination.x > first_destination.x);
+    assert_eq!(chase.destination.x, first_destination.x);
 }
 
 #[tokio::test]
-async fn map_runtime_manager_allows_leeway_correction_while_swing_pending() {
+async fn map_runtime_manager_chases_runner_while_swing_pending() {
     let maps = Arc::new(MapRuntimeManager::default());
     let object_mgr = ObjectMgr::default();
     let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
@@ -1518,7 +1519,7 @@ async fn map_runtime_manager_allows_leeway_correction_while_swing_pending() {
         7,
         WorldPosition::new(
             0,
-            first_destination.x + ATTACK_DISTANCE_YARDS + MELEE_LEEWAY_YARDS - 0.25,
+            first_destination.x + ATTACK_DISTANCE_YARDS + 1.0,
             0.0,
             0.0,
             0.0,
@@ -1553,14 +1554,14 @@ async fn map_runtime_manager_allows_leeway_correction_while_swing_pending() {
         tick.direct_packets
             .iter()
             .any(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16),
-        "the close correction band should extend through melee leeway while the swing waits"
+        "CMaNGOS chase should keep running even while the next swing is pending"
     );
     assert!(
         !tick
             .direct_packets
             .iter()
             .any(|packet| packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16),
-        "leeway correction must not make the pending swing resolve early"
+        "chase movement must not make the pending swing resolve early"
     );
     let active = maps
         .active_db_creature_combat_snapshot(0, attacker, victim)
@@ -1571,7 +1572,7 @@ async fn map_runtime_manager_allows_leeway_correction_while_swing_pending() {
         arrived_at + Duration::from_secs(2)
     );
     let CreatureMotionState::Chase(chase) = active.creature.motion else {
-        panic!("creature should have started a refreshed chase correction");
+        panic!("creature should have started a refreshed chase");
     };
     assert!(chase.destination.x > first_destination.x);
 }
@@ -1724,7 +1725,7 @@ async fn map_runtime_manager_does_not_snap_face_before_pending_swing() {
 }
 
 #[tokio::test]
-async fn map_runtime_manager_waits_for_pending_swing_before_chasing_runner() {
+async fn map_runtime_manager_chases_runner_before_pending_swing_resolves() {
     let maps = Arc::new(MapRuntimeManager::default());
     let object_mgr = ObjectMgr::default();
     let world_db_pool = MySqlPool::connect_lazy("mysql://root@127.0.0.1/world").unwrap();
@@ -1767,7 +1768,7 @@ async fn map_runtime_manager_waits_for_pending_swing_before_chasing_runner() {
         7,
         WorldPosition::new(
             0,
-            ATTACK_DISTANCE_YARDS + MELEE_LEEWAY_YARDS + 1.0,
+            ATTACK_DISTANCE_YARDS + 1.0,
             0.0,
             0.0,
             0.0,
@@ -1799,11 +1800,18 @@ async fn map_runtime_manager_waits_for_pending_swing_before_chasing_runner() {
         .unwrap();
 
     assert!(
-        !waiting_tick
+        waiting_tick
             .direct_packets
             .iter()
             .any(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16),
-        "fresh long chase must wait until the pending swing resolves"
+        "CMaNGOS chase should start even while the next swing is pending"
+    );
+    assert!(
+        !waiting_tick
+            .direct_packets
+            .iter()
+            .any(|packet| packet.opcode == WorldOpcode::SmsgAttackerStateUpdate as u16),
+        "movement must not resolve the pending swing early"
     );
     let waiting_active = maps
         .active_db_creature_combat_snapshot(0, attacker, victim)
@@ -1813,50 +1821,8 @@ async fn map_runtime_manager_waits_for_pending_swing_before_chasing_runner() {
         waiting_active.combat.next_swing_at,
         now + Duration::from_secs(2)
     );
-    assert!(!matches!(
-        waiting_active.creature.motion,
-        CreatureMotionState::Chase(_)
-    ));
-
-    let failed_swing_tick = maps
-        .advance_db_creature_combats_for_victim(
-            &world_db_pool,
-            &object_mgr,
-            0,
-            victim,
-            SessionId(7),
-            PlayerMeleeDefenseInput {
-                level: 1,
-                defense_skill: 1,
-                armor: 0,
-                block_value: 0,
-                dodge_percent: 0.0,
-                parry_percent: 0.0,
-                block_percent: 0.0,
-            },
-            &DbCreatureNavigationGuardrail::default(),
-            now + Duration::from_secs(2),
-        )
-        .await
-        .unwrap();
-
-    assert!(
-        failed_swing_tick
-            .direct_packets
-            .iter()
-            .any(|packet| packet.opcode == WorldOpcode::SmsgMonsterMove as u16),
-        "once the pending swing fails range, the mob can queue the repath"
-    );
-    let active = maps
-        .active_db_creature_combat_snapshot(0, attacker, victim)
-        .await
-        .expect("active creature attack should remain tracked");
-    assert_eq!(
-        active.combat.next_swing_at,
-        now + Duration::from_secs(2) + Duration::from_millis(DB_CREATURE_MELEE_RETRY_MILLIS)
-    );
     assert!(matches!(
-        active.creature.motion,
+        waiting_active.creature.motion,
         CreatureMotionState::Chase(_)
     ));
 }
